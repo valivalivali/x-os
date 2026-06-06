@@ -2,6 +2,8 @@
 
 A clean-slate x86_64 microkernel operating system built from scratch. No POSIX baggage, no legacy Unix assumptions. The kernel stays minimal: scheduling, memory management, IPC ports, and hardware abstraction. Everything else (display server, filesystem, shell) lives in ring-3 userspace and communicates over message passing.
 
+![X OS Desktop](docs/os_screenshot.png)
+
 ## What It Is
 
 X OS is a microkernel designed for the AI era. No decades of compatibility debt, no legacy Unix assumptions, no POSIX baggage. The goal is an operating system that feels native to intelligent agents and human users alike: beautiful, consistent, and fully open to modification.
