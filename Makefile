@@ -1,0 +1,204 @@
+# ============================================================================
+# X OS - root build system
+#   make setup     fetch Limine bootloader + bitmap font (run once, needs net)
+#   make           build the bootable ISO (x-os.iso)
+#   make run       boot in QEMU via legacy BIOS (SeaBIOS)
+#   make run-uefi  boot in QEMU via UEFI (OVMF/edk2)
+#   make clean     remove build artifacts
+#   make distclean also remove fetched Limine + font
+# ============================================================================
+
+ISO          := x-os.iso
+BUILD_DIR    := build
+OBJ_DIR      := $(BUILD_DIR)/obj
+ISO_ROOT     := $(BUILD_DIR)/iso_root
+KERNEL       := $(BUILD_DIR)/x-os.elf
+
+LIMINE_DIR   := boot/uefi/limine
+LIMINE       := $(LIMINE_DIR)/limine
+
+# Apple clang can emit x86_64 ELF; ld.lld comes from the brew 'lld' formula.
+CC           := clang
+LD           := $(shell brew --prefix lld 2>/dev/null)/bin/ld.lld
+ifeq ($(wildcard $(LD)),)
+LD           := ld.lld
+endif
+QEMU         := /opt/qemu-head/bin/qemu-system-x86_64
+ifeq ($(wildcard $(QEMU)),)
+  QEMU       := $(shell brew --prefix qemu 2>/dev/null)/bin/qemu-system-x86_64
+endif
+ifeq ($(wildcard $(QEMU)),)
+  QEMU       := qemu-system-x86_64
+endif
+OVMF         := $(shell brew --prefix qemu 2>/dev/null)/share/qemu/edk2-x86_64-code.fd
+
+SRC_DIRS     := boot kernel userspace
+# Exclude Limine, ring-3 userspace sources, and generated blobs from kernel build.
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -name '*_blob.c' 2>/dev/null)
+SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -name '*_blob.S' 2>/dev/null)
+OBJS         := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES)) $(patsubst %.S,$(OBJ_DIR)/%.o,$(SFILES))
+DEPS         := $(patsubst %.c,$(OBJ_DIR)/%.d,$(CFILES))
+
+CFLAGS := \
+  --target=x86_64-unknown-none-elf \
+  -ffreestanding -fno-stack-protector -fno-stack-check \
+  -fno-pic -fno-pie -m64 -march=x86-64 \
+  -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
+  -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+  -I. -I$(LIMINE_DIR) \
+  -MMD -MP
+
+LDFLAGS := \
+  -nostdlib -static -no-pie -z max-page-size=0x1000 \
+  -m elf_x86_64 -T kernel/linker.ld
+
+# ---- userspace init ELF --------------------------------------------------
+USERSPACE_CFLAGS := \
+  --target=x86_64-unknown-none-elf \
+  -ffreestanding -fno-stack-protector -fno-stack-check \
+  -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone \
+  -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+  -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove \
+  -I. -I$(LIMINE_DIR)
+
+USERSPACE_LDFLAGS := \
+  -nostdlib -static -no-pie -z max-page-size=0x1000 \
+  -m elf_x86_64 -T userspace/init/init.ld
+
+INIT_ELF    := $(BUILD_DIR)/userspace/init/init.elf
+INIT_BLOB_C := kernel/proc/init_elf_blob.c
+INIT_BLOB_O := $(OBJ_DIR)/kernel/proc/init_elf_blob.o
+
+COMPOSER_ELF   := $(BUILD_DIR)/userspace/services/composer/composer.elf
+COMPOSER_BLOB_C := kernel/proc/composer_elf_blob.c
+COMPOSER_BLOB_O := $(OBJ_DIR)/kernel/proc/composer_elf_blob.o
+
+# Add generated blob objects explicitly to kernel link
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O)
+
+QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
+
+.PHONY: all run run-uefi clean distclean setup limine
+
+all: $(ISO)
+
+# ---- compile -------------------------------------------------------------
+$(OBJ_DIR)/kernel/lib/string.o: kernel/lib/string.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove -c $< -o $@
+
+$(OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/%.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build userspace init ELF (start.S + init.c + syscall wrappers)
+$(INIT_ELF): userspace/init/start.S userspace/init/init.c userspace/runtime/syscall.c userspace/init/init.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/init/start.S -o $(BUILD_DIR)/userspace/init/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/init/init.c -o $(BUILD_DIR)/userspace/init/init.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/init/syscall.o
+	$(LD) $(USERSPACE_LDFLAGS) \
+	  $(BUILD_DIR)/userspace/init/start.o \
+	  $(BUILD_DIR)/userspace/init/init.o \
+	  $(BUILD_DIR)/userspace/init/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+# Generate C blob from ELF binary so the kernel can embed it
+$(INIT_BLOB_C): $(INIT_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t init_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *init_elf_data = init_elf_bytes;', 'size_t init_elf_len = sizeof(init_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+# Build composer service ELF
+$(COMPOSER_ELF): userspace/services/composer/start.S userspace/services/composer/main.c userspace/services/composer/cursor_data.c userspace/runtime/syscall.c userspace/services/composer/composer.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/composer/start.S -o $(BUILD_DIR)/userspace/services/composer/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/composer/main.c -o $(BUILD_DIR)/userspace/services/composer/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/composer/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/composer/composer.ld \
+	  $(BUILD_DIR)/userspace/services/composer/start.o \
+	  $(BUILD_DIR)/userspace/services/composer/main.o \
+	  $(BUILD_DIR)/userspace/services/composer/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(COMPOSER_BLOB_C): $(COMPOSER_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t composer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *composer_elf_data = composer_elf_bytes;', 'size_t composer_elf_len = sizeof(composer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+# Explicit blob object rules so Make knows to generate the .c first
+$(INIT_BLOB_O): $(INIT_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(COMPOSER_BLOB_O): $(COMPOSER_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- link ----------------------------------------------------------------
+$(KERNEL): $(OBJS) kernel/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) $(OBJS) -o $@
+	@echo ">> linked $@"
+
+# ---- bootable hybrid (BIOS+UEFI) ISO ------------------------------------
+$(ISO): $(KERNEL) boot/uefi/limine.conf $(LIMINE)
+	rm -rf $(ISO_ROOT)
+	mkdir -p $(ISO_ROOT)/boot/limine $(ISO_ROOT)/EFI/BOOT
+	cp $(KERNEL) $(ISO_ROOT)/boot/x-os.elf
+	cp boot/uefi/limine.conf $(ISO_ROOT)/boot/limine/limine.conf
+	cp $(LIMINE_DIR)/limine-bios.sys       $(ISO_ROOT)/boot/limine/
+	cp $(LIMINE_DIR)/limine-bios-cd.bin    $(ISO_ROOT)/boot/limine/
+	cp $(LIMINE_DIR)/limine-uefi-cd.bin    $(ISO_ROOT)/boot/limine/
+	cp $(LIMINE_DIR)/BOOTX64.EFI           $(ISO_ROOT)/EFI/BOOT/
+	-cp $(LIMINE_DIR)/BOOTIA32.EFI         $(ISO_ROOT)/EFI/BOOT/
+	xorriso -as mkisofs \
+	  -b boot/limine/limine-bios-cd.bin \
+	  -no-emul-boot -boot-load-size 4 -boot-info-table \
+	  --efi-boot boot/limine/limine-uefi-cd.bin \
+	  -efi-boot-part --efi-boot-image --protective-msdos-label \
+	  $(ISO_ROOT) -o $(ISO)
+	$(LIMINE) bios-install $(ISO)
+	@echo ">> built $(ISO)"
+
+# ---- run -----------------------------------------------------------------
+DISK_IMG    := disk.img
+NVME_DRIVE  := -drive file=$(DISK_IMG),if=none,id=nvme0,format=raw
+NVME_DEV    := -device nvme,drive=nvme0,serial=deadbeef
+
+run: $(ISO) $(DISK_IMG)
+	$(QEMU) $(QEMU_BASE) -serial stdio -cdrom $(ISO) -boot d $(NVME_DRIVE) $(NVME_DEV)
+
+run-uefi: $(ISO) $(DISK_IMG)
+	$(QEMU) $(QEMU_BASE) -serial stdio \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
+	  -cdrom $(ISO) -boot d $(NVME_DRIVE) $(NVME_DEV)
+
+$(DISK_IMG):
+	@echo ">> creating 4 MiB disk image"
+	@dd if=/dev/zero of=$@ bs=1M count=4 status=none
+
+# ---- one-time setup ------------------------------------------------------
+setup: limine
+
+limine: $(LIMINE)
+$(LIMINE):
+	@echo ">> fetching Limine bootloader (v8.x-binary)"
+	rm -rf $(LIMINE_DIR)
+	git clone https://github.com/limine-bootloader/limine.git \
+	  --branch=v8.x-binary --depth=1 $(LIMINE_DIR)
+	$(MAKE) -C $(LIMINE_DIR)
+
+clean:
+	rm -rf $(BUILD_DIR) $(ISO)
+
+distclean: clean
+	rm -rf $(LIMINE_DIR)
+
+-include $(DEPS)

@@ -1,0 +1,12 @@
+# build output
+/build/
+*.iso
+*.o
+*.d
+*.elf
+
+# fetched third-party
+boot/uefi/limine/
+
+# os cruft
+.DS_Store
