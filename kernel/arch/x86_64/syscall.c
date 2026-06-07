@@ -147,9 +147,12 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     (void)a4; (void)a5; (void)a6;
     extern const uint8_t *composer_elf_data;
     extern size_t composer_elf_len;
+    extern const uint8_t *window_elf_data;
+    extern size_t window_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
+    else if (index == 1) { data = window_elf_data; len = window_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;

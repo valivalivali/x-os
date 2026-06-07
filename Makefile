@@ -73,8 +73,12 @@ COMPOSER_ELF   := $(BUILD_DIR)/userspace/services/composer/composer.elf
 COMPOSER_BLOB_C := kernel/proc/composer_elf_blob.c
 COMPOSER_BLOB_O := $(OBJ_DIR)/kernel/proc/composer_elf_blob.o
 
+WINDOW_ELF     := $(BUILD_DIR)/userspace/services/window/window.elf
+WINDOW_BLOB_C  := kernel/proc/window_elf_blob.c
+WINDOW_BLOB_O  := $(OBJ_DIR)/kernel/proc/window_elf_blob.o
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(WINDOW_BLOB_O)
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
 
@@ -132,12 +136,36 @@ $(COMPOSER_BLOB_C): $(COMPOSER_ELF)
 	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t composer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *composer_elf_data = composer_elf_bytes;', 'size_t composer_elf_len = sizeof(composer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
 	@echo ">> generated $@"
 
+# Build window service ELF
+$(WINDOW_ELF): userspace/services/window/start.S userspace/services/window/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/window/window.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/window/start.S -o $(BUILD_DIR)/userspace/services/window/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/window/main.c -o $(BUILD_DIR)/userspace/services/window/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/window/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/window/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/window/window.ld \
+	  $(BUILD_DIR)/userspace/services/window/start.o \
+	  $(BUILD_DIR)/userspace/services/window/main.o \
+	  $(BUILD_DIR)/userspace/services/window/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/window/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(WINDOW_BLOB_C): $(WINDOW_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t window_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *window_elf_data = window_elf_bytes;', 'size_t window_elf_len = sizeof(window_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
 # Explicit blob object rules so Make knows to generate the .c first
 $(INIT_BLOB_O): $(INIT_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(COMPOSER_BLOB_O): $(COMPOSER_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(WINDOW_BLOB_O): $(WINDOW_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

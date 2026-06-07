@@ -207,8 +207,19 @@ static void blit_surface_clipped(const surface_info_t *s,
         int sy = sy0 + row;
         int dy = dy0 + row;
         uint32_t *dst = &backing[dy * stride + dx0];
-        const uint32_t *src = &s->pixels[sy * SURF_W + sx0];
-        for (int i = 0; i < w; i++) dst[i] = src[i];
+        const uint32_t *src = &s->pixels[sy * s->w + sx0];
+        for (int i = 0; i < w; i++) {
+            uint32_t sp = src[i];
+            uint32_t sa = sp >> 24;
+            if (sa == 0) continue;
+            if (sa == 255) { dst[i] = sp; continue; }
+            uint32_t dp = dst[i];
+            uint32_t ia = 255 - sa;
+            uint32_t r = (((sp >> 16) & 0xFF) * sa + ((dp >> 16) & 0xFF) * ia) / 255;
+            uint32_t g = (((sp >> 8)  & 0xFF) * sa + ((dp >> 8)  & 0xFF) * ia) / 255;
+            uint32_t b = ((sp         & 0xFF) * sa + (dp         & 0xFF) * ia) / 255;
+            dst[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
     }
 }
 
@@ -416,12 +427,34 @@ static void blit_rect(int x, int y, int w, int h) {
 }
 
 
-static int any_surface_moved(void) {
-    for (int i = 0; i < surface_count; i++)
-        if (surfaces[i].valid &&
-            (surfaces[i].x != old_sx[i] || surfaces[i].y != old_sy[i]))
-            return 1;
-    return 0;
+/* Compute dirty rect as union of old and new bounds for moved surfaces.
+ * Returns 1 if any surface moved, fills *dx0,*dy0,*dx1,*dy1. */
+static int compute_move_dirty_rect(int *dx0, int *dy0, int *dx1, int *dy1) {
+    int moved = 0;
+    *dx0 = fb_w; *dy0 = fb_h;
+    *dx1 = 0;    *dy1 = 0;
+    for (int i = 0; i < surface_count; i++) {
+        surface_info_t *s = &surfaces[i];
+        if (!s->valid) continue;
+        if (s->x == old_sx[i] && s->y == old_sy[i]) continue;
+        moved = 1;
+        /* Old bounds */
+        int ox0 = old_sx[i], oy0 = old_sy[i];
+        int ox1 = ox0 + (int)s->w, oy1 = oy0 + (int)s->h;
+        /* New bounds */
+        int nx0 = s->x, ny0 = s->y;
+        int nx1 = nx0 + (int)s->w, ny1 = ny0 + (int)s->h;
+        /* Union */
+        if (ox0 < *dx0) *dx0 = ox0;
+        if (nx0 < *dx0) *dx0 = nx0;
+        if (oy0 < *dy0) *dy0 = oy0;
+        if (ny0 < *dy0) *dy0 = ny0;
+        if (ox1 > *dx1) *dx1 = ox1;
+        if (nx1 > *dx1) *dx1 = nx1;
+        if (oy1 > *dy1) *dy1 = oy1;
+        if (ny1 > *dy1) *dy1 = ny1;
+    }
+    return moved;
 }
 
 /* Check if any app-owned surfaces belong to dead processes.
@@ -629,9 +662,8 @@ void display_main(void) {
                     int new_idx = surface_count - 1;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
-                    if (surfaces[new_idx].level != SURF_LEVEL_FIXED && wy < 52) {
-                        /* Title bar drag — offset from click position so the
-                         * window follows the mouse naturally. */
+                    if (surfaces[new_idx].level != SURF_LEVEL_FIXED && wy < 48) {
+                        /* Drag from top nav strip area. */
                         drag_idx = new_idx;
                         drag_off_x = ev.x - surfaces[drag_idx].x;
                         drag_off_y = ev.y - surfaces[drag_idx].y;
@@ -663,6 +695,30 @@ void display_main(void) {
             if (ev.type == EV_MOUSE_UP && ev.button == MOUSE_LEFT) {
                 log("[composer] mouse up (left), drag end\n");
                 drag_idx = -1;
+            }
+            /* Forward mouse move to app for hover/resize tracking */
+            if (ev.type == EV_MOUSE_MOVE) {
+                int hit = surface_at(ev.x, ev.y);
+                if (hit >= 0 && surfaces[hit].reply_port) {
+                    int32_t wx = ev.x - surfaces[hit].x;
+                    int32_t wy = ev.y - surfaces[hit].y;
+                    mouse_event_msg_t mev = {
+                        .type = COMPOSER_MOUSE_EVENT,
+                        .x = wx,
+                        .y = wy,
+                        .button = 0,
+                        .action = 0
+                    };
+                    ipc_msg_t mmsg;
+                    mmsg.type = IPC_MSG_EVENT;
+                    mmsg.sender_pid = 0;
+                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
+                    mmsg.cap_count = 0;
+                    mmsg.payload_len = sizeof(mev);
+                    uint8_t *pd = (uint8_t *)&mev;
+                    for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
+                    sys_port_send(surfaces[hit].reply_port, &mmsg);
+                }
             }
         }
 
@@ -795,17 +851,21 @@ void display_main(void) {
         int32_t draw_x = mx - CURSOR_HOT_X;
         int32_t draw_y = my - CURSOR_HOT_Y;
         int cursor_moved = (draw_x != old_cx || draw_y != old_cy || first);
-        int surface_moved = any_surface_moved();
 
         /* Compute global dirty rect. */
         int dirty_x0 = fb_w, dirty_y0 = fb_h;
         int dirty_x1 = 0,     dirty_y1 = 0;
         int has_dirty = 0;
 
-        if (first || ipc_new_surface || z_changed || surface_moved) {
+        /* Moved surfaces: union of old+new bounds */
+        int surface_moved = compute_move_dirty_rect(&dirty_x0, &dirty_y0, &dirty_x1, &dirty_y1);
+
+        if (first || ipc_new_surface || z_changed) {
             /* Full screen needs redraw. */
             dirty_x0 = 0; dirty_y0 = 0;
             dirty_x1 = fb_w; dirty_y1 = fb_h;
+            has_dirty = 1;
+        } else if (surface_moved) {
             has_dirty = 1;
         } else {
             /* Per-surface dirty rects. */
