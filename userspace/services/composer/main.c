@@ -858,7 +858,10 @@ void display_main(void) {
         int has_dirty = 0;
 
         /* Moved surfaces: union of old+new bounds */
-        int surface_moved = compute_move_dirty_rect(&dirty_x0, &dirty_y0, &dirty_x1, &dirty_y1);
+        int surface_moved = 0;
+        if (!first) {
+            surface_moved = compute_move_dirty_rect(&dirty_x0, &dirty_y0, &dirty_x1, &dirty_y1);
+        }
 
         if (first || ipc_new_surface || z_changed) {
             /* Full screen needs redraw. */
