@@ -399,3 +399,29 @@ void xgfx_draw_text(xgfx_surface_t *s, int x, int y, const char *str, uint32_t c
         cx += 6;
     }
 }
+
+void xgfx_draw_text_scaled(xgfx_surface_t *s, int x, int y, const char *str, uint32_t color, int scale) {
+    if (scale <= 0) scale = 1;
+    int cx = x;
+    for (const char *p = str; *p; p++) {
+        unsigned char ch = (unsigned char)*p;
+        if (ch < 32) ch = 0;
+        else if (ch > 127) ch = 0;
+        else ch -= 32;
+        if (ch == 0 && *p != ' ') { cx += 6 * scale; continue; }
+        const uint8_t *col = font5x7[ch];
+        for (int c = 0; c < 5; c++) {
+            uint8_t bits = col[c];
+            for (int r = 0; r < 7; r++) {
+                if (bits & (1 << r)) {
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            write_pixel(s, cx + c * scale + dx, y + r * scale + dy, color);
+                        }
+                    }
+                }
+            }
+        }
+        cx += 6 * scale;
+    }
+}

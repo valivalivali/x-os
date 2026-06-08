@@ -49,7 +49,8 @@ void init_main(void) {
     seed_fs();
 
     spawn_blob(0, "composer");
-    spawn_blob(1, "window");
+    spawn_blob(2, "dock");
+    spawn_blob(3, "menubar");
 
     for (;;) syscall0(SYS_YIELD);
 }

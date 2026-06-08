@@ -41,6 +41,7 @@ void sched_adopt_current(proc_t *p);  /* set p as RUNNING, remove from ready */
 proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
                     uint8_t *kstack);
 void proc_exit(proc_t *p);
+void proc_kill(uint64_t pid);
 void proc_sleep(uint64_t ms);
 
 /* Assembly: context switch from current to next process */

@@ -42,8 +42,9 @@
 #define SYS_GPU_FLUSH        31
 #define SYS_GPU_CURSOR_SET   32
 #define SYS_GPU_CURSOR_MOVE  33
+#define SYS_PROC_KILL        34
 
-#define SYSCALL_MAX          33
+#define SYSCALL_MAX          34
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)

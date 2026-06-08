@@ -38,11 +38,30 @@ typedef struct {
 
 typedef struct { uint32_t type; uint64_t buf_vaddr; uint32_t surface_idx; } sr_msg_t;
 typedef struct { uint32_t type; uint32_t si; uint32_t x,y,w,h; } sd_msg_t;
-typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; } mouse_msg_t;
+typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; uint32_t surface_idx; } mouse_msg_t;
+
+#define COMPOSER_HIDE_SURFACE 10
+#define COMPOSER_SHOW_SURFACE 11
 
 static uint32_t g_si = 0;
 static uint32_t *g_px = NULL;
 static uint64_t g_port = 0;
+
+static void send_hide(void) {
+    sd_msg_t d = {COMPOSER_HIDE_SURFACE, g_si, 0, 0, 0, 0};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
+    uint64_t cp = sys_ns_lookup(PNC);
+    if (cp) sys_port_send(cp, &msg);
+}
+
+static void send_show(void) {
+    sd_msg_t d = {COMPOSER_SHOW_SURFACE, g_si, 0, 0, 0, 0};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
+    uint64_t cp = sys_ns_lookup(PNC);
+    if (cp) sys_port_send(cp, &msg);
+}
 
 static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create(); if (!g_port) return -1;
@@ -185,9 +204,10 @@ static void handle_click(int mx, int my) {
         syscall0(SYS_EXIT);
         return;
     }
-    /* Minimize button — just hide for now */
+    /* Minimize button — hide window */
     if (in_button(mx, my, r + 28, btn_y, btn_w, btn_h)) {
-        return; /* minimize not implemented yet */
+        send_hide();
+        return;
     }
     /* Maximize button */
     if (in_button(mx, my, r + 44, btn_y, btn_w, btn_h)) {
@@ -443,7 +463,7 @@ static void draw_xplorer(uint32_t *px, int ww, int wh) {
 
 /* ---- Entry -------------------------------------------------------------- */
 
-void window_main(void) {
+void xplorer_main(void) {
     log("[xplorer] start\n");
 
     int ww = 820, wh = 540;

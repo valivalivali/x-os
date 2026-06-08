@@ -100,6 +100,28 @@ void proc_exit(proc_t *p) {
     }
 }
 
+/* Kill a process by PID. Removes it from the ready queue and frees resources.
+ * Returns 1 if killed, 0 if not found. */
+void proc_kill(uint64_t pid) {
+    proc_t *p = proc_by_pid(pid);
+    if (!p || p->pid == 0) return;
+    if (p == current) {
+        proc_exit(p);
+        sched_yield();
+        return;
+    }
+    /* Remove from ready queue if present. */
+    proc_t **pp = &ready_head;
+    while (*pp) {
+        if (*pp == p) {
+            *pp = p->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    proc_exit(p);
+}
+
 void proc_sleep(uint64_t ms) {
     if (!current || current->pid == 0) {
         timer_sleep_ms(ms);

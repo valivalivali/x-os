@@ -2,11 +2,11 @@
 .globl _start
 .align 16
 
-/* X OS Window Service — ring-3 entry point */
+/* X OS Menu Bar Service — ring-3 entry point */
 _start:
-    call window_main
+    call menubar_main
 
-    /* window_main returned — exit with code 0 */
+    /* menubar_main returned — exit with code 0 */
     movq $0, %rdi
     movq $0, %rax       /* SYS_EXIT */
     syscall

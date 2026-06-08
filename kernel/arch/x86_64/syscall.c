@@ -147,12 +147,18 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     (void)a4; (void)a5; (void)a6;
     extern const uint8_t *composer_elf_data;
     extern size_t composer_elf_len;
-    extern const uint8_t *window_elf_data;
-    extern size_t window_elf_len;
+    extern const uint8_t *xplorer_elf_data;
+    extern size_t xplorer_elf_len;
+    extern const uint8_t *dock_elf_data;
+    extern size_t dock_elf_len;
+    extern const uint8_t *menubar_elf_data;
+    extern size_t menubar_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
-    else if (index == 1) { data = window_elf_data; len = window_elf_len; }
+    else if (index == 1) { data = xplorer_elf_data; len = xplorer_elf_len; }
+    else if (index == 2) { data = dock_elf_data; len = dock_elf_len; }
+    else if (index == 3) { data = menubar_elf_data; len = menubar_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;
@@ -284,6 +290,13 @@ static uint64_t sys_proc_exists_impl(uint64_t pid, uint64_t a2, uint64_t a3,
     return p ? 1 : 0;
 }
 
+static uint64_t sys_proc_kill_impl(uint64_t pid, uint64_t a2, uint64_t a3,
+                                   uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_kill(pid);
+    return 0;
+}
+
 static uint64_t sys_mem_free_impl(uint64_t vaddr, uint64_t a2, uint64_t a3,
                                   uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
@@ -397,6 +410,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_GPU_FLUSH]       = (void *)sys_gpu_flush_impl,
     [SYS_GPU_CURSOR_SET]  = (void *)sys_gpu_cursor_set_impl,
     [SYS_GPU_CURSOR_MOVE] = (void *)sys_gpu_cursor_move_impl,
+    [SYS_PROC_KILL]       = (void *)sys_proc_kill_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

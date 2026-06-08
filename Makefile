@@ -73,12 +73,20 @@ COMPOSER_ELF   := $(BUILD_DIR)/userspace/services/composer/composer.elf
 COMPOSER_BLOB_C := kernel/proc/composer_elf_blob.c
 COMPOSER_BLOB_O := $(OBJ_DIR)/kernel/proc/composer_elf_blob.o
 
-WINDOW_ELF     := $(BUILD_DIR)/userspace/services/window/window.elf
-WINDOW_BLOB_C  := kernel/proc/window_elf_blob.c
-WINDOW_BLOB_O  := $(OBJ_DIR)/kernel/proc/window_elf_blob.o
+XPLORER_ELF    := $(BUILD_DIR)/userspace/services/xplorer/xplorer.elf
+XPLORER_BLOB_C := kernel/proc/xplorer_elf_blob.c
+XPLORER_BLOB_O := $(OBJ_DIR)/kernel/proc/xplorer_elf_blob.o
+
+DOCK_ELF       := $(BUILD_DIR)/userspace/services/dock/dock.elf
+DOCK_BLOB_C    := kernel/proc/dock_elf_blob.c
+DOCK_BLOB_O    := $(OBJ_DIR)/kernel/proc/dock_elf_blob.o
+
+MENUBAR_ELF    := $(BUILD_DIR)/userspace/services/menubar/menubar.elf
+MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
+MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(WINDOW_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O)
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
 
@@ -136,24 +144,64 @@ $(COMPOSER_BLOB_C): $(COMPOSER_ELF)
 	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t composer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *composer_elf_data = composer_elf_bytes;', 'size_t composer_elf_len = sizeof(composer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
 	@echo ">> generated $@"
 
-# Build window service ELF
-$(WINDOW_ELF): userspace/services/window/start.S userspace/services/window/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/window/window.ld
+# Build xplorer service ELF
+$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/window/start.S -o $(BUILD_DIR)/userspace/services/window/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/window/main.c -o $(BUILD_DIR)/userspace/services/window/main.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/window/xgfx.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/window/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/window/window.ld \
-	  $(BUILD_DIR)/userspace/services/window/start.o \
-	  $(BUILD_DIR)/userspace/services/window/main.o \
-	  $(BUILD_DIR)/userspace/services/window/xgfx.o \
-	  $(BUILD_DIR)/userspace/services/window/syscall.o \
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/start.S -o $(BUILD_DIR)/userspace/services/xplorer/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/main.c -o $(BUILD_DIR)/userspace/services/xplorer/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/xplorer/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/xplorer/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/xplorer/xplorer.ld \
+	  $(BUILD_DIR)/userspace/services/xplorer/start.o \
+	  $(BUILD_DIR)/userspace/services/xplorer/main.o \
+	  $(BUILD_DIR)/userspace/services/xplorer/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/xplorer/syscall.o \
 	  -o $@
 	@echo ">> linked $@"
 
-$(WINDOW_BLOB_C): $(WINDOW_ELF)
+$(XPLORER_BLOB_C): $(XPLORER_ELF)
 	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t window_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *window_elf_data = window_elf_bytes;', 'size_t window_elf_len = sizeof(window_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t xplorer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *xplorer_elf_data = xplorer_elf_bytes;', 'size_t xplorer_elf_len = sizeof(xplorer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+# Build dock service ELF
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/dock/dock.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/dock/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/dock/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/dock/dock.ld \
+	  $(BUILD_DIR)/userspace/services/dock/start.o \
+	  $(BUILD_DIR)/userspace/services/dock/main.o \
+	  $(BUILD_DIR)/userspace/services/dock/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/dock/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(DOCK_BLOB_C): $(DOCK_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t dock_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *dock_elf_data = dock_elf_bytes;', 'size_t dock_elf_len = sizeof(dock_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+# Build menubar service ELF
+$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/menubar/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menubar/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menubar/menubar.ld \
+	  $(BUILD_DIR)/userspace/services/menubar/start.o \
+	  $(BUILD_DIR)/userspace/services/menubar/main.o \
+	  $(BUILD_DIR)/userspace/services/menubar/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/menubar/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(MENUBAR_BLOB_C): $(MENUBAR_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menubar_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menubar_elf_data = menubar_elf_bytes;', 'size_t menubar_elf_len = sizeof(menubar_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
 	@echo ">> generated $@"
 
 # Explicit blob object rules so Make knows to generate the .c first
@@ -165,7 +213,15 @@ $(COMPOSER_BLOB_O): $(COMPOSER_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(WINDOW_BLOB_O): $(WINDOW_BLOB_C)
+$(XPLORER_BLOB_O): $(XPLORER_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(DOCK_BLOB_O): $(DOCK_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

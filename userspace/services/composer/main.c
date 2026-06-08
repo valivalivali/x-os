@@ -29,12 +29,19 @@
 #define COMPOSER_MOUSE_EVENT      7
 #define COMPOSER_CAPTURE_DISPLAY  8
 #define COMPOSER_RELEASE_DISPLAY  9
+#define COMPOSER_HIDE_SURFACE     10
+#define COMPOSER_SHOW_SURFACE     11
+#define COMPOSER_HIDE_BY_PID      12
+#define COMPOSER_SHOW_BY_PID      13
+#define COMPOSER_DESTROY_BY_PID   14
+#define COMPOSER_FOCUS_CHANGED    15
 
 typedef struct {
     uint32_t type;
     int32_t  x, y;
     uint32_t button;
     uint32_t action;
+    uint32_t surface_idx;
 } mouse_event_msg_t;
 
 /* Shared buffer address space: each surface gets a 2.4MB slot. */
@@ -94,13 +101,16 @@ static uint32_t cursor_stage[CURSOR_W];
 /* ---- Surfaces ----------------------------------------------------------- */
 
 #define MAX_SURFACES 8
-#define SURF_W  1024
-#define SURF_H  600
+#define SURF_W  2560
+#define SURF_H  768
 
-/* Z-levels: higher number = rendered on top, hit-tested first. */
-#define SURF_LEVEL_FIXED   0  /* menu bar, panel (immovable) */
-#define SURF_LEVEL_NORMAL  1  /* windows */
-#define SURF_LEVEL_OVERLAY 2  /* tooltips, menus */
+/* Z-levels: higher number = rendered on top, hit-tested first.
+ * 1 = desktop bg (implicit), 2 = windows, 3 = panels/dock/menu,
+ * 4 = tooltips/menus/cursor. */
+#define SURF_LEVEL_DESKTOP  0  /* background (not a surface) */
+#define SURF_LEVEL_NORMAL   1  /* windows */
+#define SURF_LEVEL_PANEL    2  /* dock, menu bar, panels */
+#define SURF_LEVEL_OVERLAY  3  /* tooltips, menus */
 
 typedef struct {
     int32_t  x, y;
@@ -113,6 +123,7 @@ typedef struct {
     /* Dirty rect tracking (surface-local coords; 0,0,0,0 = full surface) */
     int      dirty;
     uint32_t dirty_x, dirty_y, dirty_w, dirty_h;
+    int      hidden;            /* 1 = minimized, not rendered */
 } surface_info_t;
 
 static surface_info_t surfaces[MAX_SURFACES];
@@ -185,7 +196,7 @@ static int inside_rounded_rect(int32_t px, int32_t py, uint32_t w, uint32_t h, i
 
 /* Hit-test a single surface at local coords (rx,ry). */
 static int surface_hit(const surface_info_t *s, int32_t rx, int32_t ry) {
-    if (s->level == SURF_LEVEL_FIXED) {
+    if (s->level == SURF_LEVEL_PANEL) {
         return (rx >= 0 && rx < (int32_t)s->w && ry >= 0 && ry < (int32_t)s->h);
     } else {
         return inside_rounded_rect(rx, ry, s->w, s->h, 16);
@@ -241,10 +252,10 @@ static void draw_region(int x0, int y0, int x1, int y1) {
 
     /* Then: blit each overlapping surface, bottom-to-top.
      * Skip dead apps: their shared buffers may have been freed. */
-    for (int level = SURF_LEVEL_FIXED; level <= SURF_LEVEL_OVERLAY; level++) {
+    for (int level = SURF_LEVEL_NORMAL; level <= SURF_LEVEL_OVERLAY; level++) {
         for (int i = 0; i < surface_count; i++) {
             const surface_info_t *s = &surfaces[i];
-            if (!s->valid || s->level != level || !s->pixels) continue;
+            if (!s->valid || s->hidden || s->level != level || !s->pixels) continue;
             /* Safety: don't read from a dead app's buffer. */
             if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
             /* Compute overlap between surface and dirty rect. */
@@ -263,10 +274,11 @@ static void draw_region(int x0, int y0, int x1, int y1) {
 /* Return index of topmost surface at (px,py), or -1 if desktop.
  * Searches from highest z-level down to fixed. */
 static int surface_at(int32_t px, int32_t py) {
-    for (int level = SURF_LEVEL_OVERLAY; level >= SURF_LEVEL_FIXED; level--) {
+    for (int level = SURF_LEVEL_OVERLAY; level >= SURF_LEVEL_NORMAL; level--) {
         for (int i = surface_count - 1; i >= 0; i--) {
             const surface_info_t *s = &surfaces[i];
-            if (!s->valid || s->level != level) continue;
+            if (!s->valid || s->hidden || s->level != level) continue;
+            if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
             int32_t rx = px - s->x, ry = py - s->y;
             if (surface_hit(s, rx, ry))
                 return i;
@@ -278,20 +290,26 @@ static int surface_at(int32_t px, int32_t py) {
 static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
                                    uint32_t color, int fixed, uint32_t owner_pid,
                                    uint64_t reply_port) {
-    if (surface_count >= MAX_SURFACES) return;
+    /* Reuse first invalid slot to keep indices stable for surviving apps. */
+    int slot = -1;
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (!surfaces[i].valid) { slot = i; break; }
+    }
+    if (slot < 0) return;  /* No free slots */
     if (w > SURF_W) w = SURF_W;
     if (h > SURF_H) h = SURF_H;
-    surface_info_t *sp = &surfaces[surface_count];
+    surface_info_t *sp = &surfaces[slot];
     sp->x = x; sp->y = y; sp->w = w; sp->h = h;
-    sp->level = fixed ? SURF_LEVEL_FIXED : SURF_LEVEL_NORMAL;
+    sp->level = fixed ? SURF_LEVEL_PANEL : SURF_LEVEL_NORMAL;
     sp->valid = 1;
     sp->owner_pid = owner_pid;
     sp->reply_port = reply_port;
     sp->pixels = NULL;
     sp->dirty = 0;
     sp->dirty_x = sp->dirty_y = sp->dirty_w = sp->dirty_h = 0;
+    sp->hidden = 0;
 
-    uint64_t buf_vaddr = SHARED_SURFACE_BASE + (uint64_t)surface_count * SHARED_SURFACE_SLOT;
+    uint64_t buf_vaddr = SHARED_SURFACE_BASE + (uint64_t)slot * SHARED_SURFACE_SLOT;
     uint32_t npages = (SURF_W * SURF_H * 4 + PAGE_SIZE - 1) / PAGE_SIZE;
     int ok = 1;
     for (uint32_t p = 0; p < npages; p++) {
@@ -309,7 +327,7 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
             surface_ready_msg_t sr;
             sr.type = COMPOSER_SURFACE_READY;
             sr.buf_vaddr = buf_vaddr;
-            sr.surface_idx = surface_count;
+            sr.surface_idx = (uint32_t)slot;
             ipc_msg_t smsg;
             smsg.type = IPC_MSG_EVENT;
             smsg.sender_pid = 0;
@@ -328,9 +346,9 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     if (sp->y + (int32_t)sp->h > fb_h) sp->y = fb_h - sp->h;
     if (sp->x < 0) sp->x = 0;
     if (sp->y < 0) sp->y = 0;
-    old_sx[surface_count] = sp->x;
-    old_sy[surface_count] = sp->y;
-    surface_count++;
+    old_sx[slot] = sp->x;
+    old_sy[slot] = sp->y;
+    if (slot >= surface_count) surface_count = slot + 1;
 }
 
 static void spawn_surface(int32_t x, int32_t y) {
@@ -458,14 +476,16 @@ static int compute_move_dirty_rect(int *dx0, int *dy0, int *dx1, int *dy1) {
 }
 
 /* Check if any app-owned surfaces belong to dead processes.
- * Mark invalid and compact the array. Returns 1 if anything changed. */
+ * Mark invalid but DO NOT compact — app surface indices must stay stable.
+ * Returns 1 if anything changed. */
 static int cull_dead_surfaces(void) {
     int changed = 0;
-    for (int i = 0; i < surface_count; i++) {
+    for (int i = 0; i < MAX_SURFACES; i++) {
         surface_info_t *s = &surfaces[i];
         if (!s->valid || s->owner_pid == 0) continue;
         if (!sys_proc_exists(s->owner_pid)) {
             s->valid = 0;
+            s->pixels = NULL;
             changed = 1;
         }
     }
@@ -475,21 +495,7 @@ static int cull_dead_surfaces(void) {
         capture_owner_pid = 0;
         changed = 1;
     }
-    if (!changed) return 0;
-    /* Compact: shift valid surfaces down. */
-    int j = 0;
-    for (int i = 0; i < surface_count; i++) {
-        if (surfaces[i].valid) {
-            if (i != j) {
-                surfaces[j] = surfaces[i];
-                old_sx[j] = old_sx[i];
-                old_sy[j] = old_sy[i];
-            }
-            j++;
-        }
-    }
-    surface_count = j;
-    return 1;
+    return changed;
 }
 
 void display_main(void) {
@@ -658,16 +664,33 @@ void display_main(void) {
                 log_int("[composer]  hit surface ", hit, "\n");
 
                 if (ev.button == MOUSE_LEFT && hit >= 0) {
-                    surface_raise(hit);
-                    int new_idx = surface_count - 1;
+                    /* Don't raise/reorder surfaces — app indices must stay stable. */
+                    int new_idx = hit;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
-                    if (surfaces[new_idx].level != SURF_LEVEL_FIXED && wy < 48) {
+                    if (surfaces[new_idx].level != SURF_LEVEL_PANEL && wy < 48) {
                         /* Drag from top nav strip area. */
                         drag_idx = new_idx;
                         drag_off_x = ev.x - surfaces[drag_idx].x;
                         drag_off_y = ev.y - surfaces[drag_idx].y;
                         log_int("[composer]  drag start idx=", drag_idx, "\n");
+                    }
+                    /* Broadcast focus change to panel surfaces (menubar, dock) */
+                    if (surfaces[new_idx].level != SURF_LEVEL_PANEL) {
+                        for (int i = 0; i < MAX_SURFACES; i++) {
+                            if (surfaces[i].valid && surfaces[i].level == SURF_LEVEL_PANEL && surfaces[i].reply_port) {
+                                uint32_t fmsg[2] = {COMPOSER_FOCUS_CHANGED, surfaces[new_idx].owner_pid};
+                                ipc_msg_t fm;
+                                fm.type = IPC_MSG_EVENT;
+                                fm.sender_pid = 0;
+                                for (int j = 0; j < IPC_CAP_MAX_PER_MSG; j++) fm.caps[j] = CAP_NULL;
+                                fm.cap_count = 0;
+                                fm.payload_len = sizeof(fmsg);
+                                uint8_t *pd = (uint8_t *)&fmsg;
+                                for (size_t k = 0; k < sizeof(fmsg); k++) fm.payload[k] = pd[k];
+                                sys_port_send(surfaces[i].reply_port, &fm);
+                            }
+                        }
                     }
                     /* Forward click to app that owns this surface. */
                     if (surfaces[new_idx].reply_port) {
@@ -676,7 +699,8 @@ void display_main(void) {
                             .x = wx,
                             .y = wy,
                             .button = 1,
-                            .action = 1
+                            .action = 1,
+                            .surface_idx = (uint32_t)new_idx
                         };
                         ipc_msg_t mmsg;
                         mmsg.type = IPC_MSG_EVENT;
@@ -691,6 +715,31 @@ void display_main(void) {
                 }
                 if (ev.button == MOUSE_RIGHT && hit < 0)
                     spawn_surface(ev.x, ev.y);
+                if (ev.button == MOUSE_RIGHT && hit >= 0) {
+                    /* Forward right-click to app. */
+                    int new_idx = hit;
+                    int32_t wx = ev.x - surfaces[new_idx].x;
+                    int32_t wy = ev.y - surfaces[new_idx].y;
+                    if (surfaces[new_idx].reply_port) {
+                        mouse_event_msg_t mev = {
+                            .type = COMPOSER_MOUSE_EVENT,
+                            .x = wx,
+                            .y = wy,
+                            .button = ev.button,
+                            .action = 1,
+                            .surface_idx = (uint32_t)new_idx
+                        };
+                        ipc_msg_t mmsg;
+                        mmsg.type = IPC_MSG_EVENT;
+                        mmsg.sender_pid = 0;
+                        for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
+                        mmsg.cap_count = 0;
+                        mmsg.payload_len = sizeof(mev);
+                        uint8_t *pd = (uint8_t *)&mev;
+                        for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
+                        sys_port_send(surfaces[new_idx].reply_port, &mmsg);
+                    }
+                }
             }
             if (ev.type == EV_MOUSE_UP && ev.button == MOUSE_LEFT) {
                 log("[composer] mouse up (left), drag end\n");
@@ -707,7 +756,8 @@ void display_main(void) {
                         .x = wx,
                         .y = wy,
                         .button = 0,
-                        .action = 0
+                        .action = 0,
+                        .surface_idx = (uint32_t)hit
                     };
                     ipc_msg_t mmsg;
                     mmsg.type = IPC_MSG_EVENT;
@@ -745,8 +795,64 @@ void display_main(void) {
                         uint32_t idx = ((uint32_t *)msg.payload)[1];
                         if (idx < (uint32_t)surface_count) {
                             surfaces[idx].valid = 0;
+                            surfaces[idx].pixels = NULL; /* dead app's buffer */
                             z_changed = 1;
                             log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
+                        }
+                    }
+                }
+                if (msg_type == COMPOSER_HIDE_SURFACE) {
+                    if (msg.payload_len >= 8) {
+                        uint32_t idx = ((uint32_t *)msg.payload)[1];
+                        if (idx < (uint32_t)surface_count) {
+                            surfaces[idx].hidden = 1;
+                            z_changed = 1;
+                        }
+                    }
+                }
+                if (msg_type == COMPOSER_SHOW_SURFACE) {
+                    if (msg.payload_len >= 8) {
+                        uint32_t idx = ((uint32_t *)msg.payload)[1];
+                        if (idx < (uint32_t)MAX_SURFACES) {
+                            surfaces[idx].hidden = 0;
+                            z_changed = 1;
+                        }
+                    }
+                }
+                if (msg_type == COMPOSER_HIDE_BY_PID) {
+                    if (msg.payload_len >= 8) {
+                        uint32_t target_pid = ((uint32_t *)msg.payload)[1];
+                        for (int i = 0; i < MAX_SURFACES; i++) {
+                            if (surfaces[i].valid && surfaces[i].owner_pid == target_pid) {
+                                surfaces[i].hidden = 1;
+                                z_changed = 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (msg_type == COMPOSER_SHOW_BY_PID) {
+                    if (msg.payload_len >= 8) {
+                        uint32_t target_pid = ((uint32_t *)msg.payload)[1];
+                        for (int i = 0; i < MAX_SURFACES; i++) {
+                            if (surfaces[i].valid && surfaces[i].owner_pid == target_pid) {
+                                surfaces[i].hidden = 0;
+                                z_changed = 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (msg_type == COMPOSER_DESTROY_BY_PID) {
+                    if (msg.payload_len >= 8) {
+                        uint32_t target_pid = ((uint32_t *)msg.payload)[1];
+                        for (int i = 0; i < MAX_SURFACES; i++) {
+                            if (surfaces[i].valid && surfaces[i].owner_pid == target_pid) {
+                                surfaces[i].valid = 0;
+                                surfaces[i].pixels = NULL;
+                                z_changed = 1;
+                                break;
+                            }
                         }
                     }
                 }
