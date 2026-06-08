@@ -160,3 +160,11 @@ int sys_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
 int sys_gpu_cursor_move(int32_t x, int32_t y) {
     return (int)syscall2(SYS_GPU_CURSOR_MOVE, (uint64_t)(int64_t)x, (uint64_t)(int64_t)y);
 }
+
+/* Time wrapper — reads RTC hour/min/sec into 3-byte buffer */
+int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec) {
+    uint8_t buf[3];
+    int ret = (int)syscall1(SYS_TIME, (uintptr_t)buf);
+    if (ret == 0) { *hour = buf[0]; *min = buf[1]; *sec = buf[2]; }
+    return ret;
+}

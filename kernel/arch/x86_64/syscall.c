@@ -1,4 +1,5 @@
 #include "kernel/include/syscall.h"
+#include "kernel/arch/x86_64/rtc.h"
 #include "kernel/sched/sched.h"
 #include "kernel/proc/proc.h"
 #include "kernel/memory/heap.h"
@@ -377,6 +378,17 @@ static uint64_t sys_readdir_impl(uint64_t fd, uint64_t entries, uint64_t max,
     return (uint64_t)xfs_readdir((int)fd, (xfs_dirent_t *)entries, (int)max);
 }
 
+static uint64_t sys_time_impl(uint64_t utime, uint64_t a2, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!utime) return (uint64_t)-1;
+    rtc_time_t t;
+    rtc_read(&t);
+    uint8_t *p = (uint8_t *)utime;
+    p[0] = t.hour; p[1] = t.min; p[2] = t.sec;
+    return 0;
+}
+
 static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) = {
     [SYS_EXIT]        = (void *)sys_exit,
     [SYS_YIELD]       = (void *)sys_yield,
@@ -411,6 +423,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_GPU_CURSOR_SET]  = (void *)sys_gpu_cursor_set_impl,
     [SYS_GPU_CURSOR_MOVE] = (void *)sys_gpu_cursor_move_impl,
     [SYS_PROC_KILL]       = (void *)sys_proc_kill_impl,
+    [SYS_TIME]            = (void *)sys_time_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

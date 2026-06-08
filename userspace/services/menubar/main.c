@@ -101,22 +101,77 @@ static int g_focus_pid = 0;
 static int g_needs_redraw = 1;
 static int g_ww = 2560;
 
-/* ---- Dropdown state --------------------------------------------------- */
+/* Clock state */
+static char g_clock_str[16] = "12:00 AM";
+static uint8_t g_last_min = 255;
+
+static void update_clock(void) {
+    uint8_t h, m, s;
+    if (sys_time(&h, &m, &s) != 0) return;
+    if (m == g_last_min) return;
+    g_last_min = m;
+    int ampm = (h >= 12) ? 1 : 0;
+    int display_h = h % 12;
+    if (display_h == 0) display_h = 12;
+    g_clock_str[0] = (display_h >= 10) ? '0' + (display_h / 10) : ' ';
+    g_clock_str[1] = '0' + (display_h % 10);
+    g_clock_str[2] = ':';
+    g_clock_str[3] = '0' + (m / 10);
+    g_clock_str[4] = '0' + (m % 10);
+    g_clock_str[5] = ' ';
+    g_clock_str[6] = ampm ? 'P' : 'A';
+    g_clock_str[7] = 'M';
+    g_clock_str[8] = '\0';
+    g_needs_redraw = 1;
+}
+
+/* ---- Dropdown menus --------------------------------------------------- */
+
+#define COMPOSER_HIDE_BY_PID    12
+#define COMPOSER_SHOW_BY_PID    13
+#define COMPOSER_DESTROY_BY_PID 14
+
+typedef struct {
+    const char *label;
+    int action;  /* 0=placeholder, 1=hide, 2=show, 3=quit, -1=separator */
+} dd_row_t;
+
+typedef struct {
+    dd_row_t *rows;
+    int count;
+} dd_menu_t;
+
+static dd_row_t menu0[] = { {"About this OS", 0} };
+static dd_row_t menu1[] = {
+    {"About Xplorer", 0},
+    {NULL, -1},
+    {"Hide Xplorer", 1},
+    {"Quit Xplorer", 3},
+};
+static dd_row_t menu2[] = { {"New Window", 0}, {"Open", 0} };
+static dd_row_t menu3[] = { {"Undo", 0}, {"Cut", 0}, {"Copy", 0}, {"Paste", 0} };
+static dd_row_t menu4[] = { {"Show Icons", 0}, {"List View", 0} };
+static dd_row_t menu5[] = { {"Minimize", 1}, {"Show", 2} };
+static dd_row_t menu6[] = { {"Search", 0} };
+
+static dd_menu_t g_menus[] = {
+    {menu0, 1},
+    {menu1, 4},
+    {menu2, 2},
+    {menu3, 4},
+    {menu4, 2},
+    {menu5, 2},
+    {menu6, 1},
+};
+
 static int g_dd_open = -1;
 static uint64_t g_dd_port = 0;
 static uint32_t g_dd_si = 0;
 static uint32_t *g_dd_px = NULL;
 static int g_dd_x = 0, g_dd_y = 0, g_dd_w = 0, g_dd_h = 0;
+static int g_dd_hover = -1;
 
-static const char *dd_labels[] = {
-    "About this OS",    /* 0: X logo system menu */
-    "About Xplorer",    /* 1: app name menu */
-    "New Window",       /* 2: File */
-    "Undo",             /* 3: Edit */
-    "Show Icons",       /* 4: View */
-    "Minimize",         /* 5: Window */
-    "Search",           /* 6: Help */
-};
+#define DD_ROW_H 22
 
 /* ---- Drawing ---------------------------------------------------------- */
 
@@ -131,25 +186,26 @@ static void draw_highlight(xgfx_surface_t *s, int x, int w, int h) {
 static void draw_x_logo(xgfx_surface_t *s, int cx, int cy, int alpha) {
     xgfx_path_t p; xgfx_paint_t paint;
     xgfx_paint_solid(&paint, xgfx_argb(alpha, 255, 255, 255));
-    int x = cx - 6, y = cy - 6;
+    int x = cx - 7, y = cy - 7;
+    /* Refined X — thinner 2px arms, 14x14 total */
     /* Arm 1: top-left → bottom-right */
     xgfx_path_init(&p);
     xgfx_path_move_to(&p, (float)(x + 0), (float)(y + 0));
     xgfx_path_line_to(&p, (float)(x + 3), (float)(y + 0));
-    xgfx_path_line_to(&p, (float)(x + 12), (float)(y + 9));
-    xgfx_path_line_to(&p, (float)(x + 12), (float)(y + 12));
-    xgfx_path_line_to(&p, (float)(x + 9), (float)(y + 12));
+    xgfx_path_line_to(&p, (float)(x + 14), (float)(y + 11));
+    xgfx_path_line_to(&p, (float)(x + 14), (float)(y + 14));
+    xgfx_path_line_to(&p, (float)(x + 11), (float)(y + 14));
     xgfx_path_line_to(&p, (float)(x + 0), (float)(y + 3));
     xgfx_path_close(&p);
     xgfx_fill_path(s, &p, &paint);
     /* Arm 2: top-right → bottom-left */
     xgfx_path_init(&p);
-    xgfx_path_move_to(&p, (float)(x + 9), (float)(y + 0));
-    xgfx_path_line_to(&p, (float)(x + 12), (float)(y + 0));
-    xgfx_path_line_to(&p, (float)(x + 12), (float)(y + 3));
-    xgfx_path_line_to(&p, (float)(x + 3), (float)(y + 12));
-    xgfx_path_line_to(&p, (float)(x + 0), (float)(y + 12));
-    xgfx_path_line_to(&p, (float)(x + 0), (float)(y + 9));
+    xgfx_path_move_to(&p, (float)(x + 11), (float)(y + 0));
+    xgfx_path_line_to(&p, (float)(x + 14), (float)(y + 0));
+    xgfx_path_line_to(&p, (float)(x + 14), (float)(y + 3));
+    xgfx_path_line_to(&p, (float)(x + 3), (float)(y + 14));
+    xgfx_path_line_to(&p, (float)(x + 0), (float)(y + 14));
+    xgfx_path_line_to(&p, (float)(x + 0), (float)(y + 11));
     xgfx_path_close(&p);
     xgfx_fill_path(s, &p, &paint);
 }
@@ -193,9 +249,26 @@ static void draw_menubar(uint32_t *px, int ww, int wh) {
                               xgfx_argb(g_hover == i ? 255 : 220, 255, 255, 255), TEXT_SCALE);
     }
 
-    /* Clock */
-    xgfx_draw_text_scaled(&surf, ww - 120, TEXT_Y, "Mon Jun 10 9:41 AM",
+    /* Clock — right-aligned */
+    int cw = text_width(g_clock_str);
+    xgfx_draw_text_scaled(&surf, ww - cw - 14, TEXT_Y, g_clock_str,
                           xgfx_argb(220, 255, 255, 255), TEXT_SCALE);
+}
+
+static void send_composer_cmd(uint32_t cmd_type, uint32_t pid) {
+    uint32_t payload[2] = {cmd_type, pid};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload)};
+    for (size_t i = 0; i < sizeof(payload); i++) msg.payload[i] = ((uint8_t*)&payload)[i];
+    uint64_t cp = sys_ns_lookup(PNC);
+    if (cp) sys_port_send(cp, &msg);
+}
+
+static void draw_dropdown_row_highlight(xgfx_surface_t *s, int x, int y, int w, int h) {
+    xgfx_path_t p; xgfx_paint_t paint;
+    xgfx_paint_solid(&paint, xgfx_argb(35, 255, 255, 255));
+    xgfx_path_init(&p);
+    xgfx_path_rounded_rect(&p, (float)x, (float)y, (float)w, (float)h, 4);
+    xgfx_fill_path(s, &p, &paint);
 }
 
 static void draw_dropdown(void) {
@@ -204,19 +277,35 @@ static void draw_dropdown(void) {
     xgfx_path_t p; xgfx_paint_t paint;
     for (int i = 0; i < g_dd_w * g_dd_h; i++) g_dd_px[i] = 0;
 
-    xgfx_paint_solid(&paint, xgfx_argb(220, 30, 30, 35));
+    /* Opaque dark background — always readable on any background */
+    xgfx_paint_solid(&paint, xgfx_argb(255, 40, 40, 45));
     xgfx_path_init(&p);
-    xgfx_path_rounded_rect(&p, 0, 0, g_dd_w, g_dd_h, 5);
+    xgfx_path_rounded_rect(&p, 0, 0, g_dd_w, g_dd_h, 6);
     xgfx_fill_path(&s, &p, &paint);
 
+    /* Subtle border */
     xgfx_paint_solid(&paint, xgfx_argb(80, 100, 100, 105));
     xgfx_path_init(&p);
-    xgfx_path_rounded_rect(&p, 0.5f, 0.5f, g_dd_w - 1, g_dd_h - 1, 5);
+    xgfx_path_rounded_rect(&p, 0.5f, 0.5f, g_dd_w - 1, g_dd_h - 1, 6);
     xgfx_stroke_path(&s, &p, &paint, 1);
 
-    if (g_dd_open >= 0 && dd_labels[g_dd_open]) {
-        xgfx_draw_text_scaled(&s, 10, 8, dd_labels[g_dd_open],
-                              xgfx_argb(255, 255, 255, 255), TEXT_SCALE);
+    dd_menu_t *menu = &g_menus[g_dd_open];
+    for (int i = 0; i < menu->count; i++) {
+        int row_top = 4 + i * DD_ROW_H;
+        if (menu->rows[i].action == -1) {
+            /* Separator line */
+            xgfx_paint_solid(&paint, xgfx_argb(60, 120, 120, 125));
+            xgfx_path_init(&p);
+            xgfx_path_move_to(&p, 12, (float)(row_top + DD_ROW_H / 2));
+            xgfx_path_line_to(&p, g_dd_w - 12, (float)(row_top + DD_ROW_H / 2));
+            xgfx_stroke_path(&s, &p, &paint, 1);
+            continue;
+        }
+        int text_y = row_top + 5;
+        if (g_dd_hover == i)
+            draw_dropdown_row_highlight(&s, 4, row_top, g_dd_w - 8, DD_ROW_H);
+        xgfx_draw_text_scaled(&s, 12, text_y, menu->rows[i].label,
+                              xgfx_argb(g_dd_hover == i ? 255 : 240, 255, 255, 255), TEXT_SCALE);
     }
     send_dirty_si(g_dd_si, 0, 0, g_dd_w, g_dd_h);
 }
@@ -229,7 +318,16 @@ static void open_dropdown(int item) {
     if (item < 0 || item >= N_ITEMS) return;
     g_dd_x = g_items[item].x;
     g_dd_y = BAR_H;
-    g_dd_w = 140; g_dd_h = 28;
+    /* Dynamic width based on longest label */
+    int max_w = 0;
+    dd_menu_t *menu = &g_menus[item];
+    for (int i = 0; i < menu->count; i++) {
+        int w = text_width(menu->rows[i].label);
+        if (w > max_w) max_w = w;
+    }
+    g_dd_w = max_w + 28;  /* label + padding */
+    if (g_dd_w < 140) g_dd_w = 140;
+    g_dd_h = 10 + menu->count * DD_ROW_H;
     g_dd_port = sys_port_create();
     if (!g_dd_port) return;
     if (create_surface_port(g_dd_x, g_dd_y, g_dd_w, g_dd_h, g_dd_port,
@@ -237,6 +335,7 @@ static void open_dropdown(int item) {
         g_dd_open = -1; return;
     }
     g_dd_open = item;
+    g_dd_hover = -1;
     draw_dropdown();
 }
 
@@ -306,12 +405,42 @@ void menubar_main(void) {
         if (g_dd_open >= 0 && g_dd_port && sys_port_recv(g_dd_port, &msg, 0)) {
             if (msg.payload_len >= sizeof(mouse_msg_t)) {
                 mouse_msg_t *m = (mouse_msg_t*)msg.payload;
-                if (m->type == COMPOSER_MOUSE_EVENT && m->action == 1) {
-                    close_dropdown();
-                    g_needs_redraw = 1;
+                if (m->type == COMPOSER_MOUSE_EVENT) {
+                    if (m->action == 0) { /* move */
+                        int row = (m->y - 4) / DD_ROW_H;
+                        dd_menu_t *menu = &g_menus[g_dd_open];
+                        if (row < 0 || row >= menu->count) row = -1;
+                        if (row >= 0 && menu->rows[row].action == -1) row = -1; /* skip separator */
+                        if (row != g_dd_hover) {
+                            g_dd_hover = row;
+                            draw_dropdown();
+                        }
+                    } else if (m->action == 1) { /* click */
+                        int row = (m->y - 4) / DD_ROW_H;
+                        dd_menu_t *menu = &g_menus[g_dd_open];
+                        if (row >= 0 && row < menu->count && menu->rows[row].action != -1) {
+                            int act = menu->rows[row].action;
+                            if (act == 1 && g_focus_pid > 0)
+                                send_composer_cmd(COMPOSER_HIDE_BY_PID, g_focus_pid);
+                            else if (act == 2 && g_focus_pid > 0)
+                                send_composer_cmd(COMPOSER_SHOW_BY_PID, g_focus_pid);
+                            else if (act == 3 && g_focus_pid > 0) {
+                                send_composer_cmd(COMPOSER_DESTROY_BY_PID, g_focus_pid);
+                                syscall1(SYS_PROC_KILL, g_focus_pid);
+                            }
+                            close_dropdown();
+                            g_needs_redraw = 1;
+                        } else if (row < 0 || row >= menu->count) {
+                            /* Click outside rows — close dropdown */
+                            close_dropdown();
+                            g_needs_redraw = 1;
+                        }
+                    }
                 }
             }
         }
+
+        update_clock();
 
         if (g_needs_redraw) {
             g_needs_redraw = 0;

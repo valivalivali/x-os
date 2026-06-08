@@ -43,8 +43,9 @@
 #define SYS_GPU_CURSOR_SET   32
 #define SYS_GPU_CURSOR_MOVE  33
 #define SYS_PROC_KILL        34
+#define SYS_TIME             35
 
-#define SYSCALL_MAX          34
+#define SYSCALL_MAX          35
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -110,6 +111,9 @@ int sys_proc_exists(uint64_t pid);
 
 /* Input wrappers */
 int sys_input_poll(input_event_t *out);
+
+/* Time wrapper */
+int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec);
 
 /* GPU wrappers */
 int sys_gpu_fb_info(gpu_fb_info_t *info);
