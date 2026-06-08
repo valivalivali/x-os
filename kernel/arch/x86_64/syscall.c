@@ -382,6 +382,7 @@ static uint64_t sys_time_impl(uint64_t utime, uint64_t a2, uint64_t a3,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     if (!utime) return (uint64_t)-1;
+    if (utime >= 0xffff800000000000ULL) return (uint64_t)-1;
     rtc_time_t t;
     rtc_read(&t);
     uint8_t *p = (uint8_t *)utime;
