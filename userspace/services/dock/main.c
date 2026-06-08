@@ -37,7 +37,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create(); if (!g_port) return -1;
     cs_msg_t cm = {CS_TYPE, x, y, w, h, 0x00000000, 1,
                    (uint32_t)syscall0(SYS_PROC_PID), g_port};
-    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm)};
+    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
     for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(PNC); if (!cp) syscall0(SYS_YIELD); }
@@ -56,7 +56,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
 
 static void send_dirty(int x, int y, int w, int h) {
     sd_msg_t d = {SD_TYPE, g_si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -75,7 +75,7 @@ static uint64_t spawn_xplorer(void) {
 
 static void send_hide_by_pid(uint64_t pid) {
     uint32_t d[2] = {COMPOSER_HIDE_BY_PID, (uint32_t)pid};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -83,7 +83,7 @@ static void send_hide_by_pid(uint64_t pid) {
 
 static void send_show_by_pid(uint64_t pid) {
     uint32_t d[2] = {COMPOSER_SHOW_BY_PID, (uint32_t)pid};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -91,7 +91,7 @@ static void send_show_by_pid(uint64_t pid) {
 
 static void send_destroy_by_pid(uint64_t pid) {
     uint32_t d[2] = {COMPOSER_DESTROY_BY_PID, (uint32_t)pid};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -119,10 +119,6 @@ static const uint32_t icon_colors[ICON_COUNT] = {
     0xFF4CD964, /* Terminal — green */
     0xFFFFA726, /* Settings — orange */
     0xFFAB47BC, /* Misc — purple */
-};
-
-static const char *icon_labels[ICON_COUNT] = {
-    "Xplorer", "Terminal", "Settings", "Music"
 };
 
 static int in_icon(int mx, int my, int ix, int iy, int iw, int ih) {

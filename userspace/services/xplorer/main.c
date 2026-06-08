@@ -41,7 +41,6 @@ typedef struct { uint32_t type; uint32_t si; uint32_t x,y,w,h; } sd_msg_t;
 typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; uint32_t surface_idx; } mouse_msg_t;
 
 #define COMPOSER_HIDE_SURFACE 10
-#define COMPOSER_SHOW_SURFACE 11
 
 static uint32_t g_si = 0;
 static uint32_t *g_px = NULL;
@@ -49,15 +48,7 @@ static uint64_t g_port = 0;
 
 static void send_hide(void) {
     sd_msg_t d = {COMPOSER_HIDE_SURFACE, g_si, 0, 0, 0, 0};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
-    for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
-    if (cp) sys_port_send(cp, &msg);
-}
-
-static void send_show(void) {
-    sd_msg_t d = {COMPOSER_SHOW_SURFACE, g_si, 0, 0, 0, 0};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -67,7 +58,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create(); if (!g_port) return -1;
     cs_msg_t cm = {CS_TYPE, x, y, w, h, 0x00000000, 0,
                    (uint32_t)syscall0(SYS_PROC_PID), g_port};
-    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm)};
+    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
     for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(PNC); if (!cp) syscall0(SYS_YIELD); }
@@ -86,7 +77,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
 
 static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     sd_msg_t d = {SD_TYPE, g_si, x, y, w, h};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -130,7 +121,6 @@ static int g_hover_file = -1; /* which file icon is hovered */
 
 static uint64_t g_last_click_tick = 0;
 static int g_last_click_x = 0, g_last_click_y = 0;
-static int g_drag_resize = 0;
 
 static int hit_test_content(int mx, int my, int *out_idx) {
     int r = 24;
@@ -197,7 +187,7 @@ static void handle_click(int mx, int my) {
     if (in_button(mx, my, r + 12, btn_y, btn_w, btn_h)) {
         /* Send destroy surface and exit */
         sd_msg_t d = {2 /* DESTROY_SURFACE */, g_si, 0, 0, 0, 0};
-        ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+        ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
         for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
         uint64_t cp = sys_ns_lookup(PNC);
         if (cp) sys_port_send(cp, &msg);

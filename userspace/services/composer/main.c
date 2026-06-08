@@ -360,21 +360,6 @@ static void spawn_surface(int32_t x, int32_t y) {
     spawn_surface_custom(x, y, 500, 300, palette[surface_count % 6], 0, 0, 0);
 }
 
-/* Bring surface[idx] to front (top of z-order). */
-static void surface_raise(int idx) {
-    if (idx < 0 || idx >= surface_count - 1) return;
-    surface_info_t tmp = surfaces[idx];
-    int32_t tx = old_sx[idx], ty = old_sy[idx];
-    for (int i = idx; i < surface_count - 1; i++) {
-        surfaces[i] = surfaces[i + 1];
-        old_sx[i]   = old_sx[i + 1];
-        old_sy[i]   = old_sy[i + 1];
-    }
-    surfaces[surface_count - 1] = tmp;
-    old_sx[surface_count - 1]   = tx;
-    old_sy[surface_count - 1]   = ty;
-    z_changed = 1;
-}
 
 
 /* Pre-composite cursor against backing buffer, then write to fb.

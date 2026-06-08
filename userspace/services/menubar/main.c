@@ -31,7 +31,7 @@ static int create_surface_port(int32_t x, int32_t y, uint32_t w, uint32_t h, uin
                                 uint32_t *out_si, uint32_t **out_px) {
     cs_msg_t cm = {CS_TYPE, x, y, w, h, 0x00000000, 1,
                    (uint32_t)syscall0(SYS_PROC_PID), port};
-    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm)};
+    ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
     for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(PNC); if (!cp) syscall0(SYS_YIELD); }
@@ -50,7 +50,7 @@ static int create_surface_port(int32_t x, int32_t y, uint32_t w, uint32_t h, uin
 
 static void send_dirty_si(uint32_t si, int x, int y, int w, int h) {
     sd_msg_t d = {SD_TYPE, si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -58,7 +58,7 @@ static void send_dirty_si(uint32_t si, int x, int y, int w, int h) {
 
 static void destroy_surface(uint32_t si) {
     uint32_t payload[2] = {2, si};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload), {0}};
     for (size_t i = 0; i < sizeof(payload); i++) msg.payload[i] = ((uint8_t*)&payload)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -257,7 +257,7 @@ static void draw_menubar(uint32_t *px, int ww, int wh) {
 
 static void send_composer_cmd(uint32_t cmd_type, uint32_t pid) {
     uint32_t payload[2] = {cmd_type, pid};
-    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload)};
+    ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload), {0}};
     for (size_t i = 0; i < sizeof(payload); i++) msg.payload[i] = ((uint8_t*)&payload)[i];
     uint64_t cp = sys_ns_lookup(PNC);
     if (cp) sys_port_send(cp, &msg);
@@ -394,7 +394,7 @@ void menubar_main(void) {
                     }
                 } else if (t == COMPOSER_FOCUS_CHANGED && msg.payload_len >= 8) {
                     uint32_t new_pid = ((uint32_t*)msg.payload)[1];
-                    if (new_pid != g_focus_pid) {
+                    if ((int)new_pid != g_focus_pid) {
                         g_focus_pid = new_pid;
                         g_needs_redraw = 1;
                     }
