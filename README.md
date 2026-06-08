@@ -2,7 +2,7 @@
 
 A clean-slate x86_64 microkernel operating system built from scratch. No POSIX baggage, no legacy Unix assumptions. The kernel stays minimal: scheduling, memory management, IPC ports, and hardware abstraction. Everything else (display server, filesystem, shell) lives in ring-3 userspace and communicates over message passing.
 
-![X OS Desktop](docs/desktop.png)
+![X OS Desktop](docs/screenshots/menubar-v1.png)
 
 ## What It Is
 
@@ -33,6 +33,9 @@ Eventually, X OS will host a real-time programming environment. You edit code an
 | Kernel | 0 | Scheduling, memory alloc/map, IPC ports, timer, interrupts, NVMe/virtio drivers |
 | Init (PID 1) | 3 | First userspace process; spawns services and registers well-known nameserver ports |
 | Composer | 3 | Display server — surfaces, dirty rectangles, cursor, desktop background |
+| Menu Bar | 3 | Top panel — X logo, app name, menus, dropdowns, focus tracking |
+| Dock | 3 | Bottom panel — app icons, hover effects, spawn/hide/show/close |
+| Xplorer | 3 | File manager app — draggable window, hide/show support |
 | Future: Terminal, Shell, FS service | 3 | Will run as normal ring-3 processes using IPC |
 
 ## Requirements (macOS)
@@ -130,8 +133,13 @@ x/
 ├── userspace/      # Ring-3 code
 │   ├── init/          # PID 1
 │   ├── runtime/       # Syscall wrappers (shared C library)
+│   ├── lib/
+│   │   └── xgfx/      # Graphics library (paths, fills, text, scaled text)
 │   └── services/
-│       └── composer/  # Display server
+│       ├── composer/  # Display server
+│       ├── dock/      # Bottom dock panel
+│       ├── menubar/   # Top menu bar panel
+│       └── xplorer/   # File manager app
 ├── Makefile
 └── disk.img        # Raw 4 MiB block device image (auto-created)
 ```
