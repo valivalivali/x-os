@@ -123,11 +123,26 @@ static uint64_t sys_fb_info(uint64_t uinfo, uint64_t a2, uint64_t a3,
     if (!uinfo) return (uint64_t)-1;
     fb_info_t *info = (fb_info_t *)uinfo;
     const handoff_t *h = handoff_get();
-    info->phys_base = (uint64_t)h->fb.addr - h->hhdm_offset;
-    info->width     = (uint32_t)h->fb.width;
-    info->height    = (uint32_t)h->fb.height;
-    info->pitch     = (uint32_t)h->fb.pitch;
-    info->bpp       = h->fb.bpp;
+    if (h->fb.width && h->fb.height) {
+        info->phys_base = (uint64_t)h->fb.addr - h->hhdm_offset;
+        info->width     = (uint32_t)h->fb.width;
+        info->height    = (uint32_t)h->fb.height;
+        info->pitch     = (uint32_t)h->fb.pitch;
+        info->bpp       = h->fb.bpp;
+    } else if (virtio_gpu_present()) {
+        gpu_fb_info_t g;
+        if (virtio_gpu_get_fb_info(&g)) {
+            info->phys_base = g.backing_phys;
+            info->width     = g.width;
+            info->height    = g.height;
+            info->pitch     = g.stride;
+            info->bpp       = 32;
+        } else {
+            return (uint64_t)-1;
+        }
+    } else {
+        return (uint64_t)-1;
+    }
     return 0;
 }
 

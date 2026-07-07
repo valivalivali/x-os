@@ -240,6 +240,19 @@ bool virtio_gpu_get_fb_info(gpu_fb_info_t *info) {
 
 bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
     if (!g_initialized || !g_cursor_phys) return false;
+
+    /* Transfer cursor resource to host so QEMU has the pixel data. */
+    struct virtio_gpu_transfer_to_host_2d xfer;
+    memset(&xfer, 0, sizeof(xfer));
+    xfer.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+    xfer.r.x = 0; xfer.r.y = 0;
+    xfer.r.width = g_cursor_w; xfer.r.height = g_cursor_h;
+    xfer.offset = 0;
+    xfer.resource_id = g_cursor_resource_id;
+    struct virtio_gpu_ctrl_hdr xfer_resp;
+    memset(&xfer_resp, 0, sizeof(xfer_resp));
+    gpu_send_recv(&xfer, sizeof(xfer), &xfer_resp, sizeof(xfer_resp));
+
     struct virtio_gpu_update_cursor cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.hdr.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
@@ -260,7 +273,7 @@ bool virtio_gpu_cursor_move(int32_t x, int32_t y) {
     cmd.pos.scanout_id = 0;
     cmd.pos.x = (uint32_t)x;
     cmd.pos.y = (uint32_t)y;
-    cmd.resource_id = 0; /* don't update image, just move */
+    cmd.resource_id = g_cursor_resource_id; /* keep cursor visible */
     return gpu_cursor_send(&cmd, sizeof(cmd));
 }
 

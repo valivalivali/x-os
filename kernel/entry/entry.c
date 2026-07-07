@@ -43,7 +43,6 @@ void kmain(void) {
     serial_init();
     kputs("\n=== X OS ===\n");
     boot_puts("kmain reached\n");
-
     const handoff_t *h = handoff_get();
     boot_log("framebuffer %lux%lu pitch=%lu bpp=%u addr=%p\n",
             h->fb.width, h->fb.height, h->fb.pitch, h->fb.bpp, (void *)h->fb.addr);
@@ -67,7 +66,20 @@ void kmain(void) {
     boot_log("rtc %u:%u:%u\n", now.hour, now.min, now.sec);
 
     ps2_init();
-    input_init(h->fb.width, h->fb.height);
+
+    virtio_gpu_init();
+
+    /* Use virtio-gpu dimensions if Limine framebuffer is absent. */
+    uint32_t screen_w = h->fb.width;
+    uint32_t screen_h = h->fb.height;
+    if (screen_w == 0 || screen_h == 0) {
+        gpu_fb_info_t ginfo;
+        if (virtio_gpu_get_fb_info(&ginfo)) {
+            screen_w = ginfo.width;
+            screen_h = ginfo.height;
+        }
+    }
+    input_init(screen_w, screen_h);
     keyboard_init();
     mouse_init();
     boot_puts("ps2 keyboard + mouse online\n");
@@ -83,8 +95,6 @@ void kmain(void) {
     } else {
         boot_puts("no block device available\n");
     }
-
-    virtio_gpu_init();
 
     /* Spawn init (PID 1) as the first ring-3 userspace process.
      * The init.elf is embedded into the kernel as a byte array. */

@@ -57,7 +57,13 @@ const handoff_t *handoff_get(void) {
         g_handoff.fb.green_shift = fb->green_mask_shift;
         g_handoff.fb.blue_shift  = fb->blue_mask_shift;
     } else {
-        hang(); /* no framebuffer -> nothing to do */
+        /* No Limine framebuffer (e.g. -vga none with virtio-gpu).
+         * The kernel can still boot using the virtio-gpu driver. */
+        g_handoff.fb.addr        = NULL;
+        g_handoff.fb.width       = 0;
+        g_handoff.fb.height      = 0;
+        g_handoff.fb.pitch       = 0;
+        g_handoff.fb.bpp         = 0;
     }
 
     if (mm_req.response) {

@@ -88,7 +88,7 @@ MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 # Add generated blob objects explicitly to kernel link
 OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O)
 
-QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
+QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
 
 .PHONY: all run run-uefi clean distclean setup limine
 

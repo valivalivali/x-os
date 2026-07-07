@@ -84,6 +84,6 @@ static inline void xgfx_put(xgfx_surface_t *s, int x, int y, uint32_t c) {
         s->pixels[y * s->stride + x] = c;
 }
 
-/* Simple 5x7 bitmap font for labels (each char 6px wide inc spacing) */
+/* 8x8 monospace bitmap font (each char 8px wide inc spacing) */
 void xgfx_draw_text(xgfx_surface_t *s, int x, int y, const char *str, uint32_t color);
 void xgfx_draw_text_scaled(xgfx_surface_t *s, int x, int y, const char *str, uint32_t color, int scale);
