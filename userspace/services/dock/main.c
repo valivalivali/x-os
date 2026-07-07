@@ -62,11 +62,11 @@ static void send_dirty(int x, int y, int w, int h) {
     if (cp) sys_port_send(cp, &msg);
 }
 
-static uint8_t blob_buf[65536];
+static uint8_t blob_buf[262144];
 
 static uint64_t spawn_xplorer(void) {
     size_t len = syscall2(SYS_SVC_BLOB, 1, 0);
-    if (len == 0 || len > 65536) return 0;
+    if (len == 0 || len > 262144) return 0;
     size_t n = syscall3(SYS_SVC_BLOB, 1, (uintptr_t)blob_buf, len);
     if (n == 0) return 0;
     uint64_t pid = syscall2(SYS_PROC_SPAWN, (uintptr_t)blob_buf, n);

@@ -10,11 +10,11 @@ static void log(const char *s) {
     syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
 }
 
-static uint8_t blob_buf[65536];
+static uint8_t blob_buf[262144];
 
 static void spawn_blob(int index, const char *name) {
     size_t len = syscall2(SYS_SVC_BLOB, index, 0);
-    if (len > 0 && len <= 65536) {
+    if (len > 0 && len <= 262144) {
         size_t n = syscall3(SYS_SVC_BLOB, index, (uintptr_t)blob_buf, len);
         log("[init] spawn ");
         log(name);

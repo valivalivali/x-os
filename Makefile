@@ -145,16 +145,18 @@ $(COMPOSER_BLOB_C): $(COMPOSER_ELF)
 	@echo ">> generated $@"
 
 # Build xplorer service ELF
-$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
+$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/start.S -o $(BUILD_DIR)/userspace/services/xplorer/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/main.c -o $(BUILD_DIR)/userspace/services/xplorer/main.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/xplorer/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/xplorer/xgfx_font.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/xplorer/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/xplorer/xplorer.ld \
 	  $(BUILD_DIR)/userspace/services/xplorer/start.o \
 	  $(BUILD_DIR)/userspace/services/xplorer/main.o \
 	  $(BUILD_DIR)/userspace/services/xplorer/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/xplorer/xgfx_font.o \
 	  $(BUILD_DIR)/userspace/services/xplorer/syscall.o \
 	  -o $@
 	@echo ">> linked $@"
@@ -165,16 +167,18 @@ $(XPLORER_BLOB_C): $(XPLORER_ELF)
 	@echo ">> generated $@"
 
 # Build dock service ELF
-$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/dock/dock.ld
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/dock/dock.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/dock/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/dock/xgfx_font.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/dock/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/dock/dock.ld \
 	  $(BUILD_DIR)/userspace/services/dock/start.o \
 	  $(BUILD_DIR)/userspace/services/dock/main.o \
 	  $(BUILD_DIR)/userspace/services/dock/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/dock/xgfx_font.o \
 	  $(BUILD_DIR)/userspace/services/dock/syscall.o \
 	  -o $@
 	@echo ">> linked $@"
@@ -185,16 +189,18 @@ $(DOCK_BLOB_C): $(DOCK_ELF)
 	@echo ">> generated $@"
 
 # Build menubar service ELF
-$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
+$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/menubar/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/menubar/xgfx_font.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menubar/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menubar/menubar.ld \
 	  $(BUILD_DIR)/userspace/services/menubar/start.o \
 	  $(BUILD_DIR)/userspace/services/menubar/main.o \
 	  $(BUILD_DIR)/userspace/services/menubar/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/menubar/xgfx_font.o \
 	  $(BUILD_DIR)/userspace/services/menubar/syscall.o \
 	  -o $@
 	@echo ">> linked $@"

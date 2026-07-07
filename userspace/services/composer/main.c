@@ -533,7 +533,7 @@ void display_main(void) {
             uint64_t packed = syscall0(SYS_MOUSE_POS);
             int32_t mx = (int32_t)(packed & 0xFFFFFFFFU);
             int32_t my = (int32_t)(packed >> 32);
-            sys_gpu_cursor_set(mx, my, CURSOR_HOT_X, CURSOR_HOT_Y);
+            sys_gpu_cursor_set(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y, CURSOR_HOT_X, CURSOR_HOT_Y);
         }
 
         log("[composer] gpu mode\n");
@@ -1005,7 +1005,7 @@ void display_main(void) {
              * Just move it; no erase/redraw needed.
              * Send raw mouse position (mx,my) — QEMU handles hotspot. */
             if (cursor_moved)
-                sys_gpu_cursor_move(mx, my);
+                sys_gpu_cursor_move(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y);
             if (has_dirty)
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),

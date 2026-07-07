@@ -51,11 +51,11 @@ typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; uint32_t s
 
 /* ---- Layout constants ------------------------------------------------- */
 
-#define BAR_H         28
+#define BAR_H         32
 #define TEXT_SCALE    1
 #define FONT_W        8
-#define FONT_H        8
-#define TEXT_Y        ((BAR_H - FONT_H) / 2)
+#define FONT_H        16
+#define TEXT_Y        ((BAR_H - FONT_H * TEXT_SCALE) / 2)
 
 #define LOGO_CX       18
 #define LOGO_CY       (BAR_H / 2)
@@ -180,7 +180,7 @@ static int text_width(const char *s) {
     if (!s) return 0;
     int n = 0;
     while (s[n]) n++;
-    return n * FONT_W;
+    return n * FONT_W * TEXT_SCALE;
 }
 
 static void send_composer_cmd(uint32_t cmd_type, uint32_t pid) {
@@ -439,7 +439,7 @@ static void draw_dropdown(void) {
         const char *label = menu->rows[i].label;
         if (label) {
             int bright = (g_dd_hover == i) ? 255 : 235;
-            xgfx_draw_text_scaled(&s, DD_PAD_X + 4, row_top + (DD_ROW_H - FONT_H) / 2,
+            xgfx_draw_text_scaled(&s, DD_PAD_X + 4, row_top + (DD_ROW_H - FONT_H * TEXT_SCALE) / 2,
                 label, xgfx_argb(bright, 255, 255, 255), TEXT_SCALE);
         }
     }
