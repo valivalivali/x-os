@@ -14,6 +14,7 @@
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/fs/xfs.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
+#include "kernel/ipc/pipe.h"
 #include "boot/handoff/handoff.h"
 #include <stdint.h>
 
@@ -49,15 +50,15 @@ static void wrmsr(uint32_t msr, uint64_t val) {
 
 /* -------------------------------------------------------------------------- */
 
-static uint64_t sys_yield(void) {
+static uint64_t sys_yield_impl(void) {
     sched_yield();
     return 0;
 }
 
-static uint64_t sys_exit(uint64_t code) {
-    (void)code;
+static uint64_t sys_exit_impl(uint64_t code) {
     proc_t *p = proc_current();
     if (p && p->pid != 0) {
+        p->exit_code = (int)code;
         proc_exit(p);
         sched_yield();  /* should never return */
     }
@@ -69,7 +70,7 @@ static uint64_t sys_nsleep(uint64_t ms) {
     return 0;
 }
 
-static uint64_t sys_getpid(void) {
+static uint64_t sys_proc_pid_impl(void) {
     proc_t *p = proc_current();
     return p ? p->pid : 0;
 }
@@ -78,7 +79,7 @@ static uint64_t sys_proc_spawn(uint64_t uelf, uint64_t len,
                                uint64_t a3, uint64_t a4,
                                uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
-    if (!uelf || len == 0 || len > 1024 * 1024) {
+    if (!uelf || len == 0 || len > 4 * 1024 * 1024) {
         return 0; /* invalid args */
     }
     /* Copy ELF from userspace to kernel heap.
@@ -169,12 +170,15 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t dock_elf_len;
     extern const uint8_t *menubar_elf_data;
     extern size_t menubar_elf_len;
+    extern const uint8_t *zsh_elf_data;
+    extern size_t zsh_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
     else if (index == 1) { data = xplorer_elf_data; len = xplorer_elf_len; }
     else if (index == 2) { data = dock_elf_data; len = dock_elf_len; }
     else if (index == 3) { data = menubar_elf_data; len = menubar_elf_len; }
+    else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;
@@ -484,6 +488,7 @@ static uint64_t sys_read_impl(uint64_t fd, uint64_t buf, uint64_t count,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     if (!buf) return (uint64_t)-1;
+    if (fd >= 64) return (uint64_t)pipe_read((int)fd, (void *)buf, (size_t)count);
     return (uint64_t)xfs_read((int)fd, (void *)buf, (size_t)count);
 }
 
@@ -491,12 +496,14 @@ static uint64_t sys_write_impl(uint64_t fd, uint64_t buf, uint64_t count,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     if (!buf) return (uint64_t)-1;
+    if (fd >= 64) return (uint64_t)pipe_write((int)fd, (const void *)buf, (size_t)count);
     return (uint64_t)xfs_write((int)fd, (const void *)buf, (size_t)count);
 }
 
 static uint64_t sys_close_impl(uint64_t fd, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (fd >= 64) { pipe_close((int)fd); return 0; }
     xfs_close((int)fd);
     return 0;
 }
@@ -527,9 +534,182 @@ static uint64_t sys_time_impl(uint64_t utime, uint64_t a2, uint64_t a3,
     return 0;
 }
 
+/* -------------------------------------------------------------------------- */
+/* POSIX process management syscalls */
+
+static uint64_t sys_fork_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return proc_fork();
+}
+
+static uint64_t sys_exec_impl(uint64_t path, uint64_t argv, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!path) return (uint64_t)-1;
+    return (uint64_t)proc_exec((const char *)path, (char *const *)argv);
+}
+
+static uint64_t sys_waitpid_impl(uint64_t pid, uint64_t status, uint64_t a3,
+                                 uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    int *st = status ? (int *)status : NULL;
+    return (uint64_t)proc_waitpid((int)pid, st);
+}
+
+static uint64_t sys_getpid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    return p ? p->pid : 0;
+}
+
+static uint64_t sys_pipe_impl(uint64_t upipefd, uint64_t a2, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!upipefd) return (uint64_t)-1;
+    int pipefd[2];
+    int ret = pipe_create(pipefd);
+    if (ret < 0) return (uint64_t)-1;
+    /* Copy pipefd to userspace */
+    int *dst = (int *)upipefd;
+    dst[0] = pipefd[0];
+    dst[1] = pipefd[1];
+    return 0;
+}
+
+static uint64_t sys_dup_impl(uint64_t oldfd, uint64_t a2, uint64_t a3,
+                             uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    /* For file fds, dup just returns the same fd (no fd table per process yet) */
+    if (oldfd < 0 || oldfd >= XFS_MAX_FDS) return (uint64_t)-1;
+    return oldfd;
+}
+
+static uint64_t sys_dup2_impl(uint64_t oldfd, uint64_t newfd, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (oldfd < 0 || newfd < 0) return (uint64_t)-1;
+    /* Simple: just return newfd (no real fd table management yet) */
+    return newfd;
+}
+
+/* POSIX file extension syscalls */
+
+static uint64_t sys_lseek_impl(uint64_t fd, uint64_t offset, uint64_t whence,
+                               uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a4; (void)a5; (void)a6;
+    return (uint64_t)xfs_lseek((int)fd, (int)offset, (int)whence);
+}
+
+static uint64_t sys_stat_impl(uint64_t path, uint64_t statbuf, uint64_t a3,
+                              uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!path || !statbuf) return (uint64_t)-1;
+    return (uint64_t)xfs_stat((const char *)path, (xfs_dirent_t *)statbuf);
+}
+
+static uint64_t sys_fstat_impl(uint64_t fd, uint64_t statbuf, uint64_t a3,
+                               uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!statbuf) return (uint64_t)-1;
+    return (uint64_t)xfs_fstat((int)fd, (xfs_dirent_t *)statbuf);
+}
+
+static uint64_t sys_unlink_impl(uint64_t path, uint64_t a2, uint64_t a3,
+                                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!path) return (uint64_t)-1;
+    return (uint64_t)xfs_unlink((const char *)path);
+}
+
+/* Per-process current working directory */
+static char g_cwd[XFS_NAME_MAX] = "/";
+
+static uint64_t sys_getcwd_impl(uint64_t buf, uint64_t size, uint64_t a3,
+                                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!buf || size == 0) return (uint64_t)-1;
+    size_t len = strlen(g_cwd);
+    if (len + 1 > size) return (uint64_t)-1;
+    memcpy((void *)buf, g_cwd, len + 1);
+    return buf;
+}
+
+static uint64_t sys_chdir_impl(uint64_t path, uint64_t a2, uint64_t a3,
+                               uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!path) return (uint64_t)-1;
+    /* Verify path exists and is a directory */
+    xfs_dirent_t st;
+    if (xfs_stat((const char *)path, &st) != 0) return (uint64_t)-1;
+    if (!(st.flags & 1)) return (uint64_t)-1; /* not a directory */
+    size_t len = strlen((const char *)path);
+    if (len >= XFS_NAME_MAX) return (uint64_t)-1;
+    memcpy(g_cwd, (const void *)path, len + 1);
+    return 0;
+}
+
+/* Per-process brk (program break) for sbrk/malloc support.
+ * The heap starts at USER_HEAP_BASE and grows upward.
+ * We track the current break per-process using a simple static array. */
+#define USER_HEAP_BASE  0x0000020000000000ULL
+#define USER_HEAP_MAX   0x0000030000000000ULL
+
+static uint64_t g_proc_brk[32];  /* per-pid brk, indexed by pid */
+
+static uint64_t sys_brk_impl(uint64_t addr, uint64_t a2, uint64_t a3,
+                             uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (!p || !p->ring3) return (uint64_t)-1;
+
+    uint32_t pid_idx = (uint32_t)(p->pid);
+    if (pid_idx >= 32) return (uint64_t)-1;
+
+    /* Initialize brk on first call */
+    if (g_proc_brk[pid_idx] == 0) {
+        g_proc_brk[pid_idx] = USER_HEAP_BASE;
+    }
+
+    if (addr == 0) {
+        /* Query current brk */
+        return g_proc_brk[pid_idx];
+    }
+
+    if (addr < USER_HEAP_BASE || addr >= USER_HEAP_MAX) {
+        return (uint64_t)-1;  /* invalid address */
+    }
+
+    /* Grow or shrink: map/unmap pages as needed */
+    uint64_t old_brk = g_proc_brk[pid_idx];
+    uint64_t old_page = (old_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t new_page = (addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    if (new_page > old_page) {
+        /* Grow — map new pages */
+        for (uint64_t va = old_page; va < new_page; va += PAGE_SIZE) {
+            uint64_t page = pmm_alloc_frame();
+            if (!page) {
+                /* Out of memory — return current brk unchanged */
+                return old_brk;
+            }
+            vmm_map_page(p->pml4_virt, va, page, VMM_U | VMM_RW);
+        }
+    } else if (new_page < old_page) {
+        /* Shrink — unmap pages (don't free physical for simplicity) */
+        for (uint64_t va = new_page; va < old_page; va += PAGE_SIZE) {
+            vmm_unmap_page(p->pml4_virt, va);
+        }
+    }
+
+    g_proc_brk[pid_idx] = addr;
+    return addr;
+}
+
 static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) = {
-    [SYS_EXIT]        = (void *)sys_exit,
-    [SYS_YIELD]       = (void *)sys_yield,
+    [SYS_EXIT]        = (void *)sys_exit_impl,
+    [SYS_YIELD]       = (void *)sys_yield_impl,
     [SYS_PORT_CREATE] = (void *)sys_port_create_impl,
     [SYS_PORT_SEND]   = (void *)sys_port_send_impl,
     [SYS_PORT_RECV]   = (void *)sys_port_recv_impl,
@@ -537,7 +717,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_MEM_ALLOC]   = (void *)sys_mem_alloc_impl,
     [SYS_MEM_MAP]     = (void *)sys_mem_map,
     [SYS_PROC_SPAWN]  = (void *)sys_proc_spawn,
-    [SYS_PROC_PID]    = (void *)sys_getpid,
+    [SYS_PROC_PID]    = (void *)sys_proc_pid_impl,
     [SYS_NSLEEP]      = (void *)sys_nsleep,
     [SYS_DEBUG_LOG]   = (void *)sys_debug_log,
     [SYS_GET_TICKS]   = (void *)sys_get_ticks,
@@ -576,6 +756,20 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_GPU_ALLOC_RES_ID] = (void *)sys_gpu_alloc_res_id_impl,
     [SYS_GPU_RES_ATTACH_VIRT] = (void *)sys_gpu_res_attach_virt_impl,
     [SYS_GPU_RES_CREATE_3D]  = (void *)sys_gpu_res_create_3d_impl,
+    [SYS_FORK]        = (void *)sys_fork_impl,
+    [SYS_EXEC]        = (void *)sys_exec_impl,
+    [SYS_WAITPID]     = (void *)sys_waitpid_impl,
+    [SYS_GETPID]      = (void *)sys_getpid_impl,
+    [SYS_PIPE]        = (void *)sys_pipe_impl,
+    [SYS_DUP]         = (void *)sys_dup_impl,
+    [SYS_DUP2]        = (void *)sys_dup2_impl,
+    [SYS_LSEEK]       = (void *)sys_lseek_impl,
+    [SYS_STAT]        = (void *)sys_stat_impl,
+    [SYS_FSTAT]       = (void *)sys_fstat_impl,
+    [SYS_UNLINK]      = (void *)sys_unlink_impl,
+    [SYS_GETCWD]      = (void *)sys_getcwd_impl,
+    [SYS_CHDIR]       = (void *)sys_chdir_impl,
+    [SYS_BRK]         = (void *)sys_brk_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

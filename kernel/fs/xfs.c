@@ -521,3 +521,159 @@ int xfs_readdir(int fd, xfs_dirent_t *entries, int max_entries) {
     }
     return count;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Lseek */
+
+#define SEEK_SET  0
+#define SEEK_CUR  1
+#define SEEK_END  2
+
+int xfs_lseek(int fd, int offset, int whence) {
+    if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    xfs_fd_entry_t *f = &g_fds[fd];
+    if (!f->used || f->pid != proc_current()->pid) return -1;
+
+    xfs_inode_t inode;
+    read_inode(f->inode_block, &inode);
+
+    int new_off;
+    switch (whence) {
+        case SEEK_SET: new_off = offset; break;
+        case SEEK_CUR: new_off = (int)f->offset + offset; break;
+        case SEEK_END: new_off = (int)inode.size + offset; break;
+        default: return -1;
+    }
+    if (new_off < 0) return -1;
+    f->offset = (uint32_t)new_off;
+    return new_off;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Stat / Fstat */
+
+int xfs_stat(const char *path, xfs_dirent_t *out) {
+    if (!path || !out) return -1;
+    xfs_inode_t inode;
+    uint64_t ino = resolve_path(path, &inode);
+    if (!ino) return -1;
+    memset(out, 0, sizeof(*out));
+    strncpy(out->name, inode.name, XFS_NAME_MAX - 1);
+    out->inode_block = (uint32_t)ino;
+    out->size = inode.size;
+    out->flags = inode.flags;
+    return 0;
+}
+
+int xfs_fstat(int fd, xfs_dirent_t *out) {
+    if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    xfs_fd_entry_t *f = &g_fds[fd];
+    if (!f->used || f->pid != proc_current()->pid) return -1;
+    if (!out) return -1;
+    xfs_inode_t inode;
+    read_inode(f->inode_block, &inode);
+    memset(out, 0, sizeof(*out));
+    strncpy(out->name, inode.name, XFS_NAME_MAX - 1);
+    out->inode_block = f->inode_block;
+    out->size = inode.size;
+    out->flags = inode.flags;
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Unlink */
+
+int xfs_unlink(const char *path) {
+    if (!path || path[0] != '/') return -1;
+
+    /* Find the file */
+    xfs_inode_t inode;
+    uint64_t ino = resolve_path(path, &inode);
+    if (!ino) return -1;
+    if (inode.flags & 1) return -1; /* is directory, use rmdir */
+
+    /* Find parent directory and remove dirent */
+    const char *name = path + 1;
+    const char *last_slash = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+
+    uint64_t parent_ino;
+    xfs_inode_t parent_inode;
+    if (last_slash == path) {
+        parent_ino = g_root_block;
+    } else {
+        char parent_path[XFS_NAME_MAX];
+        size_t plen = (size_t)(last_slash - path);
+        if (plen >= XFS_NAME_MAX) plen = XFS_NAME_MAX - 1;
+        memcpy(parent_path, path, plen);
+        parent_path[plen] = '\0';
+        parent_ino = resolve_path(parent_path, &parent_inode);
+        if (!parent_ino) return -1;
+    }
+    name = last_slash + 1;
+
+    read_inode(parent_ino, &parent_inode);
+    uint8_t sector[XFS_BLOCK_SIZE];
+    for (uint32_t db = 0; db < parent_inode.block_count; db++) {
+        uint32_t b = parent_inode.data_blocks[db];
+        if (!b) continue;
+        block_read(g_dev, b, 1, sector);
+        int max_dents = XFS_BLOCK_SIZE / sizeof(xfs_dirent_t);
+        xfs_dirent_t *ents = (xfs_dirent_t *)sector;
+        for (int d = 0; d < max_dents; d++) {
+            if (ents[d].inode_block == (uint32_t)ino) {
+                memset(&ents[d], 0, sizeof(xfs_dirent_t));
+                block_write(g_dev, b, 1, sector);
+                /* Free file data blocks */
+                for (uint32_t i = 0; i < inode.block_count; i++) {
+                    if (inode.data_blocks[i]) free_block(inode.data_blocks[i]);
+                }
+                free_block(ino);
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Ftruncate */
+
+int xfs_ftruncate(int fd, int size) {
+    if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    xfs_fd_entry_t *f = &g_fds[fd];
+    if (!f->used || f->pid != proc_current()->pid) return -1;
+    if (size < 0) return -1;
+
+    xfs_inode_t inode;
+    read_inode(f->inode_block, &inode);
+
+    if ((uint32_t)size <= inode.size) {
+        /* Truncating down — free excess blocks */
+        uint32_t needed_blocks = ((uint32_t)size + XFS_BLOCK_SIZE - 1) / XFS_BLOCK_SIZE;
+        for (uint32_t i = needed_blocks; i < inode.block_count; i++) {
+            if (inode.data_blocks[i]) {
+                free_block(inode.data_blocks[i]);
+                inode.data_blocks[i] = 0;
+            }
+        }
+        inode.block_count = needed_blocks;
+    } else {
+        /* Extending — allocate new blocks */
+        uint32_t needed_blocks = ((uint32_t)size + XFS_BLOCK_SIZE - 1) / XFS_BLOCK_SIZE;
+        for (uint32_t i = inode.block_count; i < needed_blocks && i < 240; i++) {
+            uint64_t nb = alloc_block();
+            if (!nb) break;
+            inode.data_blocks[i] = (uint32_t)nb;
+            uint8_t zero[XFS_BLOCK_SIZE];
+            memset(zero, 0, XFS_BLOCK_SIZE);
+            block_write(g_dev, nb, 1, zero);
+            inode.block_count = i + 1;
+        }
+    }
+    inode.size = (uint32_t)size;
+    write_inode(f->inode_block, &inode);
+    return 0;
+}

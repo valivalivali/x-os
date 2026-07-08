@@ -59,7 +59,25 @@
 #define SYS_GPU_RES_ATTACH_VIRT 48
 #define SYS_GPU_RES_CREATE_3D  49
 
-#define SYSCALL_MAX          49
+/* POSIX process management */
+#define SYS_FORK        50
+#define SYS_EXEC        51
+#define SYS_WAITPID     52
+#define SYS_GETPID      53
+#define SYS_PIPE        54
+#define SYS_DUP         55
+#define SYS_DUP2        56
+
+/* POSIX file extensions */
+#define SYS_LSEEK       57
+#define SYS_STAT        58
+#define SYS_FSTAT       59
+#define SYS_UNLINK      60
+#define SYS_GETCWD      61
+#define SYS_CHDIR       62
+#define SYS_BRK         63
+
+#define SYSCALL_MAX          63
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -168,6 +186,28 @@ int sys_write(int fd, const void *buf, size_t count);
 void sys_close(int fd);
 int sys_mkdir(const char *path);
 int sys_readdir(int fd, void *entries, int max);
+
+/* Process control wrappers */
+void sys_exit(int code);
+void sys_yield(void);
+
+/* POSIX process wrappers */
+int sys_fork(void);
+int sys_exec(const char *path, char *const argv[]);
+int sys_waitpid(int pid, int *status, int options);
+int sys_getpid(void);
+int sys_pipe(int pipefd[2]);
+int sys_dup(int oldfd);
+int sys_dup2(int oldfd, int newfd);
+
+/* POSIX file extension wrappers */
+int sys_lseek(int fd, int offset, int whence);
+int sys_stat(const char *path, void *statbuf);
+int sys_fstat(int fd, void *statbuf);
+int sys_unlink(const char *path);
+int sys_getcwd(char *buf, size_t size);
+int sys_chdir(const char *path);
+int sys_brk(void *addr);
 
 /* Kernel entry point for syscalls.
  * Implemented in kernel/arch/x86_64/syscall.c */

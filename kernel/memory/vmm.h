@@ -50,6 +50,11 @@ uint64_t vmm_virt_to_phys(uint64_t *pml4_virt, uint64_t vaddr);
  * Kernel mappings are left untouched. */
 void vmm_destroy_user(uint64_t *pml4_virt);
 
+/* Clone all user-level mappings from src_pml4 into a new PML4.
+ * Allocates new physical pages and copies data.
+ * Returns physical address of new PML4, or 0 on failure. */
+uint64_t vmm_clone_user(uint64_t *src_pml4_virt);
+
 /* Current CPU CR3 (physical address of active PML4). */
 uint64_t vmm_get_cr3(void);
 

@@ -61,9 +61,11 @@ context_switch:
 
     ret
 
-/* void enter_userspace(uint64_t pml4_phys, uint64_t rip, uint64_t rsp);
+/* void enter_userspace(uint64_t pml4_phys, uint64_t rip, uint64_t rsp,
+ *                      uint64_t ret_val);
  * First-time drop into ring-3.  Sets CR3, sets up IRETQ frame, and
- * transitions to privilege level 3.
+ * transitions to privilege level 3. RAX is set to ret_val so fork()
+ * children can return 0.
  */
 .globl enter_userspace
 enter_userspace:
@@ -74,9 +76,10 @@ enter_userspace:
     pushq $0x23             /* SS = user data (index 4, RPL=3) */
     pushq %rdx              /* RSP = user stack pointer */
     pushfq
-    popq %rax
-    orq $0x200, %rax        /* enable interrupts */
-    pushq %rax              /* RFLAGS with IF=1 */
+    popq %r8
+    orq $0x200, %r8         /* enable interrupts */
+    pushq %r8               /* RFLAGS with IF=1 */
     pushq $0x1B             /* CS = user code (index 3, RPL=3) */
     pushq %rsi              /* RIP = entry point */
+    movq %rcx, %rax         /* set return value for user (0 for fork child) */
     iretq

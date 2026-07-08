@@ -127,7 +127,7 @@ void kmain(void) {
         g_kernel_rsp0 = (uint64_t)(init->kstack + SCHED_STACK_SIZE);
         sched_adopt_current(init);
         enter_userspace(
-            init->pml4_phys, init->rip, init->sleep_until
+            init->pml4_phys, init->rip, init->sleep_until, 0
         );
     init_resume:
         boot_puts("resumed from ring-3 init yield\n");

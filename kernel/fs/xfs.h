@@ -53,3 +53,8 @@ int  xfs_read(int fd, void *buf, size_t count);
 int  xfs_write(int fd, const void *buf, size_t count);
 int  xfs_mkdir(const char *path);
 int  xfs_readdir(int fd, xfs_dirent_t *entries, int max_entries);
+int  xfs_lseek(int fd, int offset, int whence);
+int  xfs_stat(const char *path, xfs_dirent_t *out);
+int  xfs_fstat(int fd, xfs_dirent_t *out);
+int  xfs_unlink(const char *path);
+int  xfs_ftruncate(int fd, int size);

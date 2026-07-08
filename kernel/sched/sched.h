@@ -30,6 +30,9 @@ typedef struct proc {
     uint64_t sleep_until;   /* timer tick to wake at */
     struct proc *next;      /* ready queue */
     bool ring3;             /* true if this is a ring-3 userspace process */
+    uint64_t parent_pid;    /* PID of parent (0 = init/kernel) */
+    int exit_code;          /* exit code when state == PROC_DEAD but not reaped */
+    bool reaped;            /* true after wait() has collected exit_code */
 } proc_t;
 
 void sched_init(void);

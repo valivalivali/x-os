@@ -68,6 +68,9 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].rsp = (uint64_t)(kstack + SCHED_STACK_SIZE - 8);
             procs[i].sleep_until = 0;
             procs[i].ring3 = false;
+            procs[i].parent_pid = 0;
+            procs[i].exit_code = 0;
+            procs[i].reaped = true;  /* mark as reaped so dead procs can be reused */
             procs[i].next = ready_head;
             ready_head = &procs[i];
             return &procs[i];
@@ -93,6 +96,7 @@ void proc_exit(proc_t *p) {
     }
 
     p->state = PROC_DEAD;
+    p->reaped = false;
     if (p == current && p->pid != 0) {
         /* Switch back to idle task */
         current = &procs[0];

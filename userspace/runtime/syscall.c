@@ -263,3 +263,73 @@ int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec) {
     if (ret == 0) { *hour = buf[0]; *min = buf[1]; *sec = buf[2]; }
     return ret;
 }
+
+/* POSIX process wrappers */
+
+void sys_exit(int code) {
+    syscall1(SYS_EXIT, (uintptr_t)code);
+    while (1) {}
+}
+
+void sys_yield(void) {
+    syscall0(SYS_YIELD);
+}
+
+int sys_fork(void) {
+    return (int)syscall0(SYS_FORK);
+}
+
+int sys_exec(const char *path, char *const argv[]) {
+    return (int)syscall2(SYS_EXEC, (uintptr_t)path, (uintptr_t)argv);
+}
+
+int sys_waitpid(int pid, int *status, int options) {
+    (void)options; /* options not yet supported */
+    return (int)syscall2(SYS_WAITPID, (uintptr_t)pid, (uintptr_t)status);
+}
+
+int sys_getpid(void) {
+    return (int)syscall0(SYS_GETPID);
+}
+
+int sys_pipe(int pipefd[2]) {
+    return (int)syscall1(SYS_PIPE, (uintptr_t)pipefd);
+}
+
+int sys_dup(int oldfd) {
+    return (int)syscall1(SYS_DUP, (uintptr_t)oldfd);
+}
+
+int sys_dup2(int oldfd, int newfd) {
+    return (int)syscall2(SYS_DUP2, (uintptr_t)oldfd, (uintptr_t)newfd);
+}
+
+/* POSIX file extension wrappers */
+
+int sys_lseek(int fd, int offset, int whence) {
+    return (int)syscall3(SYS_LSEEK, (uintptr_t)fd, (uintptr_t)offset, (uintptr_t)whence);
+}
+
+int sys_stat(const char *path, void *statbuf) {
+    return (int)syscall2(SYS_STAT, (uintptr_t)path, (uintptr_t)statbuf);
+}
+
+int sys_fstat(int fd, void *statbuf) {
+    return (int)syscall2(SYS_FSTAT, (uintptr_t)fd, (uintptr_t)statbuf);
+}
+
+int sys_unlink(const char *path) {
+    return (int)syscall1(SYS_UNLINK, (uintptr_t)path);
+}
+
+int sys_getcwd(char *buf, size_t size) {
+    return (int)syscall2(SYS_GETCWD, (uintptr_t)buf, (uintptr_t)size);
+}
+
+int sys_chdir(const char *path) {
+    return (int)syscall1(SYS_CHDIR, (uintptr_t)path);
+}
+
+int sys_brk(void *addr) {
+    return (int)syscall1(SYS_BRK, (uintptr_t)addr);
+}

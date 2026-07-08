@@ -86,8 +86,32 @@ MENUBAR_ELF    := $(BUILD_DIR)/userspace/services/menubar/menubar.elf
 MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
 MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 
+ZSH_ELF        := $(BUILD_DIR)/userspace/shell/zsh.elf
+ZSH_BLOB_C     := kernel/proc/zsh_elf_blob.c
+ZSH_BLOB_O     := $(OBJ_DIR)/kernel/proc/zsh_elf_blob.o
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O)
+
+# ---- newlib paths --------------------------------------------------------
+NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
+NEWLIB_CFLAGS  := -I$(NEWLIB_PREFIX)/include
+NEWLIB_LIBS    := $(NEWLIB_PREFIX)/lib/libc.a $(NEWLIB_PREFIX)/lib/libm.a
+
+# CFLAGS for newlib-linked userspace programs
+LIBC_CFLAGS := \
+  --target=x86_64-unknown-none-elf \
+  -ffreestanding -fno-stack-protector -fno-stack-check \
+  -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone \
+  -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+  -I. -I$(LIMINE_DIR) $(NEWLIB_CFLAGS)
+
+LIBC_LDFLAGS := \
+  -nostdlib -static -no-pie -z max-page-size=0x1000 \
+  -m elf_x86_64 -T userspace/libc/xos-libc.ld
+
+# newlib test program
+TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
@@ -237,6 +261,60 @@ $(DOCK_BLOB_O): $(DOCK_BLOB_C)
 $(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(ZSH_BLOB_C): $(ZSH_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t zsh_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *zsh_elf_data = zsh_elf_bytes;', 'size_t zsh_elf_len = sizeof(zsh_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(ZSH_BLOB_O): $(ZSH_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- newlib-linked userspace programs ------------------------------------
+# These link against newlib libc.a + our syscall stubs instead of raw syscalls
+$(TEST_LIBC_ELF): userspace/libc/test_libc.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/test_libc.c -o $(BUILD_DIR)/userspace/libc/test_libc.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/libc/syscalls.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/libc/xos_syscall.o
+	$(LD) $(LIBC_LDFLAGS) \
+	  $(BUILD_DIR)/userspace/libc/test_libc.o \
+	  $(BUILD_DIR)/userspace/libc/syscalls.o \
+	  $(BUILD_DIR)/userspace/libc/xos_syscall.o \
+	  $(NEWLIB_LIBS) \
+	  -o $@
+	@echo ">> linked $@"
+
+test-libc: $(TEST_LIBC_ELF)
+
+# ---- zsh shell (interactive shell via newlib) -----------------------------
+ZSH_SRC := /tmp/zsh
+ZSH_STUBS := /tmp/xos-stubs
+
+zsh: $(ZSH_ELF)
+
+$(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_start.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld
+	@mkdir -p $(dir $@)
+	@echo ">> Building zsh (using autoconf build in /tmp/zsh)..."
+	@# Compile our _start entry point (assembly for stack alignment)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/shell/zsh_start.S -o $(BUILD_DIR)/userspace/shell/zsh_start.o
+	@# Compile our syscall stubs
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/shell/zsh_syscalls.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o
+	@# Link zsh with our entry point and syscall stubs
+	cd $(ZSH_SRC)/Src && \
+	  $(LD) -nostdlib -static -m elf_x86_64 -T $(CURDIR)/userspace/libc/xos-libc.ld \
+	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_start.o \
+	    main.o $$(cat stamp-modobjs) \
+	    -L$(ZSH_STUBS) -lcurses \
+	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_syscalls.o \
+	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o \
+	    $(NEWLIB_LIBS) \
+	    -o $(CURDIR)/$(ZSH_ELF)
+	@# Strip debug info to reduce embedded size
+	llvm-strip $(ZSH_ELF)
+	@echo ">> linked $@"
 
 # ---- link ----------------------------------------------------------------
 $(KERNEL): $(OBJS) kernel/linker.ld
