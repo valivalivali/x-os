@@ -351,6 +351,128 @@ static uint64_t sys_gpu_cursor_move_impl(uint64_t x, uint64_t y, uint64_t a3,
     return virtio_gpu_cursor_move((int32_t)x, (int32_t)y) ? 0 : (uint64_t)-1;
 }
 
+static uint64_t sys_gpu_virgl_present_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                            uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_virgl_present() ? 1 : 0;
+}
+
+static uint64_t sys_gpu_ctx_create_impl(uint64_t ctx_id, uint64_t a2, uint64_t a3,
+                                        uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_ctx_create((uint32_t)ctx_id) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_ctx_destroy_impl(uint64_t ctx_id, uint64_t a2, uint64_t a3,
+                                         uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_ctx_destroy((uint32_t)ctx_id) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_ctx_attach_impl(uint64_t ctx_id, uint64_t resource_id,
+                                        uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_ctx_attach_resource((uint32_t)ctx_id, (uint32_t)resource_id) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_res_create_2d_impl(uint64_t resource_id, uint64_t format,
+                                           uint64_t width, uint64_t height,
+                                           uint64_t a5, uint64_t a6) {
+    (void)a5; (void)a6;
+    return virtio_gpu_resource_create_2d_for((uint32_t)resource_id, (uint32_t)format,
+                                             (uint32_t)width, (uint32_t)height) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_res_attach_impl(uint64_t resource_id, uint64_t phys,
+                                        uint64_t size, uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_resource_attach_backing_for((uint32_t)resource_id, phys, size) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_res_unref_impl(uint64_t resource_id, uint64_t a2, uint64_t a3,
+                                       uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return virtio_gpu_resource_unref_for((uint32_t)resource_id) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_transfer_2d_impl(uint64_t resource_id, uint64_t x, uint64_t y,
+                                         uint64_t w, uint64_t h, uint64_t offset) {
+    return virtio_gpu_transfer_to_host_2d_for((uint32_t)resource_id, (uint32_t)x,
+                                              (uint32_t)y, (uint32_t)w, (uint32_t)h,
+                                              offset) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_submit_3d_impl(uint64_t ctx_id, uint64_t cmds, uint64_t size,
+                                       uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a4; (void)a5; (void)a6;
+    if (!cmds) return (uint64_t)-1;
+    return virtio_gpu_submit_3d((uint32_t)ctx_id, (void *)cmds, (uint32_t)size) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_set_scanout_impl(uint64_t scanout_id, uint64_t resource_id,
+                                         uint64_t x, uint64_t y, uint64_t w, uint64_t h) {
+    return virtio_gpu_set_scanout_for((uint32_t)scanout_id, (uint32_t)resource_id,
+                                      (uint32_t)x, (uint32_t)y, (uint32_t)w,
+                                      (uint32_t)h) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_flush_res_impl(uint64_t resource_id, uint64_t x, uint64_t y,
+                                       uint64_t w, uint64_t h, uint64_t a6) {
+    (void)a6;
+    return virtio_gpu_flush_for((uint32_t)resource_id, (uint32_t)x, (uint32_t)y,
+                                (uint32_t)w, (uint32_t)h) ? 0 : (uint64_t)-1;
+}
+
+static uint64_t sys_gpu_alloc_res_id_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                          uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return (uint64_t)virtio_gpu_alloc_resource_id();
+}
+
+static uint64_t sys_gpu_res_attach_virt_impl(uint64_t resource_id, uint64_t vaddr,
+                                             uint64_t npages, uint64_t buf_size,
+                                             uint64_t a5, uint64_t a6) {
+    (void)a5; (void)a6;
+    if (npages == 0 || npages > 4096) return (uint64_t)-1;
+    if (vaddr & 0xFFF) return (uint64_t)-1;
+    if (buf_size == 0 || buf_size > npages * PAGE_SIZE) return (uint64_t)-1;
+
+    proc_t *p = proc_current();
+    if (!p || !p->pml4_virt) return (uint64_t)-1;
+
+    /* Allocate array to hold physical addresses */
+    uint64_t *phys_pages = (uint64_t *)kmalloc(npages * sizeof(uint64_t));
+    if (!phys_pages) return (uint64_t)-1;
+
+    /* Walk page tables to get physical address of each page */
+    int ok = 1;
+    for (uint32_t i = 0; i < npages; i++) {
+        uint64_t va = vaddr + (uint64_t)i * PAGE_SIZE;
+        phys_pages[i] = vmm_virt_to_phys(p->pml4_virt, va);
+        if (!phys_pages[i]) { ok = 0; break; }
+    }
+
+    uint64_t ret = (uint64_t)-1;
+    if (ok) {
+        ret = virtio_gpu_resource_attach_backing_sg((uint32_t)resource_id,
+                                                    phys_pages, (uint32_t)npages,
+                                                    buf_size)
+              ? 0 : (uint64_t)-1;
+    }
+
+    kfree(phys_pages);
+    return ret;
+}
+
+static uint64_t sys_gpu_res_create_3d_impl(uint64_t resource_id, uint64_t target,
+                                           uint64_t format, uint64_t bind,
+                                           uint64_t width, uint64_t height) {
+    return virtio_gpu_resource_create_3d_for((uint32_t)resource_id, (uint32_t)target,
+                                             (uint32_t)format, (uint32_t)bind,
+                                             (uint32_t)width, (uint32_t)height,
+                                             1, 1, 0, 0, 0) ? 0 : (uint64_t)-1;
+}
+
 static uint64_t sys_open_impl(uint64_t path, uint64_t flags,
                          uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
@@ -440,6 +562,20 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_GPU_CURSOR_MOVE] = (void *)sys_gpu_cursor_move_impl,
     [SYS_PROC_KILL]       = (void *)sys_proc_kill_impl,
     [SYS_TIME]            = (void *)sys_time_impl,
+    [SYS_GPU_VIRGL_PRESENT] = (void *)sys_gpu_virgl_present_impl,
+    [SYS_GPU_CTX_CREATE]  = (void *)sys_gpu_ctx_create_impl,
+    [SYS_GPU_CTX_DESTROY] = (void *)sys_gpu_ctx_destroy_impl,
+    [SYS_GPU_CTX_ATTACH]  = (void *)sys_gpu_ctx_attach_impl,
+    [SYS_GPU_RES_CREATE_2D] = (void *)sys_gpu_res_create_2d_impl,
+    [SYS_GPU_RES_ATTACH]  = (void *)sys_gpu_res_attach_impl,
+    [SYS_GPU_RES_UNREF]   = (void *)sys_gpu_res_unref_impl,
+    [SYS_GPU_TRANSFER_2D] = (void *)sys_gpu_transfer_2d_impl,
+    [SYS_GPU_SUBMIT_3D]   = (void *)sys_gpu_submit_3d_impl,
+    [SYS_GPU_SET_SCANOUT] = (void *)sys_gpu_set_scanout_impl,
+    [SYS_GPU_FLUSH_RES]   = (void *)sys_gpu_flush_res_impl,
+    [SYS_GPU_ALLOC_RES_ID] = (void *)sys_gpu_alloc_res_id_impl,
+    [SYS_GPU_RES_ATTACH_VIRT] = (void *)sys_gpu_res_attach_virt_impl,
+    [SYS_GPU_RES_CREATE_3D]  = (void *)sys_gpu_res_create_3d_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

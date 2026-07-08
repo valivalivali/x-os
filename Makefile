@@ -30,12 +30,13 @@ endif
 ifeq ($(wildcard $(QEMU)),)
   QEMU       := qemu-system-x86_64
 endif
+QEMU_VIRGL   := $(shell brew --prefix qemu-virgl 2>/dev/null)/bin/qemu-system-x86_64
 OVMF         := $(shell brew --prefix qemu 2>/dev/null)/share/qemu/edk2-x86_64-code.fd
 
 SRC_DIRS     := boot kernel userspace
 # Exclude Limine, ring-3 userspace sources, and generated blobs from kernel build.
-CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -name '*_blob.c' 2>/dev/null)
-SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -name '*_blob.S' 2>/dev/null)
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' 2>/dev/null)
+SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.S' 2>/dev/null)
 OBJS         := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES)) $(patsubst %.S,$(OBJ_DIR)/%.o,$(SFILES))
 DEPS         := $(patsubst %.c,$(OBJ_DIR)/%.d,$(CFILES))
 
@@ -88,7 +89,7 @@ MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 # Add generated blob objects explicitly to kernel link
 OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O)
 
-QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off
+QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
 .PHONY: all run run-uefi clean distclean setup limine
 
@@ -127,14 +128,20 @@ $(INIT_BLOB_C): $(INIT_ELF)
 	@echo ">> generated $@"
 
 # Build composer service ELF
-$(COMPOSER_ELF): userspace/services/composer/start.S userspace/services/composer/main.c userspace/services/composer/cursor_data.c userspace/runtime/syscall.c userspace/services/composer/composer.ld
+$(COMPOSER_ELF): userspace/services/composer/start.S userspace/services/composer/main.c userspace/services/composer/gpu_composite.c userspace/services/composer/gpu_composite.h userspace/services/composer/cursor_data.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/composer/composer.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/composer/start.S -o $(BUILD_DIR)/userspace/services/composer/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/composer/main.c -o $(BUILD_DIR)/userspace/services/composer/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/composer/gpu_composite.c -o $(BUILD_DIR)/userspace/services/composer/gpu_composite.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/composer/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/composer/xgfx_font.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/composer/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/composer/composer.ld \
 	  $(BUILD_DIR)/userspace/services/composer/start.o \
 	  $(BUILD_DIR)/userspace/services/composer/main.o \
+	  $(BUILD_DIR)/userspace/services/composer/gpu_composite.o \
+	  $(BUILD_DIR)/userspace/services/composer/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/composer/xgfx_font.o \
 	  $(BUILD_DIR)/userspace/services/composer/syscall.o \
 	  -o $@
 	@echo ">> linked $@"
@@ -145,7 +152,7 @@ $(COMPOSER_BLOB_C): $(COMPOSER_ELF)
 	@echo ">> generated $@"
 
 # Build xplorer service ELF
-$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
+$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/start.S -o $(BUILD_DIR)/userspace/services/xplorer/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/main.c -o $(BUILD_DIR)/userspace/services/xplorer/main.o
@@ -167,7 +174,7 @@ $(XPLORER_BLOB_C): $(XPLORER_ELF)
 	@echo ">> generated $@"
 
 # Build dock service ELF
-$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/dock/dock.ld
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/dock/dock.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
@@ -189,7 +196,7 @@ $(DOCK_BLOB_C): $(DOCK_ELF)
 	@echo ">> generated $@"
 
 # Build menubar service ELF
-$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
+$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o

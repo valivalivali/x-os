@@ -3,31 +3,14 @@
 #include "kernel/include/syscall.h"
 #include "kernel/include/ipc.h"
 #include "userspace/lib/xgfx/xgfx.h"
+#include "userspace/lib/wm/wm.h"
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- Surface IPC ------------------------------------------------------ */
-
-#define CS_TYPE 1
-#define SD_TYPE 6
-#define COMPOSER_MOUSE_EVENT 7
-#define PNC     3
+/* ---- Surface IPC (using WM protocol) ---------------------------------- */
 
 #define MOUSE_LEFT  0x01
 #define MOUSE_RIGHT 0x02
-
-#define COMPOSER_HIDE_BY_PID    12
-#define COMPOSER_SHOW_BY_PID    13
-#define COMPOSER_DESTROY_BY_PID 14
-
-typedef struct {
-    uint32_t type; int32_t x,y; uint32_t w,h;
-    uint32_t color; uint32_t fixed; uint32_t owner_pid; uint64_t reply_port;
-} cs_msg_t;
-
-typedef struct { uint32_t type; uint64_t buf_vaddr; uint32_t surface_idx; } sr_msg_t;
-typedef struct { uint32_t type; uint32_t si; uint32_t x,y,w,h; } sd_msg_t;
-typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; uint32_t surface_idx; } mouse_msg_t;
 
 static uint32_t g_si = 0;
 static uint32_t *g_px = NULL;
@@ -35,12 +18,17 @@ static uint64_t g_port = 0;
 
 static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create(); if (!g_port) return -1;
-    cs_msg_t cm = {CS_TYPE, x, y, w, h, 0x00000000, 1,
-                   (uint32_t)syscall0(SYS_PROC_PID), g_port};
+    wm_create_msg_t cm;
+    __builtin_memset(&cm, 0, sizeof(cm));
+    cm.type = WM_CREATE_SURFACE;
+    cm.x = x; cm.y = y; cm.w = w; cm.h = h;
+    cm.flags = WM_FLAG_PANEL;
+    cm.owner_pid = (uint32_t)syscall0(SYS_PROC_PID);
+    cm.reply_port = g_port;
     ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
-    for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(PNC); if (!cp) syscall0(SYS_YIELD); }
+    for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(WM_COMPOSER_PORT_NS); if (!cp) syscall0(SYS_YIELD); }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
     ipc_msg_t re; int got = 0;
     for (int r = 0; r < 300 && !got; r++) {
@@ -48,17 +36,17 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
         syscall0(SYS_YIELD);
     }
     if (!got) return -1;
-    sr_msg_t *srm = (sr_msg_t*)re.payload;
+    wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
     g_px = (uint32_t*)srm->buf_vaddr;
     g_si = srm->surface_idx;
     return 0;
 }
 
 static void send_dirty(int x, int y, int w, int h) {
-    sd_msg_t d = {SD_TYPE, g_si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
+    wm_dirty_msg_t d = {WM_SURFACE_DIRTY, g_si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
@@ -74,26 +62,26 @@ static uint64_t spawn_xplorer(void) {
 }
 
 static void send_hide_by_pid(uint64_t pid) {
-    uint32_t d[2] = {COMPOSER_HIDE_BY_PID, (uint32_t)pid};
+    uint32_t d[2] = {WM_HIDE_BY_PID, (uint32_t)pid};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
 static void send_show_by_pid(uint64_t pid) {
-    uint32_t d[2] = {COMPOSER_SHOW_BY_PID, (uint32_t)pid};
+    uint32_t d[2] = {WM_SHOW_BY_PID, (uint32_t)pid};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
 static void send_destroy_by_pid(uint64_t pid) {
-    uint32_t d[2] = {COMPOSER_DESTROY_BY_PID, (uint32_t)pid};
+    uint32_t d[2] = {WM_DESTROY_BY_PID, (uint32_t)pid};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
@@ -284,12 +272,15 @@ void dock_main(void) {
         /* Poll for mouse events from composer */
         ipc_msg_t msg;
         if (g_port && sys_port_recv(g_port, &msg, 0)) {
-            if (msg.payload_len >= sizeof(mouse_msg_t)) {
-                mouse_msg_t *m = (mouse_msg_t *)msg.payload;
-                if (m->type == COMPOSER_MOUSE_EVENT && m->action == 1) {
-                    handle_click(m->x, m->y, m->button);
-                } else if (m->type == COMPOSER_MOUSE_EVENT && m->action == 0) {
-                    handle_move(m->x, m->y);
+            if (msg.payload_len >= sizeof(uint32_t)) {
+                uint32_t t = *(uint32_t *)msg.payload;
+                if (t == WM_MOUSE_EVENT && msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
+                    wm_mouse_event_msg_t *m = (wm_mouse_event_msg_t *)msg.payload;
+                    if (m->action == 1) {
+                        handle_click(m->x, m->y, m->button);
+                    } else if (m->action == 0) {
+                        handle_move(m->x, m->y);
+                    }
                 }
             }
         }

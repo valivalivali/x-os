@@ -44,8 +44,22 @@
 #define SYS_GPU_CURSOR_MOVE  33
 #define SYS_PROC_KILL        34
 #define SYS_TIME             35
+#define SYS_GPU_VIRGL_PRESENT 36
+#define SYS_GPU_CTX_CREATE   37
+#define SYS_GPU_CTX_DESTROY  38
+#define SYS_GPU_CTX_ATTACH   39
+#define SYS_GPU_RES_CREATE_2D 40
+#define SYS_GPU_RES_ATTACH   41
+#define SYS_GPU_RES_UNREF    42
+#define SYS_GPU_TRANSFER_2D  43
+#define SYS_GPU_SUBMIT_3D    44
+#define SYS_GPU_SET_SCANOUT  45
+#define SYS_GPU_FLUSH_RES    46
+#define SYS_GPU_ALLOC_RES_ID 47
+#define SYS_GPU_RES_ATTACH_VIRT 48
+#define SYS_GPU_RES_CREATE_3D  49
 
-#define SYSCALL_MAX          35
+#define SYSCALL_MAX          49
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -73,6 +87,7 @@ typedef struct {
     uint64_t cursor_phys;
     uint32_t cursor_w;
     uint32_t cursor_h;
+    uint32_t virgl;       /* 1 if virgl 3D is available */
 } gpu_fb_info_t;
 
 /* Mouse state returned by SYS_MOUSE_POS.
@@ -120,6 +135,31 @@ int sys_gpu_fb_info(gpu_fb_info_t *info);
 int sys_gpu_flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 int sys_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y);
 int sys_gpu_cursor_move(int32_t x, int32_t y);
+
+/* GPU virgl wrappers */
+int sys_gpu_virgl_present(void);
+int sys_gpu_ctx_create(uint32_t ctx_id);
+int sys_gpu_ctx_destroy(uint32_t ctx_id);
+int sys_gpu_ctx_attach(uint32_t ctx_id, uint32_t resource_id);
+int sys_gpu_res_create_2d(uint32_t resource_id, uint32_t format,
+                          uint32_t width, uint32_t height);
+int sys_gpu_res_attach(uint32_t resource_id, uint64_t phys, uint64_t size);
+int sys_gpu_res_unref(uint32_t resource_id);
+int sys_gpu_transfer_2d(uint32_t resource_id, uint32_t x, uint32_t y,
+                        uint32_t w, uint32_t h, uint64_t offset);
+int sys_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size);
+int sys_gpu_set_scanout(uint32_t scanout_id, uint32_t resource_id,
+                        uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+int sys_gpu_flush_res(uint32_t resource_id, uint32_t x, uint32_t y,
+                      uint32_t w, uint32_t h);
+uint32_t sys_gpu_alloc_res_id(void);
+int sys_gpu_res_attach_virt(uint32_t resource_id, uint64_t vaddr, uint32_t npages,
+                            uint64_t buf_size);
+int sys_gpu_res_create_3d(uint32_t resource_id, uint32_t target, uint32_t format,
+                          uint32_t bind, uint32_t width, uint32_t height,
+                          uint32_t depth, uint32_t array_size,
+                          uint32_t last_level, uint32_t nr_samples,
+                          uint32_t flags);
 
 /* Filesystem wrappers */
 int sys_open(const char *path, uint32_t flags);

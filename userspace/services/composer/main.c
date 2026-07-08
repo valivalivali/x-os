@@ -1,8 +1,8 @@
-/* X OS Composer — v3 (pure orchestrator + display engine)
+/* X OS Composer — v4 (window server + display engine)
  *
- * Architecture: apps render into shared-memory surfaces.
- * Composer only: allocates buffers, routes input, composites, draws cursor.
- * No app-specific UI rendering lives here.
+ * Architecture: apps render content into shared-memory surfaces.
+ * Composer: allocates buffers, draws window decorations, routes input,
+ * composites, manages window lifecycle, draws cursor.
  *
  * Layer stack: desktop bg → surfaces (by z-level) → cursor.
  */
@@ -10,78 +10,46 @@
 #include "kernel/include/syscall.h"
 #include "kernel/hal/input/input.h"
 #include "kernel/fs/xfs.h"
+#include "userspace/lib/wm/wm.h"
+#include "userspace/lib/xgfx/xgfx.h"
+#include "gpu_composite.h"
 #include <stddef.h>
 #include <stdint.h>
 
 #define FB_VADDR  0x0000700000000000ULL
 #define DESKTOP_BG  0xFF1A2028
 
+#define WIN_RADIUS  24
+
 #define PAGE_SIZE 4096
 
 #include "cursor_data.c"
 
-/* ---- Composer IPC protocol (shared-memory surfaces) -------------------- */
+/* Backward-compat aliases so existing code still compiles */
+#define COMPOSER_CREATE_SURFACE  WM_CREATE_SURFACE
+#define COMPOSER_DESTROY_SURFACE WM_DESTROY_SURFACE
+#define COMPOSER_SURFACE_READY   WM_SURFACE_READY
+#define COMPOSER_SURFACE_DIRTY   WM_SURFACE_DIRTY
+#define COMPOSER_MOUSE_EVENT     WM_MOUSE_EVENT
+#define COMPOSER_CAPTURE_DISPLAY WM_CAPTURE_DISPLAY
+#define COMPOSER_RELEASE_DISPLAY WM_RELEASE_DISPLAY
+#define COMPOSER_HIDE_SURFACE    WM_HIDE_SURFACE
+#define COMPOSER_SHOW_SURFACE    WM_SHOW_SURFACE
+#define COMPOSER_HIDE_BY_PID     WM_HIDE_BY_PID
+#define COMPOSER_SHOW_BY_PID     WM_SHOW_BY_PID
+#define COMPOSER_DESTROY_BY_PID  WM_DESTROY_BY_PID
+#define COMPOSER_FOCUS_CHANGED   WM_FOCUS_CHANGED
 
-#define COMPOSER_CREATE_SURFACE  1
-#define COMPOSER_DESTROY_SURFACE 2
-#define COMPOSER_SURFACE_READY    5
-#define COMPOSER_SURFACE_DIRTY    6
-#define COMPOSER_MOUSE_EVENT      7
-#define COMPOSER_CAPTURE_DISPLAY  8
-#define COMPOSER_RELEASE_DISPLAY  9
-#define COMPOSER_HIDE_SURFACE     10
-#define COMPOSER_SHOW_SURFACE     11
-#define COMPOSER_HIDE_BY_PID      12
-#define COMPOSER_SHOW_BY_PID      13
-#define COMPOSER_DESTROY_BY_PID   14
-#define COMPOSER_FOCUS_CHANGED    15
-
-typedef struct {
-    uint32_t type;
-    int32_t  x, y;
-    uint32_t button;
-    uint32_t action;
-    uint32_t surface_idx;
-} mouse_event_msg_t;
+typedef wm_mouse_event_msg_t mouse_event_msg_t;
+typedef wm_create_msg_t composer_msg_t;
+typedef wm_surface_ready_msg_t surface_ready_msg_t;
+typedef wm_dirty_msg_t surface_dirty_msg_t;
+typedef wm_capture_msg_t capture_msg_t;
+typedef wm_capture_ready_msg_t capture_ready_msg_t;
 
 /* Shared buffer address space: each surface gets a 2.4MB slot. */
 #define SHARED_SURFACE_BASE  0x0000600000000000ULL
 #define SHARED_SURFACE_SLOT  (SURF_W * SURF_H * 4)
-
-typedef struct {
-    uint32_t type;
-    int32_t  x, y;
-    uint32_t w, h;
-    uint32_t color;
-    uint32_t fixed;      /* 1 = menu bar/panel, 0 = window */
-    uint32_t owner_pid;  /* PID of app that owns this surface */
-    uint64_t reply_port; /* port for composer to send surface_ready */
-} composer_msg_t;
-
-typedef struct {
-    uint32_t type;
-    uint64_t buf_vaddr;
-    uint32_t surface_idx;
-} surface_ready_msg_t;
-
-typedef struct {
-    uint32_t type;
-    uint32_t surface_idx;
-    uint32_t x, y, w, h; /* dirty rect; 0,0,0,0 = full surface */
-} surface_dirty_msg_t;
-
-typedef struct {
-    uint32_t type;
-    uint32_t owner_pid;
-    uint64_t reply_port;
-} capture_msg_t;
-
-typedef struct {
-    uint32_t type;
-    uint64_t fb_vaddr;
-    uint32_t fb_w, fb_h;
-    uint32_t fb_stride;
-} capture_ready_msg_t;
 
 static volatile uint32_t *fb;
 static uint32_t stride;
@@ -113,9 +81,9 @@ static uint32_t cursor_stage[CURSOR_W];
 #define SURF_LEVEL_OVERLAY  3  /* tooltips, menus */
 
 typedef struct {
-    int32_t  x, y;
-    uint32_t w, h;
-    uint32_t *pixels;           /* shared buffer virtual address */
+    int32_t  x, y;               /* window origin (top of decoration if decorated) */
+    uint32_t w, h;               /* content dimensions (excluding decoration) */
+    uint32_t *pixels;            /* shared buffer virtual address (content only) */
     int      level;             /* SURF_LEVEL_* */
     int      valid;             /* 0 = dead/slot free */
     uint32_t owner_pid;         /* PID of app that renders into this */
@@ -124,7 +92,18 @@ typedef struct {
     int      dirty;
     uint32_t dirty_x, dirty_y, dirty_w, dirty_h;
     int      hidden;            /* 1 = minimized, not rendered */
+    /* Window management */
+    uint32_t flags;             /* WM_FLAG_* */
+    char     title[32];         /* window title for decoration */
 } surface_info_t;
+
+static int surface_decorated(const surface_info_t *s) {
+    return !(s->flags & (WM_FLAG_PANEL | WM_FLAG_OVERLAY));
+}
+
+static int surface_total_h(const surface_info_t *s) {
+    return (int)s->h + (surface_decorated(s) ? WM_TITLE_BAR_H : 0);
+}
 
 static surface_info_t surfaces[MAX_SURFACES];
 static int         surface_count = 0;
@@ -182,6 +161,177 @@ static void log_xy(const char *prefix, int32_t x, int32_t y, const char *suffix)
     log(buf);
 }
 
+/* ---- Decoration drawing (directly into backing buffer) ----------------- */
+
+#define DEC_BG       0xFFE8E8EC   /* title bar background */
+#define DEC_BG_DARK  0xFFD0D0D6   /* title bar bottom edge */
+#define DEC_CLOSE    0xFFFF5F57   /* close button red */
+#define DEC_MIN      0xFFFEBC2E   /* minimize button yellow */
+#define DEC_MAX      0xFF28C840   /* maximize button green */
+#define DEC_CLOSE_D  0xFFC0403A   /* close button dark (inactive) */
+#define DEC_MIN_D    0xFFC8A020   /* minimize button dark (inactive) */
+#define DEC_MAX_D    0xFF1C9830   /* maximize button dark (inactive) */
+
+static void dec_fill_rect(int x0, int y0, int x1, int y1, uint32_t color) {
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+    if (x1 > fb_w) x1 = fb_w; if (y1 > fb_h) y1 = fb_h;
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int y = y0; y < y1; y++) {
+        uint32_t *row = &backing[y * stride + x0];
+        for (int x = x0; x < x1; x++) row[x - x0] = color;
+    }
+}
+
+static void dec_fill_circle(int cx, int cy, int r, uint32_t color) {
+    for (int y = -r; y <= r; y++) {
+        int py = cy + y;
+        if (py < 0 || py >= fb_h) continue;
+        int w = 0;
+        int y2 = y * y;
+        while (w * w + y2 <= r * r) w++;
+        int x0 = cx - w + 1, x1 = cx + w - 1;
+        if (x0 < 0) x0 = 0; if (x1 >= fb_w) x1 = fb_w - 1;
+        if (x0 > x1) continue;
+        uint32_t *row = &backing[py * stride + x0];
+        for (int x = x0; x <= x1; x++) row[x - x0] = color;
+    }
+}
+
+static void dec_draw_icon_x(int cx, int cy, uint32_t color) {
+    /* Draw an X inside the close button */
+    for (int i = -3; i <= 3; i++) {
+        int px, py;
+        px = cx + i; py = cy + i;
+        if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+            backing[py * stride + px] = color;
+        px = cx - i; py = cy + i;
+        if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+            backing[py * stride + px] = color;
+    }
+}
+
+static void dec_draw_icon_minus(int cx, int cy, uint32_t color) {
+    for (int i = -3; i <= 3; i++) {
+        int px = cx + i;
+        if (px >= 0 && px < fb_w && cy >= 0 && cy < fb_h)
+            backing[cy * stride + px] = color;
+    }
+}
+
+static void dec_draw_icon_plus(int cx, int cy, uint32_t color) {
+    for (int i = -3; i <= 3; i++) {
+        int px = cx + i;
+        if (px >= 0 && px < fb_w && cy >= 0 && cy < fb_h)
+            backing[cy * stride + px] = color;
+        int py = cy + i;
+        if (cx >= 0 && cx < fb_w && py >= 0 && py < fb_h)
+            backing[py * stride + cx] = color;
+    }
+}
+
+/* Mask the four corners of a window to create rounded corners.
+ * Fills corner areas with DESKTOP_BG to clip the window to a rounded rect. */
+static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
+    /* Top-left corner */
+    for (int y = 0; y < r; y++) {
+        for (int x = 0; x < r; x++) {
+            int dx = r - x - 1, dy = r - y - 1;
+            if (dx * dx + dy * dy >= r * r) {
+                int px = x0 + x, py = y0 + y;
+                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+                    backing[py * stride + px] = DESKTOP_BG;
+            }
+        }
+    }
+    /* Top-right corner */
+    for (int y = 0; y < r; y++) {
+        for (int x = 0; x < r; x++) {
+            int dx = x, dy = r - y - 1;
+            if (dx * dx + dy * dy >= r * r) {
+                int px = x0 + w - r + x, py = y0 + y;
+                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+                    backing[py * stride + px] = DESKTOP_BG;
+            }
+        }
+    }
+    /* Bottom-left corner */
+    for (int y = 0; y < r; y++) {
+        for (int x = 0; x < r; x++) {
+            int dx = r - x - 1, dy = y;
+            if (dx * dx + dy * dy >= r * r) {
+                int px = x0 + x, py = y0 + total_h - r + y;
+                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+                    backing[py * stride + px] = DESKTOP_BG;
+            }
+        }
+    }
+    /* Bottom-right corner */
+    for (int y = 0; y < r; y++) {
+        for (int x = 0; x < r; x++) {
+            int dx = x, dy = y;
+            if (dx * dx + dy * dy >= r * r) {
+                int px = x0 + w - r + x, py = y0 + total_h - r + y;
+                if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
+                    backing[py * stride + px] = DESKTOP_BG;
+            }
+        }
+    }
+}
+
+/* Draw window decoration (title bar) into backing buffer.
+ * Called during compositing, before blitting content. */
+static void draw_decoration(const surface_info_t *s) {
+    if (!surface_decorated(s)) return;
+
+    int x0 = s->x, y0 = s->y;
+    int x1 = s->x + (int32_t)s->w;
+    int y1 = s->y + WM_TITLE_BAR_H;
+
+    /* Title bar background */
+    dec_fill_rect(x0, y0, x1, y1, DEC_BG);
+
+    /* Bottom edge line */
+    dec_fill_rect(x0, y1 - 1, x1, y1, DEC_BG_DARK);
+
+    /* Traffic light buttons */
+    int has_focus = 1; /* TODO: track actual focus */
+    int btn_cy = y0 + WM_BTN_Y;
+    int btn_r = WM_BTN_SIZE / 2;
+
+    /* Close */
+    dec_fill_circle(x0 + WM_CLOSE_X + btn_r, btn_cy, btn_r,
+                    has_focus ? DEC_CLOSE : DEC_CLOSE_D);
+    /* Minimize */
+    dec_fill_circle(x0 + WM_MIN_X + btn_r, btn_cy, btn_r,
+                    has_focus ? DEC_MIN : DEC_MIN_D);
+    /* Maximize */
+    dec_fill_circle(x0 + WM_MAX_X + btn_r, btn_cy, btn_r,
+                    has_focus ? DEC_MAX : DEC_MAX_D);
+
+    /* Draw title text using xgfx */
+    xgfx_surface_t surf = { backing, (uint32_t)fb_w, (uint32_t)fb_h, (uint32_t)backing_stride };
+    /* Center title between buttons and right edge */
+    int btn_end = WM_MAX_X + WM_BTN_SIZE + WM_BTN_GAP;
+    int title_x = x0 + btn_end + 8;
+    int title_y = y0 + (WM_TITLE_BAR_H - 16) / 2; /* 16 = font height */
+    xgfx_draw_text(&surf, title_x, title_y, s->title,
+                   xgfx_argb(255, 60, 60, 65));
+}
+
+/* Check if a point (relative to window origin) is on a decoration button.
+ * Returns: 0=close, 1=minimize, 2=maximize, -1=none */
+static int decoration_button_at(int32_t rx, int32_t ry) {
+    if (ry < 0 || ry >= WM_TITLE_BAR_H) return -1;
+    int btn_r = WM_BTN_SIZE / 2;
+    int btn_cy = WM_BTN_Y;
+    int btns[3] = {WM_CLOSE_X + btn_r, WM_MIN_X + btn_r, WM_MAX_X + btn_r};
+    for (int i = 0; i < 3; i++) {
+        int dx = rx - btns[i], dy = ry - btn_cy;
+        if (dx * dx + dy * dy <= btn_r * btn_r) return i;
+    }
+    return -1;
+}
+
 /* Rounded-rect hit test for window surfaces. */
 static int inside_rounded_rect(int32_t px, int32_t py, uint32_t w, uint32_t h, int r) {
     if (px < 0 || px >= (int32_t)w || py < 0 || py >= (int32_t)h) return 0;
@@ -194,12 +344,15 @@ static int inside_rounded_rect(int32_t px, int32_t py, uint32_t w, uint32_t h, i
     return 1;
 }
 
-/* Hit-test a single surface at local coords (rx,ry). */
+/* Hit-test a single surface at local coords (rx,ry).
+ * For decorated windows, the full bounds include the title bar above content. */
 static int surface_hit(const surface_info_t *s, int32_t rx, int32_t ry) {
-    if (s->level == SURF_LEVEL_PANEL) {
+    if (s->level == SURF_LEVEL_PANEL || s->level == SURF_LEVEL_OVERLAY) {
         return (rx >= 0 && rx < (int32_t)s->w && ry >= 0 && ry < (int32_t)s->h);
     } else {
-        return inside_rounded_rect(rx, ry, s->w, s->h, 16);
+        /* Decorated window: title bar (0..WM_TITLE_BAR_H) + content below */
+        int total_h = surface_total_h(s);
+        return inside_rounded_rect(rx, ry, s->w, (uint32_t)total_h, WIN_RADIUS);
     }
 }
 
@@ -237,7 +390,8 @@ static void blit_surface_clipped(const surface_info_t *s,
 /* Draw all valid surfaces into backing region [x0,y0,x1,y1).
  * Higher z-level rendered later (on top). Within same level,
  * higher array index is on top (most recently raised).
- * Fast path: level-ordered clipped blitting, not per-pixel z-testing. */
+ * For decorated windows: draw decoration first, then blit content
+ * offset by WM_TITLE_BAR_H below the window origin. */
 static void draw_region(int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 > fb_w) x1 = fb_w; if (y1 > fb_h) y1 = fb_h;
@@ -258,15 +412,34 @@ static void draw_region(int x0, int y0, int x1, int y1) {
             if (!s->valid || s->hidden || s->level != level || !s->pixels) continue;
             /* Safety: don't read from a dead app's buffer. */
             if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
-            /* Compute overlap between surface and dirty rect. */
-            int sx0 = x0 - s->x; if (sx0 < 0) sx0 = 0;
-            int sy0 = y0 - s->y; if (sy0 < 0) sy0 = 0;
-            int sx1 = x1 - s->x; if (sx1 > (int)s->w) sx1 = (int)s->w;
-            int sy1 = y1 - s->y; if (sy1 > (int)s->h) sy1 = (int)s->h;
-            if (sx0 >= sx1 || sy0 >= sy1) continue;
-            blit_surface_clipped(s, sx0, sy0,
-                                 s->x + sx0, s->y + sy0,
-                                 s->x + sx1, s->y + sy1);
+
+            if (surface_decorated(s)) {
+                /* Draw decoration (title bar) into backing */
+                draw_decoration(s);
+                /* Blit content offset by WM_TITLE_BAR_H below window origin */
+                int content_y = s->y + WM_TITLE_BAR_H;
+                int sx0 = x0 - s->x; if (sx0 < 0) sx0 = 0;
+                int sy0 = y0 - content_y; if (sy0 < 0) sy0 = 0;
+                int sx1 = x1 - s->x; if (sx1 > (int)s->w) sx1 = (int)s->w;
+                int sy1 = y1 - content_y; if (sy1 > (int)s->h) sy1 = (int)s->h;
+                if (sx0 >= sx1 || sy0 >= sy1) continue;
+                blit_surface_clipped(s, sx0, sy0,
+                                     s->x + sx0, content_y + sy0,
+                                     s->x + sx1, content_y + sy1);
+                /* Mask corners to create rounded window shape */
+                int total_h = surface_total_h(s);
+                dec_mask_corners(s->x, s->y, (int)s->w, total_h, WIN_RADIUS);
+            } else {
+                /* Panel/overlay: blit directly at surface origin */
+                int sx0 = x0 - s->x; if (sx0 < 0) sx0 = 0;
+                int sy0 = y0 - s->y; if (sy0 < 0) sy0 = 0;
+                int sx1 = x1 - s->x; if (sx1 > (int)s->w) sx1 = (int)s->w;
+                int sy1 = y1 - s->y; if (sy1 > (int)s->h) sy1 = (int)s->h;
+                if (sx0 >= sx1 || sy0 >= sy1) continue;
+                blit_surface_clipped(s, sx0, sy0,
+                                     s->x + sx0, s->y + sy0,
+                                     s->x + sx1, s->y + sy1);
+            }
         }
     }
 }
@@ -288,8 +461,8 @@ static int surface_at(int32_t px, int32_t py) {
 }
 
 static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
-                                   uint32_t color, int fixed, uint32_t owner_pid,
-                                   uint64_t reply_port) {
+                                   uint32_t flags, uint32_t owner_pid,
+                                   uint64_t reply_port, const char *title) {
     /* Reuse first invalid slot to keep indices stable for surviving apps. */
     int slot = -1;
     for (int i = 0; i < MAX_SURFACES; i++) {
@@ -300,7 +473,10 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     if (h > SURF_H) h = SURF_H;
     surface_info_t *sp = &surfaces[slot];
     sp->x = x; sp->y = y; sp->w = w; sp->h = h;
-    sp->level = fixed ? SURF_LEVEL_PANEL : SURF_LEVEL_NORMAL;
+    sp->flags = flags;
+    sp->level = (flags & WM_FLAG_PANEL) ? SURF_LEVEL_PANEL
+              : (flags & WM_FLAG_OVERLAY) ? SURF_LEVEL_OVERLAY
+              : SURF_LEVEL_NORMAL;
     sp->valid = 1;
     sp->owner_pid = owner_pid;
     sp->reply_port = reply_port;
@@ -308,6 +484,12 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     sp->dirty = 0;
     sp->dirty_x = sp->dirty_y = sp->dirty_w = sp->dirty_h = 0;
     sp->hidden = 0;
+    /* Copy title */
+    for (int i = 0; i < 31; i++) {
+        sp->title[i] = title ? title[i] : '\0';
+        if (sp->title[i] == '\0') break;
+    }
+    sp->title[31] = '\0';
 
     uint64_t buf_vaddr = SHARED_SURFACE_BASE + (uint64_t)slot * SHARED_SURFACE_SLOT;
     uint32_t npages = (SURF_W * SURF_H * 4 + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -340,10 +522,13 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
         }
     }
     if (sp->pixels) {
-        for (uint32_t i = 0; i < w * h; i++) sp->pixels[i] = color;
+        /* Clear content to transparent */
+        for (uint32_t i = 0; i < w * h; i++) sp->pixels[i] = 0;
     }
+    /* Clamp position so full window (decoration + content) fits */
+    int total_h = surface_total_h(sp);
     if (sp->x + (int32_t)sp->w > fb_w) sp->x = fb_w - sp->w;
-    if (sp->y + (int32_t)sp->h > fb_h) sp->y = fb_h - sp->h;
+    if (sp->y + total_h > fb_h) sp->y = fb_h - total_h;
     if (sp->x < 0) sp->x = 0;
     if (sp->y < 0) sp->y = 0;
     old_sx[slot] = sp->x;
@@ -352,12 +537,8 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
 }
 
 static void spawn_surface(int32_t x, int32_t y) {
-    static const uint32_t palette[] = {
-        0xFF224488, 0xFF882244, 0xFF228844,
-        0xFF884422, 0xFF442288, 0xFF448888,
-    };
     log_xy("[composer] spawn_surface at ", x, y, "\n");
-    spawn_surface_custom(x, y, 500, 300, palette[surface_count % 6], 0, 0, 0);
+    spawn_surface_custom(x, y, 500, 300, WM_FLAG_DEFAULT, 0, 0, "Window");
 }
 
 
@@ -441,12 +622,13 @@ static int compute_move_dirty_rect(int *dx0, int *dy0, int *dx1, int *dy1) {
         if (!s->valid) continue;
         if (s->x == old_sx[i] && s->y == old_sy[i]) continue;
         moved = 1;
+        int th = surface_total_h(s);
         /* Old bounds */
         int ox0 = old_sx[i], oy0 = old_sy[i];
-        int ox1 = ox0 + (int)s->w, oy1 = oy0 + (int)s->h;
+        int ox1 = ox0 + (int)s->w, oy1 = oy0 + th;
         /* New bounds */
         int nx0 = s->x, ny0 = s->y;
-        int nx1 = nx0 + (int)s->w, ny1 = ny0 + (int)s->h;
+        int nx1 = nx0 + (int)s->w, ny1 = ny0 + th;
         /* Union */
         if (ox0 < *dx0) *dx0 = ox0;
         if (nx0 < *dx0) *dx0 = nx0;
@@ -469,6 +651,7 @@ static int cull_dead_surfaces(void) {
         surface_info_t *s = &surfaces[i];
         if (!s->valid || s->owner_pid == 0) continue;
         if (!sys_proc_exists(s->owner_pid)) {
+            gpu_comp_destroy_surface(i);
             s->valid = 0;
             s->pixels = NULL;
             changed = 1;
@@ -537,6 +720,13 @@ void display_main(void) {
         }
 
         log("[composer] gpu mode\n");
+
+        /* Try to initialize virgl 3D compositing */
+        if (gpu_comp_init(fb_w, fb_h, gpu_info.backing_phys, gpu_info.backing_size)) {
+            log("[composer] virgl 3D compositing enabled\n");
+        } else {
+            log("[composer] virgl not available, using CPU compositing\n");
+        }
     } else {
         if (syscall1(SYS_FB_INFO, (uintptr_t)&info) != 0) {
             log("[composer] fb_info fail\n"); return;
@@ -642,29 +832,67 @@ void display_main(void) {
 
             if (ev.type == EV_MOUSE_DOWN) {
                 log_xy("[composer] mouse down at ", ev.x, ev.y, "\n");
-                /* Hit-test using the click position (ev.x, ev.y), NOT the
-                 * polled position (mx, my). When the mouse is moving the
-                 * polled position can be far from where the click happened. */
                 int hit = surface_at(ev.x, ev.y);
                 log_int("[composer]  hit surface ", hit, "\n");
 
                 if (ev.button == MOUSE_LEFT && hit >= 0) {
-                    /* Don't raise/reorder surfaces — app indices must stay stable. */
                     int new_idx = hit;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
-                    if (surfaces[new_idx].level != SURF_LEVEL_PANEL && wy < 48) {
-                        /* Drag from top nav strip area. */
-                        drag_idx = new_idx;
-                        drag_off_x = ev.x - surfaces[drag_idx].x;
-                        drag_off_y = ev.y - surfaces[drag_idx].y;
-                        log_int("[composer]  drag start idx=", drag_idx, "\n");
+
+                    if (surface_decorated(&surfaces[new_idx])) {
+                        /* Check decoration buttons first */
+                        int btn = decoration_button_at(wx, wy);
+                        if (btn == 0) {
+                            /* Close button — send WM_WINDOW_CLOSE to app */
+                            if (surfaces[new_idx].reply_port) {
+                                wm_close_msg_t cmsg = {
+                                    .type = WM_WINDOW_CLOSE,
+                                    .surface_idx = (uint32_t)new_idx
+                                };
+                                ipc_msg_t m;
+                                m.type = IPC_MSG_EVENT;
+                                m.sender_pid = 0;
+                                for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) m.caps[i] = CAP_NULL;
+                                m.cap_count = 0;
+                                m.payload_len = sizeof(cmsg);
+                                uint8_t *pd = (uint8_t *)&cmsg;
+                                for (size_t i = 0; i < sizeof(cmsg); i++) m.payload[i] = pd[i];
+                                sys_port_send(surfaces[new_idx].reply_port, &m);
+                            }
+                            goto click_done;
+                        } else if (btn == 1) {
+                            /* Minimize button — hide the surface */
+                            surfaces[new_idx].hidden = 1;
+                            z_changed = 1;
+                            goto click_done;
+                        } else if (btn == 2) {
+                            /* Maximize button — toggle fullscreen-ish */
+                            /* TODO: implement maximize/restore */
+                            goto click_done;
+                        }
+
+                        /* Title bar drag area (not on a button) */
+                        if (wy < WM_TITLE_BAR_H) {
+                            drag_idx = new_idx;
+                            drag_off_x = wx;
+                            drag_off_y = wy;
+                            log_int("[composer]  drag start idx=", drag_idx, "\n");
+                            goto click_done;
+                        }
+
+                        /* Content area: offset y by decoration height */
+                        wy -= WM_TITLE_BAR_H;
                     }
+
                     /* Broadcast focus change to panel surfaces (menubar, dock) */
                     if (surfaces[new_idx].level != SURF_LEVEL_PANEL) {
                         for (int i = 0; i < MAX_SURFACES; i++) {
                             if (surfaces[i].valid && surfaces[i].level == SURF_LEVEL_PANEL && surfaces[i].reply_port) {
-                                uint32_t fmsg[2] = {COMPOSER_FOCUS_CHANGED, surfaces[new_idx].owner_pid};
+                                wm_focus_msg_t fmsg = {
+                                    .type = WM_FOCUS_CHANGED,
+                                    .focused_pid = surfaces[new_idx].owner_pid
+                                };
                                 ipc_msg_t fm;
                                 fm.type = IPC_MSG_EVENT;
                                 fm.sender_pid = 0;
@@ -677,7 +905,7 @@ void display_main(void) {
                             }
                         }
                     }
-                    /* Forward click to app that owns this surface. */
+                    /* Forward click to app's content area */
                     if (surfaces[new_idx].reply_port) {
                         mouse_event_msg_t mev = {
                             .type = COMPOSER_MOUSE_EVENT,
@@ -697,14 +925,17 @@ void display_main(void) {
                         for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
                         sys_port_send(surfaces[new_idx].reply_port, &mmsg);
                     }
+                click_done:;
                 }
                 if (ev.button == MOUSE_RIGHT && hit < 0)
                     spawn_surface(ev.x, ev.y);
                 if (ev.button == MOUSE_RIGHT && hit >= 0) {
-                    /* Forward right-click to app. */
                     int new_idx = hit;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
+                    /* Offset for decorated windows */
+                    if (surface_decorated(&surfaces[new_idx]))
+                        wy -= WM_TITLE_BAR_H;
                     if (surfaces[new_idx].reply_port) {
                         mouse_event_msg_t mev = {
                             .type = COMPOSER_MOUSE_EVENT,
@@ -736,6 +967,9 @@ void display_main(void) {
                 if (hit >= 0 && surfaces[hit].reply_port) {
                     int32_t wx = ev.x - surfaces[hit].x;
                     int32_t wy = ev.y - surfaces[hit].y;
+                    /* Offset for decorated windows */
+                    if (surface_decorated(&surfaces[hit]))
+                        wy -= WM_TITLE_BAR_H;
                     mouse_event_msg_t mev = {
                         .type = COMPOSER_MOUSE_EVENT,
                         .x = wx,
@@ -768,19 +1002,19 @@ void display_main(void) {
                     if (msg.payload_len >= sizeof(composer_msg_t)) {
                         composer_msg_t *cm = (composer_msg_t *)msg.payload;
                         spawn_surface_custom(cm->x, cm->y, cm->w, cm->h,
-                                             cm->color, cm->fixed ? 1 : 0,
-                                             cm->owner_pid, cm->reply_port);
+                                             cm->flags, cm->owner_pid,
+                                             cm->reply_port, cm->title);
                         ipc_new_surface = 1;
                     }
                 }
                 if (msg_type == COMPOSER_DESTROY_SURFACE) {
                     log("[composer] IPC: DESTROY_SURFACE\n");
-                    /* Simple destroy: first uint32_t after type is surface_idx. */
                     if (msg.payload_len >= 8) {
                         uint32_t idx = ((uint32_t *)msg.payload)[1];
                         if (idx < (uint32_t)surface_count) {
+                            gpu_comp_destroy_surface(idx);
                             surfaces[idx].valid = 0;
-                            surfaces[idx].pixels = NULL; /* dead app's buffer */
+                            surfaces[idx].pixels = NULL;
                             z_changed = 1;
                             log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
                         }
@@ -833,10 +1067,24 @@ void display_main(void) {
                         uint32_t target_pid = ((uint32_t *)msg.payload)[1];
                         for (int i = 0; i < MAX_SURFACES; i++) {
                             if (surfaces[i].valid && surfaces[i].owner_pid == target_pid) {
+                                gpu_comp_destroy_surface(i);
                                 surfaces[i].valid = 0;
                                 surfaces[i].pixels = NULL;
                                 z_changed = 1;
                                 break;
+                            }
+                        }
+                    }
+                }
+                if (msg_type == WM_SET_TITLE) {
+                    if (msg.payload_len >= sizeof(wm_set_title_msg_t)) {
+                        wm_set_title_msg_t *tm = (wm_set_title_msg_t *)msg.payload;
+                        if (tm->surface_idx < (uint32_t)surface_count) {
+                            surface_info_t *s = &surfaces[tm->surface_idx];
+                            if (s->valid) {
+                                for (int i = 0; i < 32; i++) s->title[i] = tm->title[i];
+                                s->title[31] = '\0';
+                                z_changed = 1;
                             }
                         }
                     }
@@ -934,7 +1182,8 @@ void display_main(void) {
             if (nx < 0) nx = 0;
             if (ny < 0) ny = 0;
             if (nx + (int32_t)s->w > fb_w) nx = fb_w - s->w;
-            if (ny + (int32_t)s->h > fb_h) ny = fb_h - s->h;
+            int th = surface_total_h(s);
+            if (ny + th > fb_h) ny = fb_h - th;
             s->x = nx; s->y = ny;
             (void)0; /* drag position visible on screen, no log */
         }
@@ -966,14 +1215,29 @@ void display_main(void) {
             for (int i = 0; i < surface_count; i++) {
                 surface_info_t *s = &surfaces[i];
                 if (!s->valid || !s->dirty) continue;
-                int sx0 = s->x + (int32_t)s->dirty_x;
-                int sy0 = s->y + (int32_t)s->dirty_y;
-                int sx1 = sx0 + (int32_t)s->dirty_w;
-                int sy1 = sy0 + (int32_t)s->dirty_h;
-                if (sx0 < dirty_x0) dirty_x0 = sx0;
-                if (sy0 < dirty_y0) dirty_y0 = sy0;
-                if (sx1 > dirty_x1) dirty_x1 = sx1;
-                if (sy1 > dirty_y1) dirty_y1 = sy1;
+                if (surface_decorated(s)) {
+                    /* Decorated window: dirty coords are content-local,
+                     * content starts at WM_TITLE_BAR_H below window origin.
+                     * Expand to full window bounds so corners get masked. */
+                    int total_h = surface_total_h(s);
+                    int sx0 = s->x;
+                    int sy0 = s->y;
+                    int sx1 = s->x + (int32_t)s->w;
+                    int sy1 = s->y + total_h;
+                    if (sx0 < dirty_x0) dirty_x0 = sx0;
+                    if (sy0 < dirty_y0) dirty_y0 = sy0;
+                    if (sx1 > dirty_x1) dirty_x1 = sx1;
+                    if (sy1 > dirty_y1) dirty_y1 = sy1;
+                } else {
+                    int sx0 = s->x + (int32_t)s->dirty_x;
+                    int sy0 = s->y + (int32_t)s->dirty_y;
+                    int sx1 = sx0 + (int32_t)s->dirty_w;
+                    int sy1 = sy0 + (int32_t)s->dirty_h;
+                    if (sx0 < dirty_x0) dirty_x0 = sx0;
+                    if (sy0 < dirty_y0) dirty_y0 = sy0;
+                    if (sx1 > dirty_x1) dirty_x1 = sx1;
+                    if (sy1 > dirty_y1) dirty_y1 = sy1;
+                }
                 has_dirty = 1;
             }
         }
@@ -996,8 +1260,33 @@ void display_main(void) {
             if (dirty_y0 < 0) dirty_y0 = 0;
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
             if (dirty_y1 > fb_h) dirty_y1 = fb_h;
-            draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
-            blit_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+
+            /* Upload dirty surfaces to GPU textures */
+            if (gpu_comp_active()) {
+                for (int i = 0; i < surface_count; i++) {
+                    surface_info_t *s = &surfaces[i];
+                    if (!s->valid || s->hidden || !s->dirty || !s->pixels) continue;
+                    if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
+                    gpu_comp_upload_surface(i, s->pixels, s->w, s->h,
+                                           s->dirty_x, s->dirty_y,
+                                           s->dirty_w, s->dirty_h);
+                }
+
+                /* GPU compositing: submit 3D command stream */
+                gpu_comp_surf_info_t gsi[MAX_SURFACES];
+                for (int i = 0; i < surface_count && i < MAX_SURFACES; i++) {
+                    gsi[i].x = surfaces[i].x;
+                    gsi[i].y = surfaces[i].y;
+                    gsi[i].w = surfaces[i].w;
+                    gsi[i].h = surfaces[i].h;
+                    gsi[i].valid = surfaces[i].valid;
+                    gsi[i].hidden = surfaces[i].hidden;
+                }
+                gpu_comp_composite(fb_w, fb_h, gsi, surface_count);
+            } else {
+                draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                blit_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+            }
         }
 
         if (gpu_mode) {

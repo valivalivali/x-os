@@ -57,15 +57,41 @@ uintptr_t syscall3(uint64_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
 uintptr_t syscall4(uint64_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
                    uintptr_t a4) {
     uintptr_t ret;
+    register uintptr_t r10 __asm__("r10") = a4;
     __asm__ volatile (
-        "movq %2, %%rdi\n"
-        "movq %3, %%rsi\n"
-        "movq %4, %%rdx\n"
-        "movq %5, %%r10\n"
         "syscall"
         : "=a"(ret)
-        : "a"(num), "r"(a1), "r"(a2), "r"(a3), "r"(a4)
-        : "rcx", "r11", "rdi", "rsi", "rdx", "r8", "r9", "r10", "memory"
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10)
+        : "rcx", "r11", "r8", "r9", "memory"
+    );
+    return ret;
+}
+
+uintptr_t syscall5(uint64_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                   uintptr_t a4, uintptr_t a5) {
+    uintptr_t ret;
+    register uintptr_t r10 __asm__("r10") = a4;
+    register uintptr_t r8 __asm__("r8") = a5;
+    __asm__ volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8)
+        : "rcx", "r11", "r9", "memory"
+    );
+    return ret;
+}
+
+uintptr_t syscall6(uint64_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                   uintptr_t a4, uintptr_t a5, uintptr_t a6) {
+    uintptr_t ret;
+    register uintptr_t r10 __asm__("r10") = a4;
+    register uintptr_t r8 __asm__("r8") = a5;
+    register uintptr_t r9 __asm__("r9") = a6;
+    __asm__ volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
+        : "rcx", "r11", "memory"
     );
     return ret;
 }
@@ -159,6 +185,75 @@ int sys_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
 
 int sys_gpu_cursor_move(int32_t x, int32_t y) {
     return (int)syscall2(SYS_GPU_CURSOR_MOVE, (uint64_t)(int64_t)x, (uint64_t)(int64_t)y);
+}
+
+/* GPU virgl wrappers */
+
+int sys_gpu_virgl_present(void) {
+    return (int)syscall0(SYS_GPU_VIRGL_PRESENT);
+}
+
+int sys_gpu_ctx_create(uint32_t ctx_id) {
+    return (int)syscall1(SYS_GPU_CTX_CREATE, ctx_id);
+}
+
+int sys_gpu_ctx_destroy(uint32_t ctx_id) {
+    return (int)syscall1(SYS_GPU_CTX_DESTROY, ctx_id);
+}
+
+int sys_gpu_ctx_attach(uint32_t ctx_id, uint32_t resource_id) {
+    return (int)syscall2(SYS_GPU_CTX_ATTACH, ctx_id, resource_id);
+}
+
+int sys_gpu_res_create_2d(uint32_t resource_id, uint32_t format,
+                          uint32_t width, uint32_t height) {
+    return (int)syscall4(SYS_GPU_RES_CREATE_2D, resource_id, format, width, height);
+}
+
+int sys_gpu_res_attach(uint32_t resource_id, uint64_t phys, uint64_t size) {
+    return (int)syscall3(SYS_GPU_RES_ATTACH, resource_id, phys, size);
+}
+
+int sys_gpu_res_unref(uint32_t resource_id) {
+    return (int)syscall1(SYS_GPU_RES_UNREF, resource_id);
+}
+
+int sys_gpu_transfer_2d(uint32_t resource_id, uint32_t x, uint32_t y,
+                        uint32_t w, uint32_t h, uint64_t offset) {
+    return (int)syscall6(SYS_GPU_TRANSFER_2D, resource_id, x, y, w, h, offset);
+}
+
+int sys_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size) {
+    return (int)syscall3(SYS_GPU_SUBMIT_3D, ctx_id, (uintptr_t)cmds, size);
+}
+
+int sys_gpu_set_scanout(uint32_t scanout_id, uint32_t resource_id,
+                        uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    return (int)syscall6(SYS_GPU_SET_SCANOUT, scanout_id, resource_id, x, y, w, h);
+}
+
+int sys_gpu_flush_res(uint32_t resource_id, uint32_t x, uint32_t y,
+                      uint32_t w, uint32_t h) {
+    return (int)syscall5(SYS_GPU_FLUSH_RES, resource_id, x, y, w, h);
+}
+
+uint32_t sys_gpu_alloc_res_id(void) {
+    return (uint32_t)syscall0(SYS_GPU_ALLOC_RES_ID);
+}
+
+int sys_gpu_res_attach_virt(uint32_t resource_id, uint64_t vaddr, uint32_t npages,
+                            uint64_t buf_size) {
+    return (int)syscall4(SYS_GPU_RES_ATTACH_VIRT, resource_id, vaddr, npages, buf_size);
+}
+
+int sys_gpu_res_create_3d(uint32_t resource_id, uint32_t target, uint32_t format,
+                          uint32_t bind, uint32_t width, uint32_t height,
+                          uint32_t depth, uint32_t array_size,
+                          uint32_t last_level, uint32_t nr_samples,
+                          uint32_t flags) {
+    (void)depth; (void)array_size; (void)last_level; (void)nr_samples; (void)flags;
+    return (int)syscall6(SYS_GPU_RES_CREATE_3D, resource_id, target, format,
+                         bind, width, height);
 }
 
 /* Time wrapper — reads RTC hour/min/sec into 3-byte buffer */

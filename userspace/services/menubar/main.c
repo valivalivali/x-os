@@ -12,30 +12,13 @@
 #include "kernel/include/syscall.h"
 #include "kernel/include/ipc.h"
 #include "userspace/lib/xgfx/xgfx.h"
+#include "userspace/lib/wm/wm.h"
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- Surface IPC ------------------------------------------------------ */
+/* ---- Surface IPC (using WM protocol) ---------------------------------- */
 
-#define CS_TYPE          1
-#define COMPOSER_DESTROY 2
-#define SD_TYPE          6
-#define COMPOSER_MOUSE_EVENT   7
-#define COMPOSER_FOCUS_CHANGED 15
-#define PNC              3
-
-#define COMPOSER_HIDE_BY_PID    12
-#define COMPOSER_SHOW_BY_PID    13
-#define COMPOSER_DESTROY_BY_PID 14
-
-typedef struct {
-    uint32_t type; int32_t x,y; uint32_t w,h;
-    uint32_t color; uint32_t fixed; uint32_t owner_pid; uint64_t reply_port;
-} cs_msg_t;
-
-typedef struct { uint32_t type; uint64_t buf_vaddr; uint32_t surface_idx; } sr_msg_t;
-typedef struct { uint32_t type; uint32_t si; uint32_t x,y,w,h; } sd_msg_t;
-typedef struct { uint32_t type; int32_t x,y; uint32_t button, action; uint32_t surface_idx; } mouse_msg_t;
+#define COMPOSER_DESTROY WM_DESTROY_SURFACE
 
 /* ---- Colors (macOS-inspired) ------------------------------------------ */
 
@@ -187,20 +170,25 @@ static void send_composer_cmd(uint32_t cmd_type, uint32_t pid) {
     uint32_t payload[2] = {cmd_type, pid};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload), {0}};
     for (size_t i = 0; i < sizeof(payload); i++) msg.payload[i] = ((uint8_t*)&payload)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
 /* ---- Surface IPC wrappers --------------------------------------------- */
 
 static int create_surface_port(int32_t x, int32_t y, uint32_t w, uint32_t h, uint64_t port,
-                                uint32_t *out_si, uint32_t **out_px) {
-    cs_msg_t cm = {CS_TYPE, x, y, w, h, 0x00000000, 1,
-                   (uint32_t)syscall0(SYS_PROC_PID), port};
+                                uint32_t flags, uint32_t *out_si, uint32_t **out_px) {
+    wm_create_msg_t cm;
+    __builtin_memset(&cm, 0, sizeof(cm));
+    cm.type = WM_CREATE_SURFACE;
+    cm.x = x; cm.y = y; cm.w = w; cm.h = h;
+    cm.flags = flags;
+    cm.owner_pid = (uint32_t)syscall0(SYS_PROC_PID);
+    cm.reply_port = port;
     ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
-    for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(PNC); if (!cp) syscall0(SYS_YIELD); }
+    for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(WM_COMPOSER_PORT_NS); if (!cp) syscall0(SYS_YIELD); }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
     ipc_msg_t re; int got = 0;
     for (int r = 0; r < 300 && !got; r++) {
@@ -208,17 +196,17 @@ static int create_surface_port(int32_t x, int32_t y, uint32_t w, uint32_t h, uin
         syscall0(SYS_YIELD);
     }
     if (!got) return -1;
-    sr_msg_t *srm = (sr_msg_t*)re.payload;
+    wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
     *out_px = (uint32_t*)srm->buf_vaddr;
     *out_si = srm->surface_idx;
     return 0;
 }
 
 static void send_dirty_si(uint32_t si, int x, int y, int w, int h) {
-    sd_msg_t d = {SD_TYPE, si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
+    wm_dirty_msg_t d = {WM_SURFACE_DIRTY, si, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(d), {0}};
     for (size_t i = 0; i < sizeof(d); i++) msg.payload[i] = ((uint8_t*)&d)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
@@ -226,7 +214,7 @@ static void destroy_surface(uint32_t si) {
     uint32_t payload[2] = {COMPOSER_DESTROY, si};
     ipc_msg_t msg = {IPC_MSG_EVENT, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(payload), {0}};
     for (size_t i = 0; i < sizeof(payload); i++) msg.payload[i] = ((uint8_t*)&payload)[i];
-    uint64_t cp = sys_ns_lookup(PNC);
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
 }
 
@@ -475,7 +463,7 @@ static void open_dropdown(int item) {
     g_dd_port = sys_port_create();
     if (!g_dd_port) return;
     if (create_surface_port(g_dd_x, g_dd_y, g_dd_w, g_dd_h, g_dd_port,
-                            &g_dd_si, &g_dd_px) < 0) {
+                            WM_FLAG_OVERLAY, &g_dd_si, &g_dd_px) < 0) {
         g_dd_open = -1; return;
     }
     g_dd_open = item;
@@ -512,7 +500,7 @@ static int hit_test_dropdown(int mx, int my) {
 
 /* ---- Event handling --------------------------------------------------- */
 
-static void handle_bar_mouse(mouse_msg_t *m) {
+static void handle_bar_mouse(wm_mouse_event_msg_t *m) {
     if (m->action == 0) {
         /* Move */
         int h = hit_test_bar(m->x, m->y);
@@ -531,7 +519,7 @@ static void handle_bar_mouse(mouse_msg_t *m) {
     }
 }
 
-static void handle_dropdown_mouse(mouse_msg_t *m) {
+static void handle_dropdown_mouse(wm_mouse_event_msg_t *m) {
     if (m->action == 0) {
         /* Move */
         int row = hit_test_dropdown(m->x, m->y);
@@ -546,11 +534,11 @@ static void handle_dropdown_mouse(mouse_msg_t *m) {
             dd_menu_t *menu = &g_menus[g_dd_open];
             int act = menu->rows[row].action;
             if (act == 1 && g_focus_pid > 0)
-                send_composer_cmd(COMPOSER_HIDE_BY_PID, g_focus_pid);
+                send_composer_cmd(WM_HIDE_BY_PID, g_focus_pid);
             else if (act == 2 && g_focus_pid > 0)
-                send_composer_cmd(COMPOSER_SHOW_BY_PID, g_focus_pid);
+                send_composer_cmd(WM_SHOW_BY_PID, g_focus_pid);
             else if (act == 3 && g_focus_pid > 0) {
-                send_composer_cmd(COMPOSER_DESTROY_BY_PID, g_focus_pid);
+                send_composer_cmd(WM_DESTROY_BY_PID, g_focus_pid);
                 syscall1(SYS_PROC_KILL, g_focus_pid);
             }
             close_dropdown();
@@ -574,7 +562,7 @@ void menubar_main(void) {
     g_ww = sw;
 
     g_port = sys_port_create();
-    if (!g_port || create_surface_port(0, 0, sw, BAR_H, g_port, &g_si, &g_px) < 0)
+    if (!g_port || create_surface_port(0, 0, sw, BAR_H, g_port, WM_FLAG_PANEL, &g_si, &g_px) < 0)
         return;
 
     draw_menubar(g_px, sw, BAR_H);
@@ -587,10 +575,10 @@ void menubar_main(void) {
         if (g_port && sys_port_recv(g_port, &msg, 0)) {
             if (msg.payload_len >= 8) {
                 uint32_t t = *(uint32_t*)msg.payload;
-                if (t == COMPOSER_MOUSE_EVENT && msg.payload_len >= sizeof(mouse_msg_t)) {
-                    mouse_msg_t *m = (mouse_msg_t*)msg.payload;
+                if (t == WM_MOUSE_EVENT && msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
+                    wm_mouse_event_msg_t *m = (wm_mouse_event_msg_t *)msg.payload;
                     handle_bar_mouse(m);
-                } else if (t == COMPOSER_FOCUS_CHANGED && msg.payload_len >= 8) {
+                } else if (t == WM_FOCUS_CHANGED && msg.payload_len >= 8) {
                     uint32_t new_pid = ((uint32_t*)msg.payload)[1];
                     if ((int)new_pid != g_focus_pid) {
                         g_focus_pid = new_pid;
@@ -602,9 +590,9 @@ void menubar_main(void) {
 
         /* Poll dropdown port */
         if (g_dd_open >= 0 && g_dd_port && sys_port_recv(g_dd_port, &msg, 0)) {
-            if (msg.payload_len >= sizeof(mouse_msg_t)) {
-                mouse_msg_t *m = (mouse_msg_t*)msg.payload;
-                if (m->type == COMPOSER_MOUSE_EVENT)
+            if (msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
+                wm_mouse_event_msg_t *m = (wm_mouse_event_msg_t *)msg.payload;
+                if (m->type == WM_MOUSE_EVENT)
                     handle_dropdown_mouse(m);
             }
         }
