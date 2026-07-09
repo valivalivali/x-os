@@ -78,7 +78,33 @@
 #define SYS_CHDIR       62
 #define SYS_BRK         63
 
-#define SYSCALL_MAX          64
+/* POSIX socket syscalls (from XNU BSD) */
+#define SYS_SOCKET      65
+#define SYS_BIND        66
+#define SYS_LISTEN      67
+#define SYS_ACCEPT      68
+#define SYS_CONNECT     69
+#define SYS_SEND        70
+#define SYS_RECV        71
+#define SYS_SENDTO      72
+#define SYS_RECVFROM    73
+#define SYS_SHUTDOWN    74
+#define SYS_GETSOCKNAME 75
+#define SYS_GETPEERNAME 76
+#define SYS_SETSOCKOPT  77
+#define SYS_GETSOCKOPT  78
+#define SYS_SELECT      79
+#define SYS_POLL        80
+#define SYS_MMAP        81
+#define SYS_MUNMAP      82
+#define SYS_MPROTECT    83
+#define SYS_SIGACTION   84
+#define SYS_SIGPROCMASK 85
+#define SYS_KILL        86
+#define SYS_FCNTL       87
+#define SYS_IOCTL       88
+
+#define SYSCALL_MAX          89
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -213,6 +239,34 @@ int sys_unlink(const char *path);
 int sys_getcwd(char *buf, size_t size);
 int sys_chdir(const char *path);
 int sys_brk(void *addr);
+
+/* POSIX socket wrappers */
+int sys_socket(int domain, int type, int protocol);
+int sys_bind(int fd, const void *addr, int addrlen);
+int sys_listen(int fd, int backlog);
+int sys_accept(int fd, void *addr, int *addrlen);
+int sys_connect(int fd, const void *addr, int addrlen);
+int sys_send(int fd, const void *buf, size_t len, int flags);
+int sys_recv(int fd, void *buf, size_t len, int flags);
+int sys_sendto(int fd, const void *buf, size_t len, int flags,
+               const void *addr, int addrlen);
+int sys_recvfrom(int fd, void *buf, size_t len, int flags,
+                 void *addr, int *addrlen);
+int sys_shutdown(int fd, int how);
+int sys_getsockname(int fd, void *addr, int *addrlen);
+int sys_getpeername(int fd, void *addr, int *addrlen);
+int sys_setsockopt(int fd, int level, int optname, const void *optval, int optlen);
+int sys_getsockopt(int fd, int level, int optname, void *optval, int *optlen);
+int sys_select(int nfds, void *readfds, void *writefds, void *exceptfds, void *timeout);
+int sys_poll(void *fds, int nfds, int timeout);
+void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, int offset);
+int sys_munmap(void *addr, size_t length);
+int sys_mprotect(void *addr, size_t length, int prot);
+int sys_sigaction(int signum, const void *act, void *oldact);
+int sys_sigprocmask(int how, const void *set, void *oldset);
+int sys_kill(int pid, int sig);
+int sys_fcntl(int fd, int cmd, int arg);
+int sys_ioctl(int fd, int cmd, void *arg);
 
 /* Kernel entry point for syscalls.
  * Implemented in kernel/arch/x86_64/syscall.c */

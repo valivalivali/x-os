@@ -725,6 +725,32 @@ static uint64_t sys_brk_impl(uint64_t addr, uint64_t a2, uint64_t a3,
     return addr;
 }
 
+/* Forward declarations for BSD POSIX syscall implementations */
+uint64_t sys_socket_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_bind_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_listen_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_accept_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_connect_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_send_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_recv_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_sendto_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_recvfrom_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_shutdown_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_getsockname_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_getpeername_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_setsockopt_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_getsockopt_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_select_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_poll_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_mmap_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_munmap_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_mprotect_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_sigaction_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_sigprocmask_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_kill_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_fcntl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_ioctl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
 static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) = {
     [SYS_EXIT]        = (void *)sys_exit_impl,
     [SYS_YIELD]       = (void *)sys_yield_impl,
@@ -789,6 +815,30 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_GETCWD]      = (void *)sys_getcwd_impl,
     [SYS_CHDIR]       = (void *)sys_chdir_impl,
     [SYS_BRK]         = (void *)sys_brk_impl,
+    [SYS_SOCKET]      = (void *)sys_socket_impl,
+    [SYS_BIND]        = (void *)sys_bind_impl,
+    [SYS_LISTEN]      = (void *)sys_listen_impl,
+    [SYS_ACCEPT]      = (void *)sys_accept_impl,
+    [SYS_CONNECT]     = (void *)sys_connect_impl,
+    [SYS_SEND]        = (void *)sys_send_impl,
+    [SYS_RECV]        = (void *)sys_recv_impl,
+    [SYS_SENDTO]      = (void *)sys_sendto_impl,
+    [SYS_RECVFROM]    = (void *)sys_recvfrom_impl,
+    [SYS_SHUTDOWN]    = (void *)sys_shutdown_impl,
+    [SYS_GETSOCKNAME] = (void *)sys_getsockname_impl,
+    [SYS_GETPEERNAME] = (void *)sys_getpeername_impl,
+    [SYS_SETSOCKOPT]  = (void *)sys_setsockopt_impl,
+    [SYS_GETSOCKOPT]  = (void *)sys_getsockopt_impl,
+    [SYS_SELECT]      = (void *)sys_select_impl,
+    [SYS_POLL]        = (void *)sys_poll_impl,
+    [SYS_MMAP]        = (void *)sys_mmap_impl,
+    [SYS_MUNMAP]      = (void *)sys_munmap_impl,
+    [SYS_MPROTECT]    = (void *)sys_mprotect_impl,
+    [SYS_SIGACTION]   = (void *)sys_sigaction_impl,
+    [SYS_SIGPROCMASK] = (void *)sys_sigprocmask_impl,
+    [SYS_KILL]        = (void *)sys_kill_impl,
+    [SYS_FCNTL]       = (void *)sys_fcntl_impl,
+    [SYS_IOCTL]       = (void *)sys_ioctl_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

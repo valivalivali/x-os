@@ -341,3 +341,79 @@ int sys_chdir(const char *path) {
 int sys_brk(void *addr) {
     return (int)syscall1(SYS_BRK, (uintptr_t)addr);
 }
+
+/* POSIX socket wrappers */
+int sys_socket(int domain, int type, int protocol) {
+    return (int)syscall3(SYS_SOCKET, domain, type, protocol);
+}
+int sys_bind(int fd, const void *addr, int addrlen) {
+    return (int)syscall3(SYS_BIND, fd, (uintptr_t)addr, addrlen);
+}
+int sys_listen(int fd, int backlog) {
+    return (int)syscall2(SYS_LISTEN, fd, backlog);
+}
+int sys_accept(int fd, void *addr, int *addrlen) {
+    return (int)syscall3(SYS_ACCEPT, fd, (uintptr_t)addr, (uintptr_t)addrlen);
+}
+int sys_connect(int fd, const void *addr, int addrlen) {
+    return (int)syscall3(SYS_CONNECT, fd, (uintptr_t)addr, addrlen);
+}
+int sys_send(int fd, const void *buf, size_t len, int flags) {
+    return (int)syscall4(SYS_SEND, fd, (uintptr_t)buf, len, flags);
+}
+int sys_recv(int fd, void *buf, size_t len, int flags) {
+    return (int)syscall4(SYS_RECV, fd, (uintptr_t)buf, len, flags);
+}
+int sys_sendto(int fd, const void *buf, size_t len, int flags,
+               const void *addr, int addrlen) {
+    return (int)syscall6(SYS_SENDTO, fd, (uintptr_t)buf, len, flags, (uintptr_t)addr, addrlen);
+}
+int sys_recvfrom(int fd, void *buf, size_t len, int flags,
+                 void *addr, int *addrlen) {
+    return (int)syscall6(SYS_RECVFROM, fd, (uintptr_t)buf, len, flags, (uintptr_t)addr, (uintptr_t)addrlen);
+}
+int sys_shutdown(int fd, int how) {
+    return (int)syscall2(SYS_SHUTDOWN, fd, how);
+}
+int sys_getsockname(int fd, void *addr, int *addrlen) {
+    return (int)syscall3(SYS_GETSOCKNAME, fd, (uintptr_t)addr, (uintptr_t)addrlen);
+}
+int sys_getpeername(int fd, void *addr, int *addrlen) {
+    return (int)syscall3(SYS_GETPEERNAME, fd, (uintptr_t)addr, (uintptr_t)addrlen);
+}
+int sys_setsockopt(int fd, int level, int optname, const void *optval, int optlen) {
+    return (int)syscall5(SYS_SETSOCKOPT, fd, level, optname, (uintptr_t)optval, optlen);
+}
+int sys_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
+    return (int)syscall5(SYS_GETSOCKOPT, fd, level, optname, (uintptr_t)optval, (uintptr_t)optlen);
+}
+int sys_select(int nfds, void *readfds, void *writefds, void *exceptfds, void *timeout) {
+    return (int)syscall5(SYS_SELECT, nfds, (uintptr_t)readfds, (uintptr_t)writefds, (uintptr_t)exceptfds, (uintptr_t)timeout);
+}
+int sys_poll(void *fds, int nfds, int timeout) {
+    return (int)syscall3(SYS_POLL, (uintptr_t)fds, nfds, timeout);
+}
+void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, int offset) {
+    return (void *)syscall6(SYS_MMAP, (uintptr_t)addr, length, prot, flags, fd, offset);
+}
+int sys_munmap(void *addr, size_t length) {
+    return (int)syscall2(SYS_MUNMAP, (uintptr_t)addr, length);
+}
+int sys_mprotect(void *addr, size_t length, int prot) {
+    return (int)syscall3(SYS_MPROTECT, (uintptr_t)addr, length, prot);
+}
+int sys_sigaction(int signum, const void *act, void *oldact) {
+    return (int)syscall3(SYS_SIGACTION, signum, (uintptr_t)act, (uintptr_t)oldact);
+}
+int sys_sigprocmask(int how, const void *set, void *oldset) {
+    return (int)syscall3(SYS_SIGPROCMASK, how, (uintptr_t)set, (uintptr_t)oldset);
+}
+int sys_kill(int pid, int sig) {
+    return (int)syscall2(SYS_KILL, pid, sig);
+}
+int sys_fcntl(int fd, int cmd, int arg) {
+    return (int)syscall3(SYS_FCNTL, fd, cmd, arg);
+}
+int sys_ioctl(int fd, int cmd, void *arg) {
+    return (int)syscall3(SYS_IOCTL, fd, cmd, (uintptr_t)arg);
+}

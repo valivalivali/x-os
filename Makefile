@@ -37,8 +37,9 @@ endif
 OVMF         := $(shell brew --prefix qemu 2>/dev/null)/share/qemu/edk2-x86_64-code.fd
 
 SRC_DIRS     := boot kernel userspace
-# Exclude Limine, ring-3 userspace sources, and generated blobs from kernel build.
-CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' 2>/dev/null)
+# Exclude Limine, ring-3 userspace sources, generated blobs, and raw XNU BSD
+# files from kernel build. Include only x-os adapted files (*_xos.c, bsd_net_init.c).
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/kern/kern_*.c' -not -path './bsd/kern/sys_*.c' -not -path './bsd/kern/uipc_domain.c' -not -path './bsd/kern/uipc_socket.c' -not -path './bsd/kern/uipc_socket2.c' -not -path './bsd/kern/uipc_proto.c' -not -path './bsd/kern/uipc_syscalls.c' -not -path './bsd/kern/uipc_usrreq.c' -not -path './bsd/kern/uipc_mbuf.c' -not -path './bsd/kern/uipc_mbuf2.c' -not -path './bsd/kern/uipc_mbuf_mcache.c' -not -path './bsd/kern/mcache.c' -not -path './bsd/kern/kpi_*.c' -not -path './bsd/kern/mach_*.c' -not -path './bsd/kern/bsd_*.c' -not -path './bsd/kern/subr_*.c' -not -path './bsd/kern/tty*.c' -not -path './bsd/kern/proc_info.c' -not -path './bsd/kern/posix_*.c' -not -path './bsd/kern/sysv_*.c' -not -path './bsd/kern/stackshot.c' -not -path './bsd/kern/tracker.c' -not -path './bsd/kern/vsock_domain.c' -not -path './bsd/kern/ubc_subr.c' -not -path './bsd/kern/imageboot.c' -not -path './bsd/kern/chunklist.c' -not -path './bsd/kern/decmpfs.c' -not -path './bsd/kern/hvg_sysctl.c' -not -path './bsd/kern/kdebug*.c' -not -path './bsd/kern/mem_acct.c' -not -path './bsd/kern/netboot.c' -not -path './bsd/kern/policy_check.c' -not -path './bsd/kern/process_policy.c' -not -path './bsd/kern/proc_uuid_policy.c' -not -path './bsd/kern/socket_flows.c' -not -path './bsd/kern/socket_info.c' -not -path './bsd/kern/sys_coalition.c' -not -path './bsd/kern/sys_domain.c' -not -path './bsd/kern/sys_ecc.c' -not -path './bsd/kern/sys_eventlink.c' -not -path './bsd/kern/sys_persona.c' -not -path './bsd/kern/sys_reason.c' -not -path './bsd/kern/sys_record_event.c' -not -path './bsd/kern/sys_recount.c' -not -path './bsd/kern/sys_ulock.c' -not -path './bsd/kern/sys_work_interval.c' -not -path './bsd/kern/qsort.c' -not -path './bsd/net/*' -not -path './bsd/netinet/*' -not -path './bsd/vfs/*' -not -path './bsd/pthread/*' -not -path './bsd/libkern/*' -not -path './bsd/compat/*' 2>/dev/null)
 SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.S' 2>/dev/null)
 OBJS         := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES)) $(patsubst %.S,$(OBJ_DIR)/%.o,$(SFILES))
 DEPS         := $(patsubst %.c,$(OBJ_DIR)/%.d,$(CFILES))
@@ -49,7 +50,7 @@ CFLAGS := \
   -fno-pic -fno-pie -m64 -march=x86-64 \
   -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
   -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -I. -I$(LIMINE_DIR) \
+  -I. -I$(LIMINE_DIR) -Ibsd \
   -MMD -MP
 
 LDFLAGS := \
