@@ -19,12 +19,27 @@
  * NanoSVG allocates and frees in a parse-then-render pattern,
  * so a simple page-grabbing malloc with a free-list is sufficient. */
 
-#define NSVG_PAGE_SIZE 4096
+#define NSVG_PAGE_SIZE (1024 * 1024)  /* 1 MiB per page */
+#define NSVG_PAGES_PER_REGION (NSVG_PAGE_SIZE / 4096)
 
 /* Pool of allocated pages for NanoSVG */
-static void *nsvg_pages[256];
+static void *nsvg_pages[64];
 static int nsvg_page_count = 0;
 static size_t nsvg_bump_offset = 0;
+
+static void *alloc_new_page(void) {
+    if (nsvg_page_count >= 64) return NULL;
+    uint64_t base_va = 0x0000400000000000ULL + (uint64_t)nsvg_page_count * NSVG_PAGE_SIZE;
+    /* Map NSVG_PAGES_PER_REGION 4K pages to make 1 MiB contiguous region */
+    for (int i = 0; i < NSVG_PAGES_PER_REGION; i++) {
+        uint64_t va = base_va + (uint64_t)i * 4096;
+        if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) return NULL;
+    }
+    nsvg_pages[nsvg_page_count] = (void *)base_va;
+    nsvg_page_count++;
+    nsvg_bump_offset = 0;
+    return (void *)base_va;
+}
 
 void *malloc(size_t size) {
     if (size == 0) return NULL;
@@ -32,24 +47,23 @@ void *malloc(size_t size) {
     /* Align to 16 bytes */
     size = (size + 15) & ~15;
 
-    /* Try bump allocator first */
+    /* Need at least one page allocated */
+    if (nsvg_page_count == 0) {
+        if (!alloc_new_page()) return NULL;
+    }
+
+    /* Try bump allocator on current page */
     if (nsvg_bump_offset + size <= NSVG_PAGE_SIZE) {
         void *ptr = (char *)nsvg_pages[nsvg_page_count - 1] + nsvg_bump_offset;
         nsvg_bump_offset += size;
         return ptr;
     }
 
-    /* Allocate a new page */
-    if (nsvg_page_count >= 256) return NULL;
-
-    /* Use a fixed virtual address range for NanoSVG pages */
-    uint64_t va = 0x0000400000000000ULL + (uint64_t)nsvg_page_count * NSVG_PAGE_SIZE;
-    if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) return NULL;
-
-    nsvg_pages[nsvg_page_count] = (void *)va;
-    nsvg_page_count++;
-    nsvg_bump_offset = size;
-    return (void *)va;
+    /* Current page full — allocate a new one */
+    if (!alloc_new_page()) return NULL;
+    void *ptr = (char *)nsvg_pages[nsvg_page_count - 1] + nsvg_bump_offset;
+    nsvg_bump_offset += size;
+    return ptr;
 }
 
 void free(void *ptr) {
