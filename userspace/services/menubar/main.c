@@ -23,7 +23,9 @@
 /* ---- Logging ------------------------------------------------------------- */
 
 static void log(const char *s) {
-    syscall1(SYS_DEBUG_LOG, (uint64_t)(uintptr_t)s);
+    size_t n = 0;
+    while (s[n]) n++;
+    syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
 }
 
 /* ---- IPC ----------------------------------------------------------------- */
@@ -105,13 +107,24 @@ static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     if (cp) sys_port_send(cp, &msg);
 }
 
+/* ---- Screen info --------------------------------------------------------- */
+
+static uint32_t get_screen_width(void) {
+    gpu_fb_info_t gpu;
+    if (sys_gpu_fb_info(&gpu) == 0 && gpu.width > 0)
+        return gpu.width;
+    fb_info_t fb;
+    if (syscall1(SYS_FB_INFO, (uintptr_t)&fb) == 0 && fb.width > 0)
+        return fb.width;
+    return 2560; /* fallback */
+}
+
 /* ---- Main ---------------------------------------------------------------- */
 
 void menubar_main(void) {
     log("[menubar] start\n");
 
-    /* The SVG is 1008x72 — render at native size at top-left */
-    uint32_t surf_w = 1008;
+    uint32_t surf_w = get_screen_width();
     uint32_t surf_h = 72;
 
     if (create_surface(0, 0, surf_w, surf_h) < 0) {
@@ -120,15 +133,14 @@ void menubar_main(void) {
     }
     log("[menubar] surface created\n");
 
-    /* Clear surface to transparent */
     for (uint32_t i = 0; i < surf_w * surf_h; i++) {
         g_px[i] = 0x00000000;
     }
 
-    /* Parse SVG — nsvgParse modifies input in-place, so copy to writable buffer */
     extern void *malloc(size_t);
     size_t svg_len = 0;
     while (svg_data[svg_len]) svg_len++;
+
     char *svg_buf = (char *)malloc(svg_len + 1);
     if (!svg_buf) {
         log("[menubar] svg buffer alloc failed\n");
@@ -136,19 +148,19 @@ void menubar_main(void) {
     }
     for (size_t i = 0; i <= svg_len; i++) svg_buf[i] = svg_data[i];
 
+    log("[menubar] parsing SVG...\n");
     NSVGimage *image = nsvgParse(svg_buf, "px", 96.0f);
     if (!image) {
         log("[menubar] SVG parse failed\n");
         return;
     }
-    log("[menubar] SVG parsed\n");
 
-    /* Rasterize to a temporary buffer */
     int img_w = (int)image->width;
     int img_h = (int)image->height;
-    if (img_w <= 0) img_w = (int)surf_w;
-    if (img_h <= 0) img_h = (int)surf_h;
+    if (img_w <= 0) img_w = 1008;
+    if (img_h <= 0) img_h = 72;
 
+    /* Rasterize at native SVG resolution. */
     unsigned char *raster = (unsigned char *)malloc((size_t)img_w * img_h * 4);
     if (!raster) {
         log("[menubar] raster alloc failed\n");
@@ -161,11 +173,18 @@ void menubar_main(void) {
         return;
     }
 
+    log("[menubar] rasterizing...\n");
     nsvgRasterize(rast, image, 0, 0, 1.0f, raster, img_w, img_h, img_w * 4);
     log("[menubar] SVG rasterized\n");
 
-    /* Copy rasterized RGBA to compositor ARGB surface */
-    /* NanoSVG outputs RGBA bytes; compositor uses ARGB uint32 */
+    /* Clear surface to fully transparent so the desktop gradient shows
+     * through wherever the SVG has no content. */
+    for (uint32_t i = 0; i < surf_w * surf_h; i++)
+        g_px[i] = 0x00000000;
+
+    /* SVG is now 2560x72 — maps 1:1 to the surface.  No stretching.
+     * Copy raster directly, preserving the SVG's alpha channel so the
+     * composer can alpha-blend the menubar over the desktop gradient. */
     int copy_w = img_w < (int)surf_w ? img_w : (int)surf_w;
     int copy_h = img_h < (int)surf_h ? img_h : (int)surf_h;
     for (int y = 0; y < copy_h; y++) {
@@ -175,26 +194,14 @@ void menubar_main(void) {
             unsigned char g = raster[idx + 1];
             unsigned char b = raster[idx + 2];
             unsigned char a = raster[idx + 3];
-            /* Alpha blend over existing surface pixel */
-            if (a > 0) {
-                uint32_t dst = g_px[y * surf_w + x];
-                unsigned char dr = (dst >> 16) & 0xFF;
-                unsigned char dg = (dst >> 8) & 0xFF;
-                unsigned char db = dst & 0xFF;
-                unsigned char af = a;
-                unsigned char inv = 255 - af;
-                unsigned char rr = (r * af + dr * inv) / 255;
-                unsigned char gg = (g * af + dg * inv) / 255;
-                unsigned char bb = (b * af + db * inv) / 255;
-                g_px[y * surf_w + x] = 0xFF000000 | ((uint32_t)rr << 16) | ((uint32_t)gg << 8) | bb;
-            }
+            if (a > 0)
+                g_px[y * surf_w + x] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
         }
     }
 
     send_dirty(0, 0, surf_w, surf_h);
     log("[menubar] rendered\n");
 
-    /* Keep alive — yield forever */
     for (;;) {
         syscall0(SYS_YIELD);
     }

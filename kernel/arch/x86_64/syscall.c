@@ -61,6 +61,9 @@ static uint64_t sys_exit_impl(uint64_t code) {
         p->exit_code = (int)code;
         proc_exit(p);
         sched_yield();  /* should never return */
+        /* If sched_yield returns (no other process ready), halt forever.
+         * We must NOT return to syscall_entry — our page tables are gone. */
+        for (;;) __asm__ volatile("cli; hlt");
     }
     return 0;
 }

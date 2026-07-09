@@ -1178,14 +1178,11 @@ void display_main(void) {
                             if (s->valid) {
                                 s->dirty = 1;
                                 if (sd->w == 0 && sd->h == 0) {
-                                    /* 0,0,0,0 means full surface dirty. */
                                     s->dirty_x = 0; s->dirty_y = 0;
                                     s->dirty_w = s->w; s->dirty_h = s->h;
-                                    /* dirty full surface */
                                 } else {
                                     s->dirty_x = sd->x; s->dirty_y = sd->y;
                                     s->dirty_w = sd->w; s->dirty_h = sd->h;
-                                    /* dirty surface rect */
                                 }
                             }
                         }
@@ -1344,10 +1341,6 @@ void display_main(void) {
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
             if (dirty_y1 > fb_h) dirty_y1 = fb_h;
 
-            /* Compositing: paint desktop gradient + decorations + surface
-             * content directly into the framebuffer (GPU mode) or backing
-             * buffer (VGA mode). In GPU mode, no blit_rect needed —
-             * rendering goes directly to GPU memory. */
             draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
             if (!gpu_mode)
                 blit_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
@@ -1355,12 +1348,7 @@ void display_main(void) {
 
         if (gpu_mode) {
             /* Hardware cursor: QEMU composites cursor on top during scanout.
-             * Order matters: flush FIRST, then move cursor. The cursor move
-             * syscall sends the command via a kernel stack buffer. If flush
-             * runs after cursor move, it reuses the same kernel stack and
-             * overwrites the cursor command before QEMU reads it, causing
-             * the cursor to jump to (0,0). By moving the cursor last, the
-             * stack data persists until the next frame. */
+             * Just move it; no erase/redraw needed. */
             if (has_dirty)
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),

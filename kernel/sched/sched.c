@@ -90,7 +90,10 @@ void proc_exit(proc_t *p) {
         p->pml4_virt = NULL;
         p->pml4_phys = 0;
     }
-    if (p->kstack) {
+    /* Don't free the kernel stack if we're running on it.
+     * The scheduler will context-switch away, and the next process
+     * can safely reclaim this memory. We leak it to avoid use-after-free. */
+    if (p->kstack && p != current) {
         kfree(p->kstack);
         p->kstack = NULL;
     }
@@ -112,7 +115,7 @@ void proc_kill(uint64_t pid) {
     if (p == current) {
         proc_exit(p);
         sched_yield();
-        return;
+        for (;;) __asm__ volatile("cli; hlt");
     }
     /* Remove from ready queue if present. */
     proc_t **pp = &ready_head;

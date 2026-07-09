@@ -229,6 +229,8 @@ bool virtio_gpu_init(void) {
         } else {
             kputs("[virtio-gpu] cursor resource_create failed\n");
         }
+    } else {
+        kputs("[virtio-gpu] cursor phys alloc failed\n");
     }
 
     /* Initial flush to clear screen */
@@ -255,6 +257,8 @@ bool virtio_gpu_get_fb_info(gpu_fb_info_t *info) {
 
 bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
     if (!g_initialized || !g_cursor_phys) return false;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
 
     /* Transfer cursor resource to host so QEMU has the pixel data. */
     struct virtio_gpu_transfer_to_host_2d xfer;
@@ -266,7 +270,8 @@ bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y)
     xfer.resource_id = g_cursor_resource_id;
     struct virtio_gpu_ctrl_hdr xfer_resp;
     memset(&xfer_resp, 0, sizeof(xfer_resp));
-    gpu_send_recv(&xfer, sizeof(xfer), &xfer_resp, sizeof(xfer_resp));
+    bool xfer_ok = gpu_send_recv(&xfer, sizeof(xfer), &xfer_resp, sizeof(xfer_resp));
+    if (!xfer_ok) kputs("[virtio-gpu] cursor transfer failed\n");
 
     struct virtio_gpu_update_cursor cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -282,6 +287,8 @@ bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y)
 
 bool virtio_gpu_cursor_move(int32_t x, int32_t y) {
     if (!g_initialized || !g_cursor_phys) return false;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
     struct virtio_gpu_update_cursor cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.hdr.type = VIRTIO_GPU_CMD_MOVE_CURSOR;

@@ -112,7 +112,7 @@ LIBC_LDFLAGS := \
 # newlib test program
 TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
-QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
+QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,gl=es
 
 .PHONY: all run run-uefi clean distclean setup limine
 
