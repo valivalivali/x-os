@@ -98,8 +98,12 @@ TERMINAL_ELF    := $(BUILD_DIR)/userspace/services/terminal/terminal.elf
 TERMINAL_BLOB_C := kernel/proc/terminal_elf_blob.c
 TERMINAL_BLOB_O := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
 
+SVGVIEW_ELF     := $(BUILD_DIR)/userspace/services/svgview/svgview.elf
+SVGVIEW_BLOB_C  := kernel/proc/svgview_elf_blob.c
+SVGVIEW_BLOB_O  := $(OBJ_DIR)/kernel/proc/svgview_elf_blob.o
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O) $(TERMINAL_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O) $(TERMINAL_BLOB_O) $(SVGVIEW_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -304,6 +308,30 @@ $(TERMINAL_BLOB_C): $(TERMINAL_ELF)
 	@echo ">> generated $@"
 
 $(TERMINAL_BLOB_O): $(TERMINAL_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build svgview service ELF
+$(SVGVIEW_ELF): userspace/services/svgview/start.S userspace/services/svgview/main.c userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/svgview/svgview.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/svgview/start.S -o $(BUILD_DIR)/userspace/services/svgview/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/svgview/main.c -o $(BUILD_DIR)/userspace/services/svgview/main.o
+	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/svgview/nanosvg_xos.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/svgview/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/svgview/svgview.ld \
+	  $(BUILD_DIR)/userspace/services/svgview/start.o \
+	  $(BUILD_DIR)/userspace/services/svgview/main.o \
+	  $(BUILD_DIR)/userspace/services/svgview/nanosvg_xos.o \
+	  $(BUILD_DIR)/userspace/services/svgview/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(SVGVIEW_BLOB_C): $(SVGVIEW_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t svgview_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *svgview_elf_data = svgview_elf_bytes;', 'size_t svgview_elf_len = sizeof(svgview_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(SVGVIEW_BLOB_O): $(SVGVIEW_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

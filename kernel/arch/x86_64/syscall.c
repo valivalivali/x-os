@@ -174,6 +174,8 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t zsh_elf_len;
     extern const uint8_t *terminal_elf_data;
     extern size_t terminal_elf_len;
+    extern const uint8_t *svgview_elf_data;
+    extern size_t svgview_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
@@ -182,6 +184,7 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     else if (index == 3) { data = menubar_elf_data; len = menubar_elf_len; }
     else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
     else if (index == 5) { data = terminal_elf_data; len = terminal_elf_len; }
+    else if (index == 6) { data = svgview_elf_data; len = svgview_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;
