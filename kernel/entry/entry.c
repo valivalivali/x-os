@@ -26,6 +26,8 @@ extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
 extern uint64_t g_kernel_rsp0;
 extern void bsd_net_init(void);
+extern void net_init(void);
+extern void net_poll(void);
 
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
@@ -104,6 +106,9 @@ void kmain(void) {
     /* Initialize BSD networking subsystem */
     bsd_net_init();
 
+    /* Initialize TCP/IP stack */
+    net_init();
+
     /* Spawn init (PID 1) as the first ring-3 userspace process.
      * The init.elf is embedded into the kernel as a byte array. */
     boot_puts("spawning ring-3 init\n");
@@ -146,6 +151,7 @@ void kmain(void) {
 idle:
     /* Kernel idle loop — all work is now in ring-3 processes. */
     for (;;) {
+        net_poll();
         __asm__ volatile("hlt");
     }
 }
