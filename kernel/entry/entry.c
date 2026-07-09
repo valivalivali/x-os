@@ -19,6 +19,7 @@
 #include "kernel/proc/proc.h"
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
+#include "kernel/hal/net/virtio_net.h"
 #include "kernel/fs/xfs.h"
 
 extern const uint8_t *init_elf_data;
@@ -96,6 +97,9 @@ void kmain(void) {
     } else {
         boot_puts("no block device available\n");
     }
+
+    /* Initialize virtio-net networking */
+    virtio_net_init();
 
     /* Initialize BSD networking subsystem */
     bsd_net_init();

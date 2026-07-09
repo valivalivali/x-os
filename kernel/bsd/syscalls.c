@@ -212,3 +212,22 @@ uint64_t sys_ioctl_impl(uint64_t fd, uint64_t cmd, uint64_t arg,
     (void)fd; (void)cmd; (void)arg; (void)a4; (void)a5; (void)a6;
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Raw network packet syscalls                                         */
+/* ------------------------------------------------------------------ */
+
+extern int virtio_net_send(const void *data, int len);
+extern int virtio_net_recv(void *buf, int maxlen);
+
+uint64_t sys_net_send_impl(uint64_t buf, uint64_t len,
+                           uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    return (uint64_t)virtio_net_send((void*)buf, (int)len);
+}
+
+uint64_t sys_net_recv_impl(uint64_t buf, uint64_t maxlen,
+                           uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    return (uint64_t)virtio_net_recv((void*)buf, (int)maxlen);
+}

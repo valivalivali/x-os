@@ -750,6 +750,8 @@ uint64_t sys_sigprocmask_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, 
 uint64_t sys_kill_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_fcntl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_ioctl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_net_send_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_net_recv_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
 static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) = {
     [SYS_EXIT]        = (void *)sys_exit_impl,
@@ -839,6 +841,8 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_KILL]        = (void *)sys_kill_impl,
     [SYS_FCNTL]       = (void *)sys_fcntl_impl,
     [SYS_IOCTL]       = (void *)sys_ioctl_impl,
+    [SYS_NET_SEND]    = (void *)sys_net_send_impl,
+    [SYS_NET_RECV]    = (void *)sys_net_recv_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

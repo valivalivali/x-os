@@ -103,8 +103,10 @@
 #define SYS_KILL        86
 #define SYS_FCNTL       87
 #define SYS_IOCTL       88
+#define SYS_NET_SEND    89
+#define SYS_NET_RECV    90
 
-#define SYSCALL_MAX          89
+#define SYSCALL_MAX          91
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -267,6 +269,8 @@ int sys_sigprocmask(int how, const void *set, void *oldset);
 int sys_kill(int pid, int sig);
 int sys_fcntl(int fd, int cmd, int arg);
 int sys_ioctl(int fd, int cmd, void *arg);
+int sys_net_send(const void *buf, int len);
+int sys_net_recv(void *buf, int maxlen);
 
 /* Kernel entry point for syscalls.
  * Implemented in kernel/arch/x86_64/syscall.c */

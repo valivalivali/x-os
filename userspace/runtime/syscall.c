@@ -417,3 +417,9 @@ int sys_fcntl(int fd, int cmd, int arg) {
 int sys_ioctl(int fd, int cmd, void *arg) {
     return (int)syscall3(SYS_IOCTL, fd, cmd, (uintptr_t)arg);
 }
+int sys_net_send(const void *buf, int len) {
+    return (int)syscall2(SYS_NET_SEND, (uintptr_t)buf, len);
+}
+int sys_net_recv(void *buf, int maxlen) {
+    return (int)syscall2(SYS_NET_RECV, (uintptr_t)buf, maxlen);
+}
