@@ -51,28 +51,16 @@ static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp
 }
 
 static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
-    /* Static buffer: the virtqueue descriptor records the physical
-     * address of the buffer. With a stack buffer, the data is destroyed
-     * when the caller returns, and the next function call (e.g. flush)
-     * overwrites the stack — QEMU then reads garbage with pos.x=0,
-     * pos.y=0, causing the cursor to jump to the top-left corner.
-     * A static buffer persists so QEMU always reads valid data. */
-    static uint8_t s_cmd_buf[64];
-    memcpy(s_cmd_buf, cmd, cmd_len);
-
-    void *bufs[1]   = { s_cmd_buf };
+    void *bufs[1]   = { cmd };
     uint32_t lens[1] = { cmd_len };
     uint16_t flags[1] = { 0 };
     uint16_t desc_idx;
-    if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1)) {
-        /* Queue exhausted (QEMU was slow draining previous entries).
-         * Reset free_head to reuse descriptor 0 and retry. */
-        g_cursorq.free_head = 0;
-        if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1))
-            return false;
-    }
+    if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1))
+        return false;
     virtio_pci_notify_queue(&g_vdev, &g_cursorq);
-    /* Drain previous used entry to recycle descriptors (original logic). */
+    /* Fire-and-forget: don't wait for response. The cursor queue
+     * processes instantly in QEMU. Drain any completed entries to
+     * recycle descriptors. */
     uint16_t used_idx;
     uint32_t used_len;
     virtqueue_get_used(&g_cursorq, &used_idx, &used_len);

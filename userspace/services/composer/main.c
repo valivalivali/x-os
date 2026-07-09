@@ -1355,14 +1355,18 @@ void display_main(void) {
 
         if (gpu_mode) {
             /* Hardware cursor: QEMU composites cursor on top during scanout.
-             * Just move it; no erase/redraw needed.
-             * Send raw mouse position (mx,my) — QEMU handles hotspot. */
-            if (cursor_moved)
-                sys_gpu_cursor_move(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y);
+             * Order matters: flush FIRST, then move cursor. The cursor move
+             * syscall sends the command via a kernel stack buffer. If flush
+             * runs after cursor move, it reuses the same kernel stack and
+             * overwrites the cursor command before QEMU reads it, causing
+             * the cursor to jump to (0,0). By moving the cursor last, the
+             * stack data persists until the next frame. */
             if (has_dirty)
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),
                               (uint32_t)(dirty_y1 - dirty_y0));
+            if (cursor_moved)
+                sys_gpu_cursor_move(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y);
         } else {
             /* Software cursor: erase old position, draw new one. */
             if (has_dirty && cursor_moved)
