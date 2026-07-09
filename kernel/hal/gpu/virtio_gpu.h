@@ -230,6 +230,11 @@ bool virtio_gpu_resource_unref_for(uint32_t resource_id);
 bool virtio_gpu_transfer_to_host_2d_for(uint32_t resource_id, uint32_t x,
                                         uint32_t y, uint32_t w, uint32_t h,
                                         uint64_t offset);
+bool virtio_gpu_transfer_to_host_3d_for(uint32_t resource_id, uint32_t x,
+                                        uint32_t y, uint32_t z, uint32_t w,
+                                        uint32_t h, uint32_t d, uint64_t offset,
+                                        uint32_t level, uint32_t stride,
+                                        uint32_t layer_stride);
 bool virtio_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size);
 bool virtio_gpu_set_scanout_for(uint32_t scanout_id, uint32_t resource_id,
                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h);

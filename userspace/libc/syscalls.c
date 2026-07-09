@@ -60,6 +60,19 @@ int _kill(int pid, int sig) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* I/O — IPC bridge mode for terminal integration */
+
+/* When set, _read receives from g_bridge_input_port and _write sends to
+ * g_bridge_output_port. Used by zsh when running inside the terminal. */
+static port_handle_t g_bridge_input_port = 0;   /* port to recv keyboard chars from */
+static port_handle_t g_bridge_output_port = 0;  /* port to send output text to */
+
+void set_shell_bridge(port_handle_t input_port, port_handle_t output_port) {
+    g_bridge_input_port = input_port;
+    g_bridge_output_port = output_port;
+}
+
+/* -------------------------------------------------------------------------- */
 /* I/O */
 
 /* Minimal input_event_t matching kernel's input.h */
@@ -77,6 +90,26 @@ typedef struct {
 #define XOS_EV_KEY_DOWN 4
 
 _ssize_t _read(int fd, void *buf, size_t cnt) {
+    if (fd == 0 && g_bridge_input_port) {
+        /* IPC bridge mode: receive keyboard chars from terminal via IPC */
+        char *cbuf = (char *)buf;
+        size_t got = 0;
+        while (got < cnt) {
+            ipc_msg_t msg;
+            /* Manual zeroing — avoid newlib memset which may use SSE */
+            for (size_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
+            if (sys_port_recv(g_bridge_input_port, &msg, 0)) {
+                if (msg.payload_len >= 1) {
+                    char c = (char)msg.payload[0];
+                    if (c == '\r') c = '\n';
+                    cbuf[got++] = c;
+                    break;
+                }
+            }
+            syscall0(SYS_YIELD);
+        }
+        return (_ssize_t)got;
+    }
     if (fd == 0) {
         /* stdin: read from keyboard via SYS_INPUT_POLL */
         char *cbuf = (char *)buf;
@@ -104,6 +137,27 @@ _ssize_t _read(int fd, void *buf, size_t cnt) {
 }
 
 _ssize_t _write(int fd, const void *buf, size_t cnt) {
+    if ((fd == 1 || fd == 2) && g_bridge_output_port) {
+        /* IPC bridge mode: send output text to terminal via IPC */
+        const char *p = (const char *)buf;
+        size_t remaining = cnt;
+        while (remaining > 0) {
+            size_t chunk = remaining > IPC_MSG_MAX_PAYLOAD ? IPC_MSG_MAX_PAYLOAD : remaining;
+            ipc_msg_t msg;
+            /* Manual zeroing — avoid newlib memset which may use SSE */
+            for (size_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
+            msg.type = IPC_MSG_EVENT;
+            msg.sender_pid = syscall0(SYS_PROC_PID);
+            msg.cap_count = 0;
+            msg.payload_len = (uint32_t)chunk;
+            /* Manual copy — avoid newlib memcpy which may use SSE */
+            for (size_t i = 0; i < chunk; i++) msg.payload[i] = ((const uint8_t *)p)[i];
+            sys_port_send(g_bridge_output_port, &msg);
+            p += chunk;
+            remaining -= chunk;
+        }
+        return (_ssize_t)cnt;
+    }
     if (fd == 1 || fd == 2) {
         /* stdout/stderr: write to serial via SYS_DEBUG_LOG (max 4096 per call) */
         const char *p = (const char *)buf;

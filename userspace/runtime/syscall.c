@@ -256,6 +256,14 @@ int sys_gpu_res_create_3d(uint32_t resource_id, uint32_t target, uint32_t format
                          bind, width, height);
 }
 
+int sys_gpu_transfer_3d(uint32_t resource_id, uint32_t x, uint32_t y,
+                        uint32_t z, uint32_t w, uint32_t h, uint32_t d,
+                        uint64_t offset, uint32_t level, uint32_t stride,
+                        uint32_t layer_stride) {
+    (void)d; (void)offset; (void)level; (void)stride; (void)layer_stride;
+    return (int)syscall6(SYS_GPU_TRANSFER_3D, resource_id, x, y, z, w, h);
+}
+
 /* Time wrapper — reads RTC hour/min/sec into 3-byte buffer */
 int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec) {
     uint8_t buf[3];

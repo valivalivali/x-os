@@ -133,36 +133,42 @@ void proc_sleep(uint64_t ms) {
     }
     current->sleep_until = timer_ticks() + ms;
     current->state = PROC_BLOCKED;
+    /* Add to ready queue so the scheduler can find and wake us up later. */
+    current->next = NULL;
+    proc_t **tail = &ready_head;
+    while (*tail) tail = &(*tail)->next;
+    *tail = current;
     sched_yield();
 }
 
 void sched_yield(void) {
     if (!current) return;
 
-    /* Remove blocked/sleeping processes from ready queue */
-    proc_t **pp = &ready_head;
-    while (*pp) {
-        proc_t *p = *pp;
+    /* Wake up expired sleepers but keep them in the queue. */
+    proc_t *p = ready_head;
+    while (p) {
         if (p->state == PROC_BLOCKED && p->sleep_until &&
             timer_ticks() >= p->sleep_until) {
             p->state = PROC_READY;
             p->sleep_until = 0;
         }
-        if (p->state != PROC_READY) {
-            *pp = p->next;
-            p->next = NULL;
-        } else {
-            pp = &p->next;
-        }
+        p = p->next;
     }
 
-    proc_t *next = ready_head;
-    if (next) {
-        ready_head = next->next;
-        next->next = NULL;
-    } else {
-        next = &procs[0]; /* idle task */
+    /* Find first PROC_READY process in the queue. */
+    proc_t *next = NULL;
+    proc_t **npp = &ready_head;
+    while (*npp) {
+        if ((*npp)->state == PROC_READY) {
+            next = *npp;
+            *npp = next->next;
+            next->next = NULL;
+            break;
+        }
+        npp = &(*npp)->next;
     }
+
+    if (!next) next = &procs[0]; /* idle task */
 
     if (next == current) return;
 

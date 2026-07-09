@@ -47,7 +47,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     ipc_msg_t msg = {IPC_MSG_REQUEST, syscall0(SYS_PROC_PID), {0,0,0,0}, 0, sizeof(cm), {0}};
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t*)&cm)[i];
     uint64_t cp = 0;
-    for (int r = 0; r < 200 && !cp; r++) { cp = sys_ns_lookup(WM_COMPOSER_PORT_NS); if (!cp) syscall0(SYS_YIELD); }
+    for (int r = 0; r < 500 && !cp; r++) { cp = sys_ns_lookup(WM_COMPOSER_PORT_NS); if (!cp) syscall0(SYS_YIELD); }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
     ipc_msg_t re; int got = 0;
     for (int r = 0; r < 300 && !got; r++) {
@@ -339,6 +339,7 @@ static void draw_xplorer(uint32_t *px, int ww, int wh) {
 
 void xplorer_main(void) {
     log("[xplorer] start\n");
+    syscall1(SYS_NSLEEP, 200ULL);  /* 200ms delay for composer to init */
 
     int ww = 820, wh = 540;
     g_ww = ww; g_wh = wh;

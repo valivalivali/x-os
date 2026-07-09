@@ -58,6 +58,7 @@
 #define SYS_GPU_ALLOC_RES_ID 47
 #define SYS_GPU_RES_ATTACH_VIRT 48
 #define SYS_GPU_RES_CREATE_3D  49
+#define SYS_GPU_TRANSFER_3D   64
 
 /* POSIX process management */
 #define SYS_FORK        50
@@ -77,7 +78,7 @@
 #define SYS_CHDIR       62
 #define SYS_BRK         63
 
-#define SYSCALL_MAX          63
+#define SYSCALL_MAX          64
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -178,6 +179,10 @@ int sys_gpu_res_create_3d(uint32_t resource_id, uint32_t target, uint32_t format
                           uint32_t depth, uint32_t array_size,
                           uint32_t last_level, uint32_t nr_samples,
                           uint32_t flags);
+int sys_gpu_transfer_3d(uint32_t resource_id, uint32_t x, uint32_t y,
+                        uint32_t z, uint32_t w, uint32_t h, uint32_t d,
+                        uint64_t offset, uint32_t level, uint32_t stride,
+                        uint32_t layer_stride);
 
 /* Filesystem wrappers */
 int sys_open(const char *path, uint32_t flags);

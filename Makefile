@@ -23,14 +23,17 @@ LD           := $(shell brew --prefix lld 2>/dev/null)/bin/ld.lld
 ifeq ($(wildcard $(LD)),)
 LD           := ld.lld
 endif
+QEMU_VIRGL   := $(shell brew --prefix qemu-virgl 2>/dev/null)/bin/qemu-system-x86_64
+QEMU         := $(QEMU_VIRGL)
+ifeq ($(wildcard $(QEMU)),)
 QEMU         := /opt/qemu-head/bin/qemu-system-x86_64
+endif
 ifeq ($(wildcard $(QEMU)),)
   QEMU       := $(shell brew --prefix qemu 2>/dev/null)/bin/qemu-system-x86_64
 endif
 ifeq ($(wildcard $(QEMU)),)
   QEMU       := qemu-system-x86_64
 endif
-QEMU_VIRGL   := $(shell brew --prefix qemu-virgl 2>/dev/null)/bin/qemu-system-x86_64
 OVMF         := $(shell brew --prefix qemu 2>/dev/null)/share/qemu/edk2-x86_64-code.fd
 
 SRC_DIRS     := boot kernel userspace
@@ -90,8 +93,12 @@ ZSH_ELF        := $(BUILD_DIR)/userspace/shell/zsh.elf
 ZSH_BLOB_C     := kernel/proc/zsh_elf_blob.c
 ZSH_BLOB_O     := $(OBJ_DIR)/kernel/proc/zsh_elf_blob.o
 
+TERMINAL_ELF    := $(BUILD_DIR)/userspace/services/terminal/terminal.elf
+TERMINAL_BLOB_C := kernel/proc/terminal_elf_blob.c
+TERMINAL_BLOB_O := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O) $(TERMINAL_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -103,6 +110,8 @@ LIBC_CFLAGS := \
   --target=x86_64-unknown-none-elf \
   -ffreestanding -fno-stack-protector -fno-stack-check \
   -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone \
+  -mno-sse -mno-sse2 -mno-mmx \
+  -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove \
   -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
   -I. -I$(LIMINE_DIR) $(NEWLIB_CFLAGS)
 
@@ -271,6 +280,32 @@ $(ZSH_BLOB_O): $(ZSH_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Build terminal service ELF
+$(TERMINAL_ELF): userspace/services/terminal/start.S userspace/services/terminal/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/terminal/terminal.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/terminal/start.S -o $(BUILD_DIR)/userspace/services/terminal/start.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/terminal/main.c -o $(BUILD_DIR)/userspace/services/terminal/main.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/terminal/xgfx.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/terminal/xgfx_font.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/terminal/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/terminal/terminal.ld \
+	  $(BUILD_DIR)/userspace/services/terminal/start.o \
+	  $(BUILD_DIR)/userspace/services/terminal/main.o \
+	  $(BUILD_DIR)/userspace/services/terminal/xgfx.o \
+	  $(BUILD_DIR)/userspace/services/terminal/xgfx_font.o \
+	  $(BUILD_DIR)/userspace/services/terminal/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(TERMINAL_BLOB_C): $(TERMINAL_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t terminal_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *terminal_elf_data = terminal_elf_bytes;', 'size_t terminal_elf_len = sizeof(terminal_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(TERMINAL_BLOB_O): $(TERMINAL_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # ---- newlib-linked userspace programs ------------------------------------
 # These link against newlib libc.a + our syscall stubs instead of raw syscalls
 $(TEST_LIBC_ELF): userspace/libc/test_libc.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld
@@ -289,16 +324,24 @@ $(TEST_LIBC_ELF): userspace/libc/test_libc.c userspace/libc/syscalls.c userspace
 test-libc: $(TEST_LIBC_ELF)
 
 # ---- zsh shell (interactive shell via newlib) -----------------------------
-ZSH_SRC := /tmp/zsh
-ZSH_STUBS := /tmp/xos-stubs
+ZSH_SRC := $(CURDIR)/userspace/shell/zsh-src
+ZSH_STUBS := $(BUILD_DIR)/userspace/shell/stubs
+ZSH_CURSES_A := $(ZSH_STUBS)/libcurses.a
 
 zsh: $(ZSH_ELF)
 
-$(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_start.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld
+$(ZSH_CURSES_A): userspace/shell/curses_stubs.c
 	@mkdir -p $(dir $@)
-	@echo ">> Building zsh (using autoconf build in /tmp/zsh)..."
+	$(CC) $(LIBC_CFLAGS) -c userspace/shell/curses_stubs.c -o $(BUILD_DIR)/userspace/shell/curses_stubs.o
+	/opt/homebrew/opt/llvm/bin/llvm-ar rcs $@ $(BUILD_DIR)/userspace/shell/curses_stubs.o
+
+$(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_entry.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld $(ZSH_CURSES_A)
+	@mkdir -p $(dir $@)
+	@echo ">> Building zsh (using local zsh-src)..."
 	@# Compile our _start entry point (assembly for stack alignment)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/shell/zsh_start.S -o $(BUILD_DIR)/userspace/shell/zsh_start.o
+	@# Compile our zsh entry (IPC bridge setup + echo shell)
+	$(CC) $(LIBC_CFLAGS) -c userspace/shell/zsh_entry.c -o $(BUILD_DIR)/userspace/shell/zsh_entry.o
 	@# Compile our syscall stubs
 	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/shell/zsh_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o
@@ -306,14 +349,15 @@ $(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_start.c userspace/li
 	cd $(ZSH_SRC)/Src && \
 	  $(LD) -nostdlib -static -m elf_x86_64 -T $(CURDIR)/userspace/libc/xos-libc.ld \
 	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_start.o \
+	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_entry.o \
 	    main.o $$(cat stamp-modobjs) \
-	    -L$(ZSH_STUBS) -lcurses \
+	    $(CURDIR)/$(ZSH_CURSES_A) \
 	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_syscalls.o \
 	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o \
 	    $(NEWLIB_LIBS) \
 	    -o $(CURDIR)/$(ZSH_ELF)
 	@# Strip debug info to reduce embedded size
-	llvm-strip $(ZSH_ELF)
+	/opt/homebrew/opt/llvm/bin/llvm-strip $(ZSH_ELF)
 	@echo ">> linked $@"
 
 # ---- link ----------------------------------------------------------------

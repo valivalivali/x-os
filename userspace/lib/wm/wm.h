@@ -32,6 +32,7 @@
 #define WM_WINDOW_RESIZED   17   /* composer -> app: your window resized  */
 #define WM_WINDOW_CLOSE     18   /* composer -> app: user clicked close   */
 #define WM_SET_TITLE        19   /* app -> composer: update title         */
+#define WM_KEY_EVENT        20   /* composer -> app: keyboard event       */
 
 /* ---- Window flags ----------------------------------------------------- */
 
@@ -128,6 +129,16 @@ typedef struct {
     char     title[32];     /* new title */
 } wm_set_title_msg_t;
 
+/* Composer -> App: keyboard event */
+typedef struct {
+    uint32_t type;          /* WM_KEY_EVENT */
+    uint32_t surface_idx;
+    uint8_t  scancode;      /* raw scancode */
+    char     ch;            /* translated ASCII, 0 if none */
+    uint16_t key;           /* KEY_* for non-ASCII */
+    uint32_t action;        /* 0=down, 1=up */
+} wm_key_event_msg_t;
+
 /* App -> Composer: capture/release display */
 typedef struct {
     uint32_t type;
@@ -146,5 +157,6 @@ typedef struct {
 /* ---- Namespacing port ------------------------------------------------- */
 
 #define WM_COMPOSER_PORT_NS  3   /* namespace lookup id for composer port */
+#define WM_SHELL_BRIDGE_PORT_NS 5  /* namespace lookup id for terminal shell bridge */
 
 #endif /* WM_H */

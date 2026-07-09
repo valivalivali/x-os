@@ -33,10 +33,11 @@ typedef struct {
 /* Well-known service ports (registered by init at boot).
  * Apps and services look these up by name through the nameserver port.
  */
-#define PORT_NS_DISPLAY  1
-#define PORT_NS_FS       2
-#define PORT_NS_COMPOSER 3
-#define PORT_NS_INPUT    4
+#define PORT_NS_DISPLAY       1
+#define PORT_NS_FS            2
+#define PORT_NS_COMPOSER      3
+#define PORT_NS_INPUT         4
+#define PORT_NS_SHELL_BRIDGE  5
 
 /* Kernel-side API (kernel/ipc/ipc.c) */
 void ipc_init(void);

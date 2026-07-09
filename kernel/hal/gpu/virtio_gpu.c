@@ -42,16 +42,11 @@ static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp
     uint32_t used_len;
     if (!virtqueue_get_used(&g_ctrlq, &used_idx, &used_len))
         return false;
-    kprintf("[virtio-gpu] used_idx=%u used_len=%u resp_hex:", used_idx, used_len);
-    for (int i = 0; i < 16; i++) kprintf(" %x", resp_buf[i]);
-    kprintf("\n");
     /* Copy response back to caller's buffer */
     uint32_t copy_len = resp_len < sizeof(resp_buf) ? resp_len : sizeof(resp_buf);
     memcpy(resp, resp_buf, copy_len);
     struct virtio_gpu_ctrl_hdr *rh = (struct virtio_gpu_ctrl_hdr *)resp;
     bool ok = (rh->type & 0xFF00) == 0x1100;  /* any 0x11xx = success */
-    kprintf("[virtio-gpu] cmd 0x%x -> resp 0x%x (%s)\n", ch->type, rh->type,
-            ok ? "OK" : "FAIL");
     return ok;
 }
 
@@ -63,12 +58,12 @@ static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
     if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1))
         return false;
     virtio_pci_notify_queue(&g_vdev, &g_cursorq);
-    if (!virtio_pci_wait_for_queue(&g_vdev, &g_cursorq, 1000000))
-        return false;
+    /* Fire-and-forget: don't wait for response. The cursor queue
+     * processes instantly in QEMU. Drain any completed entries to
+     * recycle descriptors. */
     uint16_t used_idx;
     uint32_t used_len;
-    if (!virtqueue_get_used(&g_cursorq, &used_idx, &used_len))
-        return false;
+    virtqueue_get_used(&g_cursorq, &used_idx, &used_len);
     return true;
 }
 
@@ -547,9 +542,29 @@ bool virtio_gpu_transfer_to_host_2d_for(uint32_t resource_id, uint32_t x,
     return gpu_send_recv(&xfer, sizeof(xfer), &resp, sizeof(resp));
 }
 
+bool virtio_gpu_transfer_to_host_3d_for(uint32_t resource_id, uint32_t x,
+                                        uint32_t y, uint32_t z, uint32_t w,
+                                        uint32_t h, uint32_t d, uint64_t offset,
+                                        uint32_t level, uint32_t stride,
+                                        uint32_t layer_stride) {
+    struct virtio_gpu_transfer_to_host_3d xfer;
+    memset(&xfer, 0, sizeof(xfer));
+    xfer.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D;
+    xfer.box.x = x; xfer.box.y = y; xfer.box.z = z;
+    xfer.box.w = w; xfer.box.h = h; xfer.box.d = d;
+    xfer.offset = offset;
+    xfer.resource_id = resource_id;
+    xfer.level = level;
+    xfer.stride = stride;
+    xfer.layer_stride = layer_stride;
+    struct virtio_gpu_ctrl_hdr resp;
+    memset(&resp, 0, sizeof(resp));
+    return gpu_send_recv(&xfer, sizeof(xfer), &resp, sizeof(resp));
+}
+
 bool virtio_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size) {
     if (!g_virgl) return false;
-    kprintf("[virtio-gpu] submit_3d(ctx=%u, size=%u)\n", ctx_id, size);
+    /* per-frame submit_3d logged only on failure */
     /* Copy userspace command data to kernel buffer — virt_to_phys only
      * works for kernel higher-half addresses, not userspace pointers. */
     void *kbuf = kmalloc(size);
@@ -586,7 +601,8 @@ bool virtio_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size) {
     kfree(kbuf);
     memcpy(&resp, resp_buf, sizeof(resp));
     bool ok = (resp.type & 0xFF00) == 0x1100;
-    kprintf("[virtio-gpu] submit_3d resp 0x%x (%s)\n", resp.type, ok ? "OK" : "FAIL");
+    /* submit_3d response logged only on failure */
+    if (!ok) kprintf("[virtio-gpu] submit_3d FAIL resp 0x%x\n", resp.type);
     return ok;
 }
 

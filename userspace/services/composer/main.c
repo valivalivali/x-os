@@ -17,7 +17,7 @@
 #include <stdint.h>
 
 #define FB_VADDR  0x0000700000000000ULL
-#define DESKTOP_BG  0xFF1A2028
+#define DESKTOP_BG  0xFF1E2D3D
 
 #define WIN_RADIUS  24
 
@@ -70,7 +70,7 @@ static uint32_t cursor_stage[CURSOR_W];
 
 #define MAX_SURFACES 8
 #define SURF_W  2560
-#define SURF_H  768
+#define SURF_H  1600
 
 /* Z-levels: higher number = rendered on top, hit-tested first.
  * 1 = desktop bg (implicit), 2 = windows, 3 = panels/dock/menu,
@@ -108,6 +108,7 @@ static int surface_total_h(const surface_info_t *s) {
 static surface_info_t surfaces[MAX_SURFACES];
 static int         surface_count = 0;
 static int         drag_idx = -1;
+static int         focused_idx = -1;
 static int         drag_off_x, drag_off_y;
 static int         ipc_new_surface = 0;
 static int         z_changed = 0;
@@ -229,6 +230,8 @@ static void dec_draw_icon_plus(int cx, int cy, uint32_t color) {
     }
 }
 
+static uint32_t desktop_bg_color(int x, int y);
+
 /* Mask the four corners of a window to create rounded corners.
  * Fills corner areas with DESKTOP_BG to clip the window to a rounded rect. */
 static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
@@ -239,7 +242,7 @@ static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
             if (dx * dx + dy * dy >= r * r) {
                 int px = x0 + x, py = y0 + y;
                 if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                    backing[py * stride + px] = DESKTOP_BG;
+                    backing[py * stride + px] = desktop_bg_color(px, py);
             }
         }
     }
@@ -250,7 +253,7 @@ static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
             if (dx * dx + dy * dy >= r * r) {
                 int px = x0 + w - r + x, py = y0 + y;
                 if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                    backing[py * stride + px] = DESKTOP_BG;
+                    backing[py * stride + px] = desktop_bg_color(px, py);
             }
         }
     }
@@ -261,7 +264,7 @@ static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
             if (dx * dx + dy * dy >= r * r) {
                 int px = x0 + x, py = y0 + total_h - r + y;
                 if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                    backing[py * stride + px] = DESKTOP_BG;
+                    backing[py * stride + px] = desktop_bg_color(px, py);
             }
         }
     }
@@ -272,7 +275,7 @@ static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
             if (dx * dx + dy * dy >= r * r) {
                 int px = x0 + w - r + x, py = y0 + total_h - r + y;
                 if (px >= 0 && px < fb_w && py >= 0 && py < fb_h)
-                    backing[py * stride + px] = DESKTOP_BG;
+                    backing[py * stride + px] = desktop_bg_color(px, py);
             }
         }
     }
@@ -372,17 +375,30 @@ static void blit_surface_clipped(const surface_info_t *s,
         int dy = dy0 + row;
         uint32_t *dst = &backing[dy * stride + dx0];
         const uint32_t *src = &s->pixels[sy * s->w + sx0];
+        /* Fast path: check if first pixel is fully opaque and assume
+         * the whole row is opaque (common for app windows). Fall back
+         * to per-pixel alpha only if we detect transparency. */
+        int has_alpha = 0;
         for (int i = 0; i < w; i++) {
-            uint32_t sp = src[i];
-            uint32_t sa = sp >> 24;
-            if (sa == 0) continue;
-            if (sa == 255) { dst[i] = sp; continue; }
-            uint32_t dp = dst[i];
-            uint32_t ia = 255 - sa;
-            uint32_t r = (((sp >> 16) & 0xFF) * sa + ((dp >> 16) & 0xFF) * ia) / 255;
-            uint32_t g = (((sp >> 8)  & 0xFF) * sa + ((dp >> 8)  & 0xFF) * ia) / 255;
-            uint32_t b = ((sp         & 0xFF) * sa + (dp         & 0xFF) * ia) / 255;
-            dst[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            if ((src[i] >> 24) != 0xFF) { has_alpha = 1; break; }
+        }
+        if (!has_alpha) {
+            /* Fully opaque row — bulk copy */
+            for (int i = 0; i < w; i++) dst[i] = src[i];
+        } else {
+            /* Per-pixel alpha blend */
+            for (int i = 0; i < w; i++) {
+                uint32_t sp = src[i];
+                uint32_t sa = sp >> 24;
+                if (sa == 0) continue;
+                if (sa == 255) { dst[i] = sp; continue; }
+                uint32_t dp = dst[i];
+                uint32_t ia = 255 - sa;
+                uint32_t r = (((sp >> 16) & 0xFF) * sa + ((dp >> 16) & 0xFF) * ia) / 255;
+                uint32_t g = (((sp >> 8)  & 0xFF) * sa + ((dp >> 8)  & 0xFF) * ia) / 255;
+                uint32_t b = ((sp         & 0xFF) * sa + (dp         & 0xFF) * ia) / 255;
+                dst[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
         }
     }
 }
@@ -392,16 +408,59 @@ static void blit_surface_clipped(const surface_info_t *s,
  * higher array index is on top (most recently raised).
  * For decorated windows: draw decoration first, then blit content
  * offset by WM_TITLE_BAR_H below the window origin. */
+/* Desktop gradient: bright blue at top → vibrant purple at bottom.
+ * Base color is computed per-row (vertical gradient), diagonal highlight
+ * is added inline during fill for zero function-call overhead. */
+
+static uint32_t desktop_bg_base(int y) {
+    /* Top color:    #2B4A8A (bright blue)    */
+    /* Bottom color: #4A2070 (vibrant purple)  */
+    uint32_t tr = 0x2B, tg = 0x4A, tb = 0x8A;
+    uint32_t br = 0x4A, bg_ = 0x20, bb = 0x70;
+    uint32_t t = (fb_h > 0) ? ((uint32_t)y * 255 / (uint32_t)fb_h) : 0;
+    uint32_t it = 255 - t;
+    uint32_t r = (tr * it + br * t) / 255;
+    uint32_t g = (tg * it + bg_ * t) / 255;
+    uint32_t b = (tb * it + bb * t) / 255;
+    return (r << 16) | (g << 8) | b;  /* alpha=0, will be OR'd with 0xFF000000 */
+}
+
+static inline uint32_t desktop_bg_color(int x, int y) {
+    uint32_t base = desktop_bg_base(y);
+    uint32_t r = (base >> 16) & 0xFF;
+    uint32_t g = (base >> 8) & 0xFF;
+    uint32_t b = base & 0xFF;
+    uint32_t diag = ((uint32_t)x + (uint32_t)y) / 120;
+    if (diag > 8) diag = 8;
+    r += diag; g += diag;
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
 static void draw_region(int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 > fb_w) x1 = fb_w; if (y1 > fb_h) y1 = fb_h;
     if (x0 >= x1 || y0 >= y1) return;
 
-    /* First: clear the region to desktop bg. */
+    /* First: clear the region to desktop gradient.
+     * Optimized: compute base color per row, add diagonal highlight
+     * in a tight loop without function call overhead. */
     int rw = x1 - x0;
     for (int py = y0; py < y1; py++) {
         uint32_t *dst = &backing[py * stride + x0];
-        for (int i = 0; i < rw; i++) dst[i] = DESKTOP_BG;
+        uint32_t base = desktop_bg_base(py);
+        uint32_t r0 = (base >> 16) & 0xFF;
+        uint32_t g0 = (base >> 8) & 0xFF;
+        uint32_t b0 = base & 0xFF;
+        for (int i = 0; i < rw; i++) {
+            int px = x0 + i;
+            uint32_t diag = ((uint32_t)px + (uint32_t)py) / 120;
+            if (diag > 8) diag = 8;
+            uint32_t r = r0 + diag; if (r > 255) r = 255;
+            uint32_t g = g0 + diag; if (g > 255) g = 255;
+            dst[i] = 0xFF000000 | (r << 16) | (g << 8) | b0;
+        }
     }
 
     /* Then: blit each overlapping surface, bottom-to-top.
@@ -720,13 +779,7 @@ void display_main(void) {
         }
 
         log("[composer] gpu mode\n");
-
-        /* Try to initialize virgl 3D compositing */
-        if (gpu_comp_init(fb_w, fb_h, gpu_info.backing_phys, gpu_info.backing_size)) {
-            log("[composer] virgl 3D compositing enabled\n");
-        } else {
-            log("[composer] virgl not available, using CPU compositing\n");
-        }
+        /* virgl 3D compositing init deferred until after backing buffer is painted */
     } else {
         if (syscall1(SYS_FB_INFO, (uintptr_t)&info) != 0) {
             log("[composer] fb_info fail\n"); return;
@@ -748,28 +801,40 @@ void display_main(void) {
         log("[composer] vga mode\n");
     }
 
-    /* Allocate backing buffer to match framebuffer size.
-     * Map at a fixed address in composer's virtual space. */
-    #define BACKING_VADDR 0x0000500000000000ULL
-    uint32_t backing_pages = (uint32_t)(fb_h * (uint32_t)stride * 4 + 4095) / 4096;
-    for (uint32_t i = 0; i < backing_pages; i++) {
-        uint64_t va = BACKING_VADDR + (uint64_t)i * 4096;
-        if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) {
-            log("[composer] backing alloc fail\n"); return;
+    /* In GPU mode, render directly into the GPU framebuffer backing store.
+     * This eliminates the slow CPU blit_rect copy — all compositing writes
+     * go directly to GPU memory, and sys_gpu_flush triggers the scanout.
+     * In VGA mode, use a separate backing buffer + blit_rect as before. */
+    if (gpu_mode) {
+        backing = (uint32_t *)fb;
+        log("[composer] rendering directly to GPU framebuffer\n");
+    } else {
+        #define BACKING_VADDR 0x0000500000000000ULL
+        uint32_t backing_pages = (uint32_t)(fb_h * (uint32_t)stride * 4 + 4095) / 4096;
+        for (uint32_t i = 0; i < backing_pages; i++) {
+            uint64_t va = BACKING_VADDR + (uint64_t)i * 4096;
+            if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) {
+                log("[composer] backing alloc fail\n"); return;
+            }
         }
+        backing = (uint32_t *)BACKING_VADDR;
     }
-    backing = (uint32_t *)BACKING_VADDR;
 
-    for (int32_t y = 0; y < fb_h; y++)
+    /* Paint initial desktop gradient into backing (== fb in GPU mode).
+     * Fast: fill each row with solid base color (no per-pixel function call).
+     * The diagonal highlight is applied on the first compositor frame. */
+    for (int32_t y = 0; y < fb_h; y++) {
+        uint32_t color = 0xFF000000 | desktop_bg_base(y);
+        uint32_t *row = &backing[y * stride];
         for (int32_t x = 0; x < fb_w; x++)
-            backing[y * stride + x] = DESKTOP_BG;
+            row[x] = color;
+    }
 
-    /* Copy initial desktop background to framebuffer.
-     * In GPU mode the kernel doesn't pre-fill the backing buffer,
-     * so we must do an initial full-screen blit + flush. */
-    blit_rect(0, 0, fb_w, fb_h);
+    /* Flush initial frame to GPU scanout. */
     if (gpu_mode)
         sys_gpu_flush(0, 0, (uint32_t)fb_w, (uint32_t)fb_h);
+    else
+        blit_rect(0, 0, fb_w, fb_h);
 
     log("[composer] ready\n");
 
@@ -815,19 +880,32 @@ void display_main(void) {
          * will be used while dragging.  */
         input_event_t ev;
         while (sys_input_poll(&ev)) {
-            if (ev.type == EV_KEY_DOWN) {
-                if (ev.ch == 27) {          /* ESC → quit */
-                    log("[composer] exit\n");
-                    return;
+            if (ev.type == EV_KEY_DOWN || ev.type == EV_KEY_UP) {
+                if (ev.type == EV_KEY_DOWN && ev.ch == 27) {
+                    log("[composer] ESC\n");
                 }
-                if (ev.ch >= 32 && ev.ch < 127) {
-                    char msg[] = "[composer] key: X\n";
-                    msg[16] = ev.ch;
-                    log(msg);
-                } else if (ev.key == KEY_UP)    log("[composer] key: UP\n");
-                else if (ev.key == KEY_DOWN)  log("[composer] key: DOWN\n");
-                else if (ev.key == KEY_LEFT)  log("[composer] key: LEFT\n");
-                else if (ev.key == KEY_RIGHT) log("[composer] key: RIGHT\n");
+                /* Forward keyboard events to focused window */
+                if (focused_idx >= 0 && focused_idx < surface_count &&
+                    surfaces[focused_idx].valid &&
+                    surfaces[focused_idx].reply_port) {
+                    wm_key_event_msg_t ke = {
+                        .type = WM_KEY_EVENT,
+                        .surface_idx = (uint32_t)focused_idx,
+                        .scancode = ev.scancode,
+                        .ch = ev.ch,
+                        .key = ev.key,
+                        .action = (ev.type == EV_KEY_DOWN) ? 0 : 1
+                    };
+                    ipc_msg_t kmsg;
+                    kmsg.type = IPC_MSG_EVENT;
+                    kmsg.sender_pid = 0;
+                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) kmsg.caps[i] = CAP_NULL;
+                    kmsg.cap_count = 0;
+                    kmsg.payload_len = sizeof(ke);
+                    uint8_t *pd = (uint8_t *)&ke;
+                    for (size_t i = 0; i < sizeof(ke); i++) kmsg.payload[i] = pd[i];
+                    sys_port_send(surfaces[focused_idx].reply_port, &kmsg);
+                }
             }
 
             if (ev.type == EV_MOUSE_DOWN) {
@@ -837,6 +915,9 @@ void display_main(void) {
 
                 if (ev.button == MOUSE_LEFT && hit >= 0) {
                     int new_idx = hit;
+                    /* Track focus for keyboard forwarding */
+                    if (surfaces[new_idx].level == SURF_LEVEL_NORMAL)
+                        focused_idx = new_idx;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
 
@@ -1100,11 +1181,11 @@ void display_main(void) {
                                     /* 0,0,0,0 means full surface dirty. */
                                     s->dirty_x = 0; s->dirty_y = 0;
                                     s->dirty_w = s->w; s->dirty_h = s->h;
-                                    log_int("[composer] IPC: DIRTY full surface ", (int32_t)sd->surface_idx, "\n");
+                                    /* dirty full surface */
                                 } else {
                                     s->dirty_x = sd->x; s->dirty_y = sd->y;
                                     s->dirty_w = sd->w; s->dirty_h = sd->h;
-                                    log_int("[composer] IPC: DIRTY surface ", (int32_t)sd->surface_idx, " rect\n");
+                                    /* dirty surface rect */
                                 }
                             }
                         }
@@ -1246,6 +1327,8 @@ void display_main(void) {
             if (cursor_settle > 0) {
                 cursor_settle--;
             } else {
+                /* No work and no cursor movement — yield to scheduler.
+                 * Use SYS_YIELD (not NSLEEP) for maximum responsiveness. */
                 syscall0(SYS_YIELD);
                 continue;
             }
@@ -1261,32 +1344,13 @@ void display_main(void) {
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
             if (dirty_y1 > fb_h) dirty_y1 = fb_h;
 
-            /* Upload dirty surfaces to GPU textures */
-            if (gpu_comp_active()) {
-                for (int i = 0; i < surface_count; i++) {
-                    surface_info_t *s = &surfaces[i];
-                    if (!s->valid || s->hidden || !s->dirty || !s->pixels) continue;
-                    if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
-                    gpu_comp_upload_surface(i, s->pixels, s->w, s->h,
-                                           s->dirty_x, s->dirty_y,
-                                           s->dirty_w, s->dirty_h);
-                }
-
-                /* GPU compositing: submit 3D command stream */
-                gpu_comp_surf_info_t gsi[MAX_SURFACES];
-                for (int i = 0; i < surface_count && i < MAX_SURFACES; i++) {
-                    gsi[i].x = surfaces[i].x;
-                    gsi[i].y = surfaces[i].y;
-                    gsi[i].w = surfaces[i].w;
-                    gsi[i].h = surfaces[i].h;
-                    gsi[i].valid = surfaces[i].valid;
-                    gsi[i].hidden = surfaces[i].hidden;
-                }
-                gpu_comp_composite(fb_w, fb_h, gsi, surface_count);
-            } else {
-                draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+            /* Compositing: paint desktop gradient + decorations + surface
+             * content directly into the framebuffer (GPU mode) or backing
+             * buffer (VGA mode). In GPU mode, no blit_rect needed —
+             * rendering goes directly to GPU memory. */
+            draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+            if (!gpu_mode)
                 blit_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
-            }
         }
 
         if (gpu_mode) {

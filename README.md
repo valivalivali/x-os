@@ -2,7 +2,7 @@
 
 A clean-slate x86_64 microkernel operating system built from scratch. No POSIX baggage, no legacy Unix assumptions. The kernel stays minimal: scheduling, memory management, IPC ports, and hardware abstraction. Everything else (display server, filesystem, shell) lives in ring-3 userspace and communicates over message passing.
 
-![X OS Desktop](docs/screenshots/menubar-v1.png)
+![X OS Desktop](docs/screenshots/desktop-gpu.png)
 
 ## What It Is
 

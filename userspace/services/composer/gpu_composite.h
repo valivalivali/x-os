@@ -104,7 +104,8 @@
 
 /* Initialize GPU compositing context.
  * Returns 1 on success, 0 if virgl not available. */
-int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size);
+int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size,
+                  uint32_t *bg_pixels, int32_t bg_stride);
 
 /* Upload a surface's pixel data to its GPU texture.
  * Creates the texture resource on first call. */
