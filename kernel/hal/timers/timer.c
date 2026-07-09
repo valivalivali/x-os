@@ -1,6 +1,7 @@
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/interrupts/idt.h"
+#include "kernel/hal/input/mouse.h"
 
 #define PIT_FREQ   1193182u
 #define PIT_CH0    0x40
@@ -9,7 +10,10 @@
 static volatile uint64_t ticks = 0;
 static uint32_t hz = 1000;
 
-static void timer_tick(void) { ticks++; }
+static void timer_tick(void) {
+    ticks++;
+    mouse_poll();
+}
 
 void timer_init(uint32_t frequency_hz) {
     if (frequency_hz == 0) frequency_hz = 1000;

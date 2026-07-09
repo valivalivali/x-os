@@ -33,8 +33,8 @@ void zsh_entry(void) {
     /* Create our input port (terminal will send keyboard chars here) */
     port_handle_t my_input = sys_port_create();
     if (!my_input) {
-        log("[zsh] port create fail\n");
-        return;
+        log("[zsh] port create fail, idling\n");
+        for (;;) syscall0(SYS_YIELD);
     }
     log("[zsh] input port created\n");
 
@@ -45,8 +45,8 @@ void zsh_entry(void) {
         if (!bridge) syscall0(SYS_YIELD);
     }
     if (!bridge) {
-        log("[zsh] bridge port not found\n");
-        return;
+        log("[zsh] bridge port not found, idling\n");
+        for (;;) syscall0(SYS_YIELD);
     }
     log("[zsh] bridge found\n");
 

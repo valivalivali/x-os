@@ -5,9 +5,8 @@
  *   byte 1: X delta
  *   byte 2: Y delta
  *
- * We do NOT check port 0x64 status bits. In QEMU the "mouse data"
- * bit (0x20) is unreliable; checking it drops real mouse bytes
- * and causes packet desync (teleportation). IRQ12 means mouse data.
+ * QEMU's cocoa display doesn't reliably deliver IRQ12 after init.
+ * We also poll from the timer tick (1000 Hz) as a fallback.
  */
 
 #include "kernel/hal/input/mouse.h"
@@ -16,12 +15,13 @@
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/interrupts/idt.h"
 
+#define PS2_DATA   0x60
+#define PS2_STATUS 0x64
+
 static uint8_t cycle = 0;
 static uint8_t packet[3];
 
-static void mouse_isr(void) {
-    uint8_t data = inb(0x60);
-
+static void mouse_process_byte(uint8_t data) {
     if (cycle == 0) {
         /* Byte 0 must have bit 3 set. Skip garbage until we see it. */
         if (!(data & 0x08)) return;
@@ -48,12 +48,25 @@ static void mouse_isr(void) {
     }
 }
 
+static void mouse_isr(void) {
+    uint8_t data = inb(PS2_DATA);
+    mouse_process_byte(data);
+}
+
+/* Called from timer tick (1000 Hz) as a polling fallback.
+ * Checks the PS/2 status port for mouse data and processes it. */
+void mouse_poll(void) {
+    for (int i = 0; i < 16; i++) {
+        uint8_t st = inb(PS2_STATUS);
+        if (!(st & 0x01)) break;       /* output buffer empty */
+        if (!(st & 0x20)) break;      /* keyboard data, not mouse */
+        uint8_t data = inb(PS2_DATA);
+        mouse_process_byte(data);
+    }
+}
+
 void mouse_init(void) {
     ps2_mouse_write(0xF6);  /* reset to defaults */
-    /* Set sample rate to 200 Hz for smoother cursor movement.
-     * Default is ~60 Hz which causes large per-packet deltas.
-     * 200 Hz gives 5ms granularity — much smoother at the cost
-     * of slightly more IRQ traffic. */
     ps2_mouse_write(0xF3);  /* Set Sample Rate command */
     ps2_mouse_write(200);   /* 200 samples/sec */
     ps2_mouse_write(0xF4);  /* enable data reporting */

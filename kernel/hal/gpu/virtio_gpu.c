@@ -257,8 +257,6 @@ bool virtio_gpu_get_fb_info(gpu_fb_info_t *info) {
 
 bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
     if (!g_initialized || !g_cursor_phys) return false;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
 
     /* Transfer cursor resource to host so QEMU has the pixel data. */
     struct virtio_gpu_transfer_to_host_2d xfer;
@@ -287,8 +285,6 @@ bool virtio_gpu_cursor_set(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y)
 
 bool virtio_gpu_cursor_move(int32_t x, int32_t y) {
     if (!g_initialized || !g_cursor_phys) return false;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
     struct virtio_gpu_update_cursor cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.hdr.type = VIRTIO_GPU_CMD_MOVE_CURSOR;
