@@ -102,8 +102,16 @@ void svgview_main(void) {
         g_px[i] = 0xFF1a1a2e;
     }
 
-    /* Parse SVG */
-    NSVGimage *image = nsvgParse((char *)test_svg, "px", 96.0f);
+    /* Parse SVG — nsvgParse modifies the input in-place, so copy to writable buffer */
+    size_t svg_len = 0;
+    while (test_svg[svg_len]) svg_len++;
+    char *svg_buf = (char *)malloc(svg_len + 1);
+    if (!svg_buf) {
+        log("[svgview] svg buffer alloc failed\n");
+        return;
+    }
+    for (size_t i = 0; i <= svg_len; i++) svg_buf[i] = test_svg[i];
+    NSVGimage *image = nsvgParse(svg_buf, "px", 96.0f);
     if (!image) {
         log("[svgview] SVG parse failed\n");
         return;
