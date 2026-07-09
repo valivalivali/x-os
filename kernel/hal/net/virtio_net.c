@@ -57,9 +57,12 @@ static bool rx_submit(int slot) {
 bool virtio_net_init(void) {
     if (g_net_ready) return true;
 
+    /* Try non-transitional (0x1000) first, then transitional (0x1041) */
     if (!virtio_pci_probe(&g_netdev, VIRTIO_NET_PCI_DEVICE)) {
-        kputs("[virtio-net] no device found\n");
-        return false;
+        if (!virtio_pci_probe(&g_netdev, VIRTIO_NET_PCI_DEVICE_LEGACY)) {
+            kputs("[virtio-net] no device found\n");
+            return false;
+        }
     }
     kprintf("[virtio-net] found at %x:%x.0\n", g_netdev.pci.bus, g_netdev.pci.dev);
 
@@ -81,7 +84,7 @@ bool virtio_net_init(void) {
     if (g_netdev.device_cfg_ptr) {
         g_net_cfg = (struct virtio_net_config *)phys_to_virt(g_netdev.device_cfg_ptr);
         memcpy(g_mac, g_net_cfg->mac, 6);
-        kprintf("[virtio-net] MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+        kprintf("[virtio-net] MAC %x:%x:%x:%x:%x:%x\n",
                 g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
     } else {
         kputs("[virtio-net] no device config, using default MAC\n");
@@ -163,16 +166,20 @@ int virtio_net_recv(void *buf, int maxlen) {
     }
 
     /* Get the used descriptor */
-    uint16_t used_idx;
+    uint16_t used_desc;
     uint32_t used_len;
-    if (!virtqueue_get_used(&g_rxq, &used_idx, &used_len))
+    if (!virtqueue_get_used(&g_rxq, &used_desc, &used_len))
         return -1;
 
-    /* Find which buffer this corresponds to */
-    int slot = g_rx_next;
-    g_rx_next = (g_rx_next + 1) % RX_BUF_COUNT;
-
-    if (!g_rx_bufs[slot]) return -1;
+    /* Find which slot corresponds to this descriptor index */
+    int slot = -1;
+    for (int i = 0; i < RX_BUF_COUNT; i++) {
+        if (g_rx_desc_idx[i] == used_desc) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0 || !g_rx_bufs[slot]) return -1;
 
     /* The used_len includes the virtio_net_hdr */
     int pkt_len = (int)used_len - VIRTIO_NET_HDR_SIZE;

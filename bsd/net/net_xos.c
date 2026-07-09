@@ -164,9 +164,9 @@ static uint32_t tcp_udp_pseudo_checksum(uint32_t src, uint32_t dst,
 /* ------------------------------------------------------------------ */
 
 static void arp_input(struct mbuf *m) {
-    if (!m || m->m_len < (int)sizeof(struct arp_hdr)) return;
+    if (!m || m->m_len < ETH_HLEN + (int)sizeof(struct arp_hdr)) return;
     struct arp_hdr arp;
-    m_copydata(m, 0, sizeof(arp), &arp);
+    m_copydata(m, ETH_HLEN, sizeof(arp), &arp);
 
     /* Convert byte order */
     uint16_t oper = (arp.oper >> 8) | (arp.oper << 8);
@@ -440,6 +440,9 @@ void net_poll(void) {
 /* ------------------------------------------------------------------ */
 /* Network initialization                                              */
 /* ------------------------------------------------------------------ */
+
+int icmp_echo_request(uint32_t dst_ip, uint16_t id, uint16_t seq,
+                      const void *data, int data_len);
 
 void net_init(void) {
     if (g_net_stack_ready) return;

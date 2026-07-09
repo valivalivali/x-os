@@ -13,8 +13,9 @@
 #include <stdbool.h>
 #include "kernel/hal/virtio/virtio_pci.h"
 
-/* VirtIO-Net PCI device ID */
-#define VIRTIO_NET_PCI_DEVICE  0x1041
+/* VirtIO-Net PCI device IDs */
+#define VIRTIO_NET_PCI_DEVICE     0x1000  /* non-transitional */
+#define VIRTIO_NET_PCI_DEVICE_LEGACY 0x1041  /* transitional */
 
 /* VirtIO-Net feature bits */
 #define VIRTIO_NET_F_MAC      (1ULL << 5)
