@@ -49,12 +49,7 @@ void init_main(void) {
     seed_fs();
 
     spawn_blob(0, "composer");
-    spawn_blob(1, "xplorer");
-    spawn_blob(2, "dock");
-    spawn_blob(3, "menubar");
-    spawn_blob(5, "terminal");
     spawn_blob(4, "zsh");
-    spawn_blob(6, "svgview");
 
     for (;;) syscall0(SYS_YIELD);
 }

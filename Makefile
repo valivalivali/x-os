@@ -78,32 +78,12 @@ COMPOSER_ELF   := $(BUILD_DIR)/userspace/services/composer/composer.elf
 COMPOSER_BLOB_C := kernel/proc/composer_elf_blob.c
 COMPOSER_BLOB_O := $(OBJ_DIR)/kernel/proc/composer_elf_blob.o
 
-XPLORER_ELF    := $(BUILD_DIR)/userspace/services/xplorer/xplorer.elf
-XPLORER_BLOB_C := kernel/proc/xplorer_elf_blob.c
-XPLORER_BLOB_O := $(OBJ_DIR)/kernel/proc/xplorer_elf_blob.o
-
-DOCK_ELF       := $(BUILD_DIR)/userspace/services/dock/dock.elf
-DOCK_BLOB_C    := kernel/proc/dock_elf_blob.c
-DOCK_BLOB_O    := $(OBJ_DIR)/kernel/proc/dock_elf_blob.o
-
-MENUBAR_ELF    := $(BUILD_DIR)/userspace/services/menubar/menubar.elf
-MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
-MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
-
 ZSH_ELF        := $(BUILD_DIR)/userspace/shell/zsh.elf
 ZSH_BLOB_C     := kernel/proc/zsh_elf_blob.c
 ZSH_BLOB_O     := $(OBJ_DIR)/kernel/proc/zsh_elf_blob.o
 
-TERMINAL_ELF    := $(BUILD_DIR)/userspace/services/terminal/terminal.elf
-TERMINAL_BLOB_C := kernel/proc/terminal_elf_blob.c
-TERMINAL_BLOB_O := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
-
-SVGVIEW_ELF     := $(BUILD_DIR)/userspace/services/svgview/svgview.elf
-SVGVIEW_BLOB_C  := kernel/proc/svgview_elf_blob.c
-SVGVIEW_BLOB_O  := $(OBJ_DIR)/kernel/proc/svgview_elf_blob.o
-
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(XPLORER_BLOB_O) $(DOCK_BLOB_O) $(MENUBAR_BLOB_O) $(ZSH_BLOB_O) $(TERMINAL_BLOB_O) $(SVGVIEW_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -189,72 +169,6 @@ $(COMPOSER_BLOB_C): $(COMPOSER_ELF)
 	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t composer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *composer_elf_data = composer_elf_bytes;', 'size_t composer_elf_len = sizeof(composer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
 	@echo ">> generated $@"
 
-# Build xplorer service ELF
-$(XPLORER_ELF): userspace/services/xplorer/start.S userspace/services/xplorer/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/xplorer/xplorer.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/start.S -o $(BUILD_DIR)/userspace/services/xplorer/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/xplorer/main.c -o $(BUILD_DIR)/userspace/services/xplorer/main.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/xplorer/xgfx.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/xplorer/xgfx_font.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/xplorer/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/xplorer/xplorer.ld \
-	  $(BUILD_DIR)/userspace/services/xplorer/start.o \
-	  $(BUILD_DIR)/userspace/services/xplorer/main.o \
-	  $(BUILD_DIR)/userspace/services/xplorer/xgfx.o \
-	  $(BUILD_DIR)/userspace/services/xplorer/xgfx_font.o \
-	  $(BUILD_DIR)/userspace/services/xplorer/syscall.o \
-	  -o $@
-	@echo ">> linked $@"
-
-$(XPLORER_BLOB_C): $(XPLORER_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t xplorer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *xplorer_elf_data = xplorer_elf_bytes;', 'size_t xplorer_elf_len = sizeof(xplorer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-# Build dock service ELF
-$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/dock/dock.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/dock/xgfx.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/dock/xgfx_font.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/dock/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/dock/dock.ld \
-	  $(BUILD_DIR)/userspace/services/dock/start.o \
-	  $(BUILD_DIR)/userspace/services/dock/main.o \
-	  $(BUILD_DIR)/userspace/services/dock/xgfx.o \
-	  $(BUILD_DIR)/userspace/services/dock/xgfx_font.o \
-	  $(BUILD_DIR)/userspace/services/dock/syscall.o \
-	  -o $@
-	@echo ">> linked $@"
-
-$(DOCK_BLOB_C): $(DOCK_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t dock_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *dock_elf_data = dock_elf_bytes;', 'size_t dock_elf_len = sizeof(dock_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-# Build menubar service ELF
-$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/menubar/xgfx.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/menubar/xgfx_font.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menubar/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menubar/menubar.ld \
-	  $(BUILD_DIR)/userspace/services/menubar/start.o \
-	  $(BUILD_DIR)/userspace/services/menubar/main.o \
-	  $(BUILD_DIR)/userspace/services/menubar/xgfx.o \
-	  $(BUILD_DIR)/userspace/services/menubar/xgfx_font.o \
-	  $(BUILD_DIR)/userspace/services/menubar/syscall.o \
-	  -o $@
-	@echo ">> linked $@"
-
-$(MENUBAR_BLOB_C): $(MENUBAR_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menubar_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menubar_elf_data = menubar_elf_bytes;', 'size_t menubar_elf_len = sizeof(menubar_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
 # Explicit blob object rules so Make knows to generate the .c first
 $(INIT_BLOB_O): $(INIT_BLOB_C)
 	@mkdir -p $(dir $@)
@@ -264,74 +178,12 @@ $(COMPOSER_BLOB_O): $(COMPOSER_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(XPLORER_BLOB_O): $(XPLORER_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(DOCK_BLOB_O): $(DOCK_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 $(ZSH_BLOB_C): $(ZSH_ELF)
 	@mkdir -p $(dir $@)
 	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t zsh_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *zsh_elf_data = zsh_elf_bytes;', 'size_t zsh_elf_len = sizeof(zsh_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
 	@echo ">> generated $@"
 
 $(ZSH_BLOB_O): $(ZSH_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Build terminal service ELF
-$(TERMINAL_ELF): userspace/services/terminal/start.S userspace/services/terminal/main.c userspace/lib/xgfx/xgfx.c userspace/lib/xgfx/xgfx_font_terminus.c userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/terminal/terminal.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/terminal/start.S -o $(BUILD_DIR)/userspace/services/terminal/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/terminal/main.c -o $(BUILD_DIR)/userspace/services/terminal/main.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx.c -o $(BUILD_DIR)/userspace/services/terminal/xgfx.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/lib/xgfx/xgfx_font_terminus.c -o $(BUILD_DIR)/userspace/services/terminal/xgfx_font.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/terminal/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/terminal/terminal.ld \
-	  $(BUILD_DIR)/userspace/services/terminal/start.o \
-	  $(BUILD_DIR)/userspace/services/terminal/main.o \
-	  $(BUILD_DIR)/userspace/services/terminal/xgfx.o \
-	  $(BUILD_DIR)/userspace/services/terminal/xgfx_font.o \
-	  $(BUILD_DIR)/userspace/services/terminal/syscall.o \
-	  -o $@
-	@echo ">> linked $@"
-
-$(TERMINAL_BLOB_C): $(TERMINAL_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t terminal_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *terminal_elf_data = terminal_elf_bytes;', 'size_t terminal_elf_len = sizeof(terminal_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(TERMINAL_BLOB_O): $(TERMINAL_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Build svgview service ELF
-$(SVGVIEW_ELF): userspace/services/svgview/start.S userspace/services/svgview/main.c userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/svgview/svgview.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/svgview/start.S -o $(BUILD_DIR)/userspace/services/svgview/start.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/svgview/main.c -o $(BUILD_DIR)/userspace/services/svgview/main.o
-	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/svgview/nanosvg_xos.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/svgview/syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/svgview/svgview.ld \
-	  $(BUILD_DIR)/userspace/services/svgview/start.o \
-	  $(BUILD_DIR)/userspace/services/svgview/main.o \
-	  $(BUILD_DIR)/userspace/services/svgview/nanosvg_xos.o \
-	  $(BUILD_DIR)/userspace/services/svgview/syscall.o \
-	  -o $@
-	@echo ">> linked $@"
-
-$(SVGVIEW_BLOB_C): $(SVGVIEW_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t svgview_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *svgview_elf_data = svgview_elf_bytes;', 'size_t svgview_elf_len = sizeof(svgview_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(SVGVIEW_BLOB_O): $(SVGVIEW_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
