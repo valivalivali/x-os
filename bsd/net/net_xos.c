@@ -336,6 +336,10 @@ static void icmp_input(struct mbuf *m, int ip_hdr_len) {
     m_freem(m);
 }
 
+static void icmp_input(struct mbuf *m, int ip_hdr_len);
+static void udp_input(struct mbuf *m, int ip_hdr_len, uint32_t src_ip);
+static void tcp_input(struct mbuf *m, int ip_hdr_len, uint32_t src_ip);
+
 static void ip_input(struct mbuf *m) {
     if (!m || m->m_len < (int)sizeof(struct ip_hdr)) { m_freem(m); return; }
 
@@ -355,19 +359,16 @@ static void ip_input(struct mbuf *m) {
     }
 
     /* Dispatch by protocol */
+    uint32_t src_ip = ntohl(iph.src);
     switch (iph.proto) {
     case IP_PROTO_ICMP:
         icmp_input(m, ip_hdr_len);
         break;
     case IP_PROTO_UDP:
-        /* TODO: UDP input */
-        kprintf("[net] UDP packet received (not yet handled)\n");
-        m_freem(m);
+        udp_input(m, ip_hdr_len, src_ip);
         break;
     case IP_PROTO_TCP:
-        /* TODO: TCP input */
-        kprintf("[net] TCP packet received (not yet handled)\n");
-        m_freem(m);
+        tcp_input(m, ip_hdr_len, src_ip);
         break;
     default:
         m_freem(m);
@@ -543,4 +544,526 @@ int icmp_echo_request(uint32_t dst_ip, uint16_t id, uint16_t seq,
     int ret = ip_output(dst_ip, IP_PROTO_ICMP, icmp, icmp_len);
     kfree(icmp);
     return ret;
+}
+
+/* ------------------------------------------------------------------ */
+/* UDP — connectionless datagram protocol                              */
+/* ------------------------------------------------------------------ */
+
+#define MAX_UDP_PCB  32
+
+struct udp_pcb {
+    bool     used;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t remote_ip;
+    /* Receive queue */
+    struct mbuf *rx_chain;
+    int rx_count;
+};
+
+static struct udp_pcb g_udp_pcbs[MAX_UDP_PCB];
+
+static void udp_input(struct mbuf *m, int ip_hdr_len, uint32_t src_ip) {
+    if (!m || m->m_len < ip_hdr_len + (int)sizeof(struct udp_hdr)) {
+        m_freem(m); return;
+    }
+
+    struct udp_hdr uh;
+    m_copydata(m, ip_hdr_len, sizeof(uh), &uh);
+
+    uint16_t dst_port = ntohs(uh.dst_port);
+    uint16_t src_port = ntohs(uh.src_port);
+    uint16_t udp_len = ntohs(uh.len);
+
+    /* Find matching PCB */
+    for (int i = 0; i < MAX_UDP_PCB; i++) {
+        if (g_udp_pcbs[i].used && g_udp_pcbs[i].local_port == dst_port) {
+            /* Queue the packet (strip IP + UDP headers) */
+            int data_off = ip_hdr_len + sizeof(struct udp_hdr);
+            int data_len = udp_len - sizeof(struct udp_hdr);
+            if (data_len <= 0) { m_freem(m); return; }
+
+            struct mbuf *dm = m_gethdr(0, MT_DATA);
+            if (!dm) { m_freem(m); return; }
+            if (data_len > MHLEN) {
+                void *cl = kmalloc(data_len);
+                if (!cl) { m_free(dm); m_freem(m); return; }
+                m_copydata(m, data_off, data_len, cl);
+                dm->m_ext.ext_buf = cl;
+                dm->m_ext.ext_size = data_len;
+                dm->m_ext.ext_refcnt = 1;
+                dm->m_data = cl;
+                dm->m_flags |= M_EXT;
+            } else {
+                m_copydata(m, data_off, data_len, dm->m_pktdat);
+                dm->m_data = dm->m_pktdat;
+            }
+            dm->m_len = data_len;
+            dm->m_pkthdr.len = data_len;
+
+            /* Append to receive chain */
+            if (!g_udp_pcbs[i].rx_chain) {
+                g_udp_pcbs[i].rx_chain = dm;
+            } else {
+                struct mbuf *p = g_udp_pcbs[i].rx_chain;
+                while (p->m_next) p = p->m_next;
+                p->m_next = dm;
+            }
+            g_udp_pcbs[i].rx_count++;
+
+            m_freem(m);
+            return;
+        }
+    }
+    /* No matching socket — drop */
+    m_freem(m);
+}
+
+int udp_bind(int pcb_idx, uint16_t port) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_UDP_PCB) return -1;
+    if (!g_udp_pcbs[pcb_idx].used) return -1;
+    g_udp_pcbs[pcb_idx].local_port = port;
+    return 0;
+}
+
+int udp_connect(int pcb_idx, uint32_t ip, uint16_t port) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_UDP_PCB) return -1;
+    if (!g_udp_pcbs[pcb_idx].used) return -1;
+    g_udp_pcbs[pcb_idx].remote_ip = ip;
+    g_udp_pcbs[pcb_idx].remote_port = port;
+    return 0;
+}
+
+int udp_send(int pcb_idx, const void *data, int len) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_UDP_PCB) return -1;
+    struct udp_pcb *p = &g_udp_pcbs[pcb_idx];
+    if (!p->used || !p->remote_ip) return -1;
+
+    int udp_total = sizeof(struct udp_hdr) + len;
+    uint8_t *udp = (uint8_t *)kmalloc(udp_total);
+    if (!udp) return -1;
+
+    struct udp_hdr *uh = (struct udp_hdr *)udp;
+    uh->src_port = htons(p->local_port);
+    uh->dst_port = htons(p->remote_port);
+    uh->len = htons(udp_total);
+    uh->checksum = 0;  /* optional for IPv4 */
+    memcpy(udp + sizeof(struct udp_hdr), data, len);
+
+    int ret = ip_output(p->remote_ip, IP_PROTO_UDP, udp, udp_total);
+    kfree(udp);
+    return (ret > 0) ? len : -1;
+}
+
+int udp_recv(int pcb_idx, void *buf, int maxlen, uint32_t *src_ip, uint16_t *src_port) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_UDP_PCB) return -1;
+    struct udp_pcb *p = &g_udp_pcbs[pcb_idx];
+    if (!p->used || !p->rx_chain) return -1;
+
+    struct mbuf *m = p->rx_chain;
+    p->rx_chain = m->m_next;
+    p->rx_count--;
+    m->m_next = NULL;
+
+    int n = m->m_len;
+    if (n > maxlen) n = maxlen;
+    memcpy(buf, m->m_data, n);
+    m_free(m);
+    return n;
+}
+
+int udp_create(void) {
+    for (int i = 0; i < MAX_UDP_PCB; i++) {
+        if (!g_udp_pcbs[i].used) {
+            memset(&g_udp_pcbs[i], 0, sizeof(struct udp_pcb));
+            g_udp_pcbs[i].used = true;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void udp_close(int pcb_idx) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_UDP_PCB) return;
+    m_freem(g_udp_pcbs[pcb_idx].rx_chain);
+    memset(&g_udp_pcbs[pcb_idx], 0, sizeof(struct udp_pcb));
+}
+
+/* ------------------------------------------------------------------ */
+/* TCP — minimal implementation with 3-way handshake                   */
+/* ------------------------------------------------------------------ */
+
+#define MAX_TCP_PCB  32
+
+enum tcp_state {
+    TCP_CLOSED = 0,
+    TCP_LISTEN,
+    TCP_SYN_SENT,
+    TCP_SYN_RECEIVED,
+    TCP_ESTABLISHED,
+    TCP_FIN_WAIT_1,
+    TCP_FIN_WAIT_2,
+    TCP_CLOSE_WAIT,
+    TCP_CLOSING,
+    TCP_LAST_ACK,
+    TCP_TIME_WAIT
+};
+
+struct tcp_pcb {
+    bool     used;
+    enum tcp_state state;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t remote_ip;
+    uint32_t snd_una;    /* oldest unacked seq */
+    uint32_t snd_nxt;    /* next seq to send */
+    uint32_t rcv_nxt;    /* next seq expected */
+    uint16_t window;
+    /* Receive queue */
+    struct mbuf *rx_chain;
+    int rx_count;
+    /* Backlog for listen */
+    int backlog;
+    struct tcp_pcb *accept_queue[16];
+    int accept_count;
+};
+
+static struct tcp_pcb g_tcp_pcbs[MAX_TCP_PCB];
+
+static uint16_t tcp_next_port = 1024;
+
+static void tcp_send_segment(struct tcp_pcb *pcb, uint8_t flags,
+                             const void *data, int len) {
+    if (!pcb) return;
+
+    int tcp_total = sizeof(struct tcp_hdr) + len;
+    uint8_t *seg = (uint8_t *)kmalloc(tcp_total);
+    if (!seg) return;
+
+    struct tcp_hdr *th = (struct tcp_hdr *)seg;
+    th->src_port = htons(pcb->local_port);
+    th->dst_port = htons(pcb->remote_port);
+    th->seq = htonl(pcb->snd_nxt);
+    th->ack = htonl(pcb->rcv_nxt);
+    th->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+    th->flags = flags;
+    th->window = htons(pcb->window);
+    th->checksum = 0;
+    th->urg_ptr = 0;
+
+    if (data && len > 0)
+        memcpy(seg + sizeof(struct tcp_hdr), data, len);
+
+    /* Compute TCP checksum with pseudo-header */
+    uint32_t pseudo = tcp_udp_pseudo_checksum(
+        g_ip_addr, pcb->remote_ip, IP_PROTO_TCP, tcp_total);
+    th->checksum = htons(checksum16(seg, tcp_total, pseudo));
+
+    ip_output(pcb->remote_ip, IP_PROTO_TCP, seg, tcp_total);
+    kfree(seg);
+
+    /* Advance send sequence for data + SYN/FIN */
+    if (len > 0) pcb->snd_nxt += len;
+    if (flags & TCP_SYN) pcb->snd_nxt += 1;
+    if (flags & TCP_FIN) pcb->snd_nxt += 1;
+}
+
+static void tcp_input(struct mbuf *m, int ip_hdr_len, uint32_t src_ip) {
+    if (!m || m->m_len < ip_hdr_len + (int)sizeof(struct tcp_hdr)) {
+        m_freem(m); return;
+    }
+
+    struct tcp_hdr th;
+    m_copydata(m, ip_hdr_len, sizeof(th), &th);
+
+    uint16_t dst_port = ntohs(th.dst_port);
+    uint16_t src_port = ntohs(th.src_port);
+    uint32_t seq = ntohl(th.seq);
+    uint32_t ack = ntohl(th.ack);
+    int tcp_hdr_len = (th.data_off >> 4) * 4;
+    int data_len = ntohs(0) - tcp_hdr_len; /* will fix below */
+
+    /* Get total IP length to compute data length */
+    struct ip_hdr iph;
+    m_copydata(m, 0, sizeof(iph), &iph);
+    int ip_total = ntohs(iph.len);
+    data_len = ip_total - ip_hdr_len - tcp_hdr_len;
+
+    /* Find matching PCB */
+    struct tcp_pcb *pcb = NULL;
+    for (int i = 0; i < MAX_TCP_PCB; i++) {
+        if (g_tcp_pcbs[i].used &&
+            g_tcp_pcbs[i].local_port == dst_port &&
+            g_tcp_pcbs[i].remote_port == src_port &&
+            g_tcp_pcbs[i].remote_ip == src_ip) {
+            pcb = &g_tcp_pcbs[i];
+            break;
+        }
+    }
+
+    /* Check for listeners */
+    if (!pcb) {
+        for (int i = 0; i < MAX_TCP_PCB; i++) {
+            if (g_tcp_pcbs[i].used &&
+                g_tcp_pcbs[i].state == TCP_LISTEN &&
+                g_tcp_pcbs[i].local_port == dst_port) {
+                pcb = &g_tcp_pcbs[i];
+                break;
+            }
+        }
+    }
+
+    if (!pcb) {
+        /* Send RST */
+        m_freem(m);
+        return;
+    }
+
+    switch (pcb->state) {
+    case TCP_LISTEN:
+        if (th.flags & TCP_SYN) {
+            /* Create a new PCB for this connection */
+            int new_idx = -1;
+            for (int i = 0; i < MAX_TCP_PCB; i++) {
+                if (!g_tcp_pcbs[i].used) {
+                    new_idx = i;
+                    break;
+                }
+            }
+            if (new_idx < 0) { m_freem(m); return; }
+
+            struct tcp_pcb *newp = &g_tcp_pcbs[new_idx];
+            memset(newp, 0, sizeof(*newp));
+            newp->used = true;
+            newp->state = TCP_SYN_RECEIVED;
+            newp->local_port = dst_port;
+            newp->remote_port = src_port;
+            newp->remote_ip = src_ip;
+            newp->snd_nxt = 0x1000;
+            newp->rcv_nxt = seq + 1;
+            newp->window = 8192;
+
+            /* Send SYN-ACK */
+            tcp_send_segment(newp, TCP_SYN | TCP_ACK, NULL, 0);
+
+            /* Queue on accept list */
+            if (pcb->accept_count < 16) {
+                pcb->accept_queue[pcb->accept_count++] = newp;
+            }
+        }
+        break;
+
+    case TCP_SYN_RECEIVED:
+        if (th.flags & TCP_ACK) {
+            pcb->snd_una = ack;
+            pcb->state = TCP_ESTABLISHED;
+            kprintf("[tcp] connection established %d.%d.%d.%d:%d → :%d\n",
+                    (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
+                    (src_ip >> 8) & 0xFF, src_ip & 0xFF,
+                    src_port, dst_port);
+        }
+        break;
+
+    case TCP_SYN_SENT:
+        if ((th.flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
+            pcb->rcv_nxt = seq + 1;
+            pcb->snd_una = ack;
+            pcb->state = TCP_ESTABLISHED;
+            /* Send ACK */
+            tcp_send_segment(pcb, TCP_ACK, NULL, 0);
+            kprintf("[tcp] active open established → %d.%d.%d.%d:%d\n",
+                    (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
+                    (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port);
+        }
+        break;
+
+    case TCP_ESTABLISHED:
+        if (data_len > 0) {
+            /* Queue received data */
+            int data_off = ip_hdr_len + tcp_hdr_len;
+            struct mbuf *dm = m_gethdr(0, MT_DATA);
+            if (dm) {
+                if (data_len > MHLEN) {
+                    void *cl = kmalloc(data_len);
+                    if (cl) {
+                        m_copydata(m, data_off, data_len, cl);
+                        dm->m_ext.ext_buf = cl;
+                        dm->m_ext.ext_size = data_len;
+                        dm->m_ext.ext_refcnt = 1;
+                        dm->m_data = cl;
+                        dm->m_flags |= M_EXT;
+                    }
+                } else {
+                    m_copydata(m, data_off, data_len, dm->m_pktdat);
+                    dm->m_data = dm->m_pktdat;
+                }
+                dm->m_len = data_len;
+                dm->m_pkthdr.len = data_len;
+
+                if (!pcb->rx_chain) {
+                    pcb->rx_chain = dm;
+                } else {
+                    struct mbuf *p = pcb->rx_chain;
+                    while (p->m_next) p = p->m_next;
+                    p->m_next = dm;
+                }
+                pcb->rx_count++;
+            }
+            pcb->rcv_nxt += data_len;
+
+            /* Send ACK */
+            tcp_send_segment(pcb, TCP_ACK, NULL, 0);
+        }
+
+        if (th.flags & TCP_FIN) {
+            pcb->rcv_nxt += 1;
+            tcp_send_segment(pcb, TCP_ACK | TCP_FIN, NULL, 0);
+            pcb->state = TCP_CLOSE_WAIT;
+            kprintf("[tcp] close from peer %d.%d.%d.%d:%d\n",
+                    (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
+                    (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port);
+        }
+        break;
+
+    case TCP_LAST_ACK:
+        if (th.flags & TCP_ACK) {
+            pcb->state = TCP_CLOSED;
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    m_freem(m);
+}
+
+int tcp_create(void) {
+    for (int i = 0; i < MAX_TCP_PCB; i++) {
+        if (!g_tcp_pcbs[i].used) {
+            memset(&g_tcp_pcbs[i], 0, sizeof(struct tcp_pcb));
+            g_tcp_pcbs[i].used = true;
+            g_tcp_pcbs[i].state = TCP_CLOSED;
+            g_tcp_pcbs[i].window = 8192;
+            g_tcp_pcbs[i].snd_nxt = 0x1000;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int tcp_bind(int pcb_idx, uint16_t port) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    if (!g_tcp_pcbs[pcb_idx].used) return -1;
+    g_tcp_pcbs[pcb_idx].local_port = port;
+    return 0;
+}
+
+int tcp_listen(int pcb_idx, int backlog) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used) return -1;
+    p->state = TCP_LISTEN;
+    p->backlog = backlog;
+    p->accept_count = 0;
+    return 0;
+}
+
+int tcp_accept(int pcb_idx) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used || p->state != TCP_LISTEN) return -1;
+    if (p->accept_count == 0) return -1;
+
+    /* Return the first accepted connection as a new PCB index */
+    struct tcp_pcb *newp = p->accept_queue[0];
+    p->accept_count--;
+    for (int i = 0; i < p->accept_count; i++)
+        p->accept_queue[i] = p->accept_queue[i + 1];
+
+    /* Return its index */
+    for (int i = 0; i < MAX_TCP_PCB; i++) {
+        if (&g_tcp_pcbs[i] == newp) return i;
+    }
+    return -1;
+}
+
+int tcp_connect(int pcb_idx, uint32_t ip, uint16_t port) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used) return -1;
+
+    p->remote_ip = ip;
+    p->remote_port = port;
+    if (p->local_port == 0) {
+        p->local_port = tcp_next_port++;
+    }
+    p->state = TCP_SYN_SENT;
+    p->snd_nxt = 0x1000;
+    p->rcv_nxt = 0;
+
+    /* Send SYN */
+    tcp_send_segment(p, TCP_SYN, NULL, 0);
+
+    /* Wait for SYN-ACK (simplified — poll for a short time) */
+    for (int i = 0; i < 1000; i++) {
+        net_poll();
+        if (p->state == TCP_ESTABLISHED) return 0;
+    }
+    p->state = TCP_CLOSED;
+    return -1;
+}
+
+int tcp_send(int pcb_idx, const void *data, int len) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used || p->state != TCP_ESTABLISHED) return -1;
+
+    int max_seg = 1460;  /* MSS */
+    int sent = 0;
+    while (sent < len) {
+        int chunk = len - sent;
+        if (chunk > max_seg) chunk = max_seg;
+        tcp_send_segment(p, TCP_ACK | TCP_PSH, (char *)data + sent, chunk);
+        sent += chunk;
+    }
+    return sent;
+}
+
+int tcp_recv(int pcb_idx, void *buf, int maxlen) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return -1;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used || !p->rx_chain) return -1;
+
+    /* Poll for data if none available */
+    if (!p->rx_chain) {
+        net_poll();
+        if (!p->rx_chain) return -1;
+    }
+
+    struct mbuf *m = p->rx_chain;
+    p->rx_chain = m->m_next;
+    p->rx_count--;
+    m->m_next = NULL;
+
+    int n = m->m_len;
+    if (n > maxlen) n = maxlen;
+    memcpy(buf, m->m_data, n);
+    m_free(m);
+    return n;
+}
+
+void tcp_close(int pcb_idx) {
+    if (pcb_idx < 0 || pcb_idx >= MAX_TCP_PCB) return;
+    struct tcp_pcb *p = &g_tcp_pcbs[pcb_idx];
+    if (!p->used) return;
+
+    if (p->state == TCP_ESTABLISHED) {
+        tcp_send_segment(p, TCP_ACK | TCP_FIN, NULL, 0);
+        p->state = TCP_FIN_WAIT_1;
+    } else {
+        m_freem(p->rx_chain);
+        memset(p, 0, sizeof(*p));
+    }
 }

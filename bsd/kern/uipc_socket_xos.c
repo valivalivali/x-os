@@ -7,6 +7,7 @@
 
 #include "compat/compat.h"
 #include "uipc_mbuf_xos.h"
+#include "net/net_xos.h"
 #include "kernel/memory/heap.h"
 #include "kernel/lib/string.h"
 
@@ -156,122 +157,225 @@ static struct socket *sock_get(int fd) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Protocol stubs — will be connected to TCP/UDP implementations       */
+/* TCP protocol — connects to net_xos.c TCP PCBs                       */
 /* ------------------------------------------------------------------ */
 
-/* For now, we provide a loopback-only protocol that echoes data.
- * This allows basic socket API testing without a real network stack. */
-
-static int loop_attach(struct socket *so, int proto) {
+static int so_tcp_attach(struct socket *so, int proto) {
     (void)proto;
+    int pcb = tcp_create();
+    if (pcb < 0) return -1;
+    so->so_pcb = (void *)(long)(pcb + 1);  /* store pcb+1 so 0 means unattached */
     so->so_rcv.sb_hiwat = 8192;
     so->so_snd.sb_hiwat = 8192;
     return 0;
 }
 
-static int loop_detach(struct socket *so) {
-    (void)so;
+static int so_tcp_detach(struct socket *so) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb >= 0) tcp_close(pcb);
+    so->so_pcb = NULL;
     return 0;
 }
 
-static int loop_bind(struct socket *so, struct sockaddr *nam) {
-    (void)so; (void)nam;
-    return 0;
+static int so_tcp_bind(struct socket *so, struct sockaddr *nam) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    struct sockaddr_in *sin = (struct sockaddr_in *)nam;
+    uint16_t port = ntohs(sin->sin_port);
+    return tcp_bind(pcb, port);
 }
 
-static int loop_listen(struct socket *so, int backlog) {
-    (void)so; (void)backlog;
-    return 0;
+static int so_tcp_listen(struct socket *so, int backlog) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    return tcp_listen(pcb, backlog);
 }
 
-static int loop_connect(struct socket *so, struct sockaddr *nam) {
+static int so_tcp_connect(struct socket *so, struct sockaddr *nam) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    struct sockaddr_in *sin = (struct sockaddr_in *)nam;
+    uint32_t ip = ntohl(sin->sin_addr);
+    uint16_t port = ntohs(sin->sin_port);
+    int ret = tcp_connect(pcb, ip, port);
+    if (ret == 0) so->so_state |= SS_ISCONNECTED;
+    return ret;
+}
+
+static int so_tcp_accept(struct socket *so, struct sockaddr **nam) {
     (void)nam;
-    so->so_state |= SS_ISCONNECTED;
-    return 0;
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    /* Poll for incoming connections */
+    for (int i = 0; i < 100; i++) {
+        net_poll();
+        int new_pcb = tcp_accept(pcb);
+        if (new_pcb >= 0) {
+            so->so_pcb = (void *)(long)(new_pcb + 1);
+            so->so_state |= SS_ISCONNECTED;
+            return 0;
+        }
+    }
+    return -1;
 }
 
-static int loop_accept(struct socket *so, struct sockaddr **nam) {
-    (void)so; (void)nam;
-    return 0;
-}
-
-static int loop_disconnect(struct socket *so) {
+static int so_tcp_disconnect(struct socket *so) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb >= 0) tcp_close(pcb);
+    so->so_pcb = NULL;
     so->so_state &= ~SS_ISCONNECTED;
     return 0;
 }
 
-static int loop_send(struct socket *so, int flags, struct mbuf *m,
-                     struct sockaddr *addr, void *control) {
+static int so_tcp_send(struct socket *so, int flags, struct mbuf *m,
+                    struct sockaddr *addr, void *control) {
     (void)flags; (void)addr; (void)control;
-    /* Echo: move data from send buffer to receive buffer */
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) { m_freem(m); return -1; }
     if (!m) return 0;
-    /* Append to receive buffer */
-    if (!so->so_rcv.sb_mb) {
-        so->so_rcv.sb_mb = m;
-    } else {
-        struct mbuf *p = so->so_rcv.sb_mb;
-        while (p->m_next) p = p->m_next;
-        p->m_next = m;
-    }
-    so->so_rcv.sb_cc += m_length(m);
-    return 0;
+    int ret = tcp_send(pcb, m->m_data, m->m_len);
+    m_freem(m);
+    return (ret > 0) ? 0 : -1;
 }
 
-static int loop_shutdown(struct socket *so) {
+static int so_tcp_shutdown(struct socket *so) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb >= 0) {
+        tcp_close(pcb);
+        so->so_pcb = NULL;
+    }
     so->so_state |= SS_CANTSENDMORE;
     return 0;
 }
 
-static int loop_setsockopt(struct socket *so, int level, int name,
-                           const void *val, int valsize) {
+static int so_tcp_setsockopt(struct socket *so, int level, int name,
+                          const void *val, int valsize) {
     (void)so; (void)level; (void)name; (void)val; (void)valsize;
     return 0;
 }
 
-static int loop_getsockopt(struct socket *so, int level, int name,
-                           void *val, int *valsize) {
+static int so_tcp_getsockopt(struct socket *so, int level, int name,
+                          void *val, int *valsize) {
     (void)so; (void)level; (void)name; (void)val; (void)valsize;
     return 0;
 }
 
-static struct protosw loop_proto = {
+static struct protosw tcp_proto = {
     .pr_type = SOCK_STREAM,
     .pr_domain = AF_INET,
-    .pr_protocol = 0,
-    .pr_attach = loop_attach,
-    .pr_detach = loop_detach,
-    .pr_bind = loop_bind,
-    .pr_listen = loop_listen,
-    .pr_connect = loop_connect,
-    .pr_accept = loop_accept,
-    .pr_disconnect = loop_disconnect,
-    .pr_send = loop_send,
-    .pr_shutdown = loop_shutdown,
-    .pr_setsockopt = loop_setsockopt,
-    .pr_getsockopt = loop_getsockopt,
+    .pr_protocol = 6,  /* IPPROTO_TCP */
+    .pr_attach = so_tcp_attach,
+    .pr_detach = so_tcp_detach,
+    .pr_bind = so_tcp_bind,
+    .pr_listen = so_tcp_listen,
+    .pr_connect = so_tcp_connect,
+    .pr_accept = so_tcp_accept,
+    .pr_disconnect = so_tcp_disconnect,
+    .pr_send = so_tcp_send,
+    .pr_shutdown = so_tcp_shutdown,
+    .pr_setsockopt = so_tcp_setsockopt,
+    .pr_getsockopt = so_tcp_getsockopt,
 };
 
-static struct protosw dgram_proto = {
+/* ------------------------------------------------------------------ */
+/* UDP protocol — connects to net_xos.c UDP PCBs                       */
+/* ------------------------------------------------------------------ */
+
+static int so_udp_attach(struct socket *so, int proto) {
+    (void)proto;
+    int pcb = udp_create();
+    if (pcb < 0) return -1;
+    so->so_pcb = (void *)(long)(pcb + 1);
+    so->so_rcv.sb_hiwat = 8192;
+    so->so_snd.sb_hiwat = 8192;
+    return 0;
+}
+
+static int so_udp_detach(struct socket *so) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb >= 0) udp_close(pcb);
+    so->so_pcb = NULL;
+    return 0;
+}
+
+static int so_udp_bind(struct socket *so, struct sockaddr *nam) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    struct sockaddr_in *sin = (struct sockaddr_in *)nam;
+    uint16_t port = ntohs(sin->sin_port);
+    return udp_bind(pcb, port);
+}
+
+static int so_udp_connect(struct socket *so, struct sockaddr *nam) {
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) return -1;
+    struct sockaddr_in *sin = (struct sockaddr_in *)nam;
+    uint32_t ip = ntohl(sin->sin_addr);
+    uint16_t port = ntohs(sin->sin_port);
+    int ret = udp_connect(pcb, ip, port);
+    if (ret == 0) so->so_state |= SS_ISCONNECTED;
+    return ret;
+}
+
+static int so_udp_send(struct socket *so, int flags, struct mbuf *m,
+                    struct sockaddr *addr, void *control) {
+    (void)flags; (void)control;
+    int pcb = (int)(long)so->so_pcb - 1;
+    if (pcb < 0) { m_freem(m); return -1; }
+    if (!m) return 0;
+
+    /* If addr is provided, use sendto semantics */
+    if (addr) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+        uint32_t ip = ntohl(sin->sin_addr);
+        uint16_t port = ntohs(sin->sin_port);
+        udp_connect(pcb, ip, port);
+    }
+
+    int ret = udp_send(pcb, m->m_data, m->m_len);
+    m_freem(m);
+    return (ret > 0) ? 0 : -1;
+}
+
+static int so_udp_shutdown(struct socket *so) {
+    so->so_state |= SS_CANTSENDMORE;
+    return 0;
+}
+
+static int so_udp_setsockopt(struct socket *so, int level, int name,
+                          const void *val, int valsize) {
+    (void)so; (void)level; (void)name; (void)val; (void)valsize;
+    return 0;
+}
+
+static int so_udp_getsockopt(struct socket *so, int level, int name,
+                          void *val, int *valsize) {
+    (void)so; (void)level; (void)name; (void)val; (void)valsize;
+    return 0;
+}
+
+static struct protosw udp_proto = {
     .pr_type = SOCK_DGRAM,
     .pr_domain = AF_INET,
-    .pr_protocol = 0,
-    .pr_attach = loop_attach,
-    .pr_detach = loop_detach,
-    .pr_bind = loop_bind,
-    .pr_listen = loop_listen,
-    .pr_connect = loop_connect,
-    .pr_accept = loop_accept,
-    .pr_disconnect = loop_disconnect,
-    .pr_send = loop_send,
-    .pr_shutdown = loop_shutdown,
-    .pr_setsockopt = loop_setsockopt,
-    .pr_getsockopt = loop_getsockopt,
+    .pr_protocol = 17,  /* IPPROTO_UDP */
+    .pr_attach = so_udp_attach,
+    .pr_detach = so_udp_detach,
+    .pr_bind = so_udp_bind,
+    .pr_listen = NULL,
+    .pr_connect = so_udp_connect,
+    .pr_accept = NULL,
+    .pr_disconnect = NULL,
+    .pr_send = so_udp_send,
+    .pr_shutdown = so_udp_shutdown,
+    .pr_setsockopt = so_udp_setsockopt,
+    .pr_getsockopt = so_udp_getsockopt,
 };
 
 static struct protosw *proto_lookup(int domain, int type, int protocol) {
-    (void)domain; (void)protocol;
-    if (type == SOCK_STREAM) return &loop_proto;
-    if (type == SOCK_DGRAM) return &dgram_proto;
+    (void)protocol;
+    if (domain != AF_INET) return NULL;
+    if (type == SOCK_STREAM) return &tcp_proto;
+    if (type == SOCK_DGRAM) return &udp_proto;
     return NULL;
 }
 
@@ -325,6 +429,8 @@ int soaccept(int fd, struct sockaddr *nam, int *namelen) {
     struct socket *so = sock_get(fd);
     if (!so) return -1;
     if (!(so->so_options & SO_ACCEPTCONN)) return -1;
+    if (!so->so_proto || !so->so_proto->pr_accept) return -1;
+
     /* Create a new socket for the accepted connection */
     int newfd = sock_alloc();
     if (newfd < 0) return -1;
@@ -332,10 +438,15 @@ int soaccept(int fd, struct sockaddr *nam, int *namelen) {
     newso->so_type = so->so_type;
     newso->so_proto = so->so_proto;
     newso->so_fd = newfd;
-    newso->so_state = SS_ISCONNECTED;
     newso->so_rcv.sb_hiwat = 8192;
     newso->so_snd.sb_hiwat = 8192;
-    if (so->so_proto->pr_attach) so->so_proto->pr_attach(newso, 0);
+
+    /* Let the protocol accept the connection and set up the PCB */
+    if (so->so_proto->pr_accept(newso, NULL) != 0) {
+        newso->so_type = 0;
+        return -1;
+    }
+    newso->so_state = SS_ISCONNECTED;
     return newfd;
 }
 
@@ -392,9 +503,66 @@ int soreceive(int fd, void *buf, size_t len, int flags,
     (void)addr; (void)addrlen; (void)flags;
     struct socket *so = sock_get(fd);
     if (!so) return -1;
+
+    /* If no data in socket buffer, try polling the network and
+     * pulling data from the TCP/UDP PCB */
     if (!so->so_rcv.sb_mb || so->so_rcv.sb_cc == 0) {
         if (so->so_state & SS_CANTRCVMORE) return 0;
-        return -1;  /* would block */
+
+        /* Poll network for incoming packets */
+        net_poll();
+
+        /* Try to pull data from the PCB */
+        int pcb = (int)(long)so->so_pcb - 1;
+        if (pcb >= 0) {
+            if (so->so_type == SOCK_STREAM) {
+                char tmpbuf[4096];
+                int n = tcp_recv(pcb, tmpbuf, sizeof(tmpbuf));
+                if (n > 0) {
+                    struct mbuf *m = m_gethdr(0, MT_DATA);
+                    if (m) {
+                        if (n > MHLEN) {
+                            void *cl = kmalloc(n);
+                            if (cl) {
+                                memcpy(cl, tmpbuf, n);
+                                m->m_ext.ext_buf = cl;
+                                m->m_ext.ext_size = n;
+                                m->m_ext.ext_refcnt = 1;
+                                m->m_data = cl;
+                                m->m_flags |= M_EXT;
+                            }
+                        } else {
+                            memcpy(m->m_pktdat, tmpbuf, n);
+                            m->m_data = m->m_pktdat;
+                        }
+                        m->m_len = n;
+                        m->m_pkthdr.len = n;
+                        so->so_rcv.sb_mb = m;
+                        so->so_rcv.sb_cc = n;
+                    }
+                }
+            } else if (so->so_type == SOCK_DGRAM) {
+                char tmpbuf[2048];
+                uint32_t src_ip;
+                uint16_t src_port;
+                int n = udp_recv(pcb, tmpbuf, sizeof(tmpbuf), &src_ip, &src_port);
+                if (n > 0) {
+                    struct mbuf *m = m_gethdr(0, MT_DATA);
+                    if (m) {
+                        memcpy(m->m_pktdat, tmpbuf, n);
+                        m->m_data = m->m_pktdat;
+                        m->m_len = n;
+                        m->m_pkthdr.len = n;
+                        so->so_rcv.sb_mb = m;
+                        so->so_rcv.sb_cc = n;
+                    }
+                }
+            }
+        }
+
+        if (!so->so_rcv.sb_mb || so->so_rcv.sb_cc == 0) {
+            return -1;  /* still no data — would block */
+        }
     }
 
     /* Copy data from receive buffer mbuf chain */
@@ -506,5 +674,5 @@ int sogetsockopt(int fd, int level, int name, void *val, int *valsize) {
 
 void socketinit(void) {
     sockets_init();
-    kputs("[socket] socket layer initialized (loopback)\n");
+    kputs("[socket] socket layer initialized (TCP/UDP)\n");
 }

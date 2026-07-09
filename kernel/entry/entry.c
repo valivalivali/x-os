@@ -20,14 +20,13 @@
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
 #include "kernel/hal/net/virtio_net.h"
+#include "net/net_xos.h"
 #include "kernel/fs/xfs.h"
 
 extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
 extern uint64_t g_kernel_rsp0;
 extern void bsd_net_init(void);
-extern void net_init(void);
-extern void net_poll(void);
 
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
