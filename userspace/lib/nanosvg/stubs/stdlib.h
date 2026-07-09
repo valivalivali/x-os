@@ -6,6 +6,11 @@
 
 #include <stddef.h>
 
+void *malloc(size_t size);
+void free(void *ptr);
+int atoi(const char *s);
+double atof(const char *s);
+
 static inline void *realloc(void *ptr, size_t size) {
     /* Simple: allocate new block, copy data, ignore old.
      * NanoSVG uses realloc for edge array growth. */
@@ -14,8 +19,6 @@ static inline void *realloc(void *ptr, size_t size) {
     if (size == 0) return 0;
     void *p = malloc(size);
     if (ptr && p) {
-        /* Copy as much as we can — we don't know old size, but
-         * NanoSVG's realloc pattern always grows, so copy new size */
         memcpy(p, ptr, size);
     }
     return p;
@@ -25,7 +28,7 @@ static inline void qsort(void *base, size_t nmemb, size_t size,
                          int (*cmp)(const void *, const void *)) {
     /* Simple insertion sort — sufficient for NanoSVG edge sorting */
     char *arr = (char *)base;
-    char tmp[256]; /* max element size for NanoSVG edges */
+    char tmp[256];
     for (size_t i = 1; i < nmemb; i++) {
         size_t j = i;
         while (j > 0 && cmp(arr + (j - 1) * size, arr + j * size) > 0) {

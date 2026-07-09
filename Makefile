@@ -82,8 +82,13 @@ ZSH_ELF        := $(BUILD_DIR)/userspace/shell/zsh.elf
 ZSH_BLOB_C     := kernel/proc/zsh_elf_blob.c
 ZSH_BLOB_O     := $(OBJ_DIR)/kernel/proc/zsh_elf_blob.o
 
+MENUBAR_ELF    := $(BUILD_DIR)/userspace/services/menubar/menubar.elf
+MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
+MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
+MENUBAR_SVG_H  := $(BUILD_DIR)/userspace/services/menubar/svg_data.h
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -240,6 +245,35 @@ $(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_entry.c userspace/li
 	@# Strip debug info to reduce embedded size
 	/opt/homebrew/opt/llvm/bin/llvm-strip $(ZSH_ELF)
 	@echo ">> linked $@"
+
+# Build menubar service: generate svg_data.h from SVG, compile ELF
+$(MENUBAR_SVG_H): userspace/services/menubar/menubar.svg scripts/svg_to_header.py
+	@mkdir -p $(dir $@)
+	python3 scripts/svg_to_header.py userspace/services/menubar/menubar.svg $(MENUBAR_SVG_H)
+	@echo ">> generated $@"
+
+$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c $(MENUBAR_SVG_H) userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
+	$(CC) $(USERSPACE_CFLAGS) -I$(BUILD_DIR)/userspace/services/menubar -Iuserspace/lib/nanosvg/stubs -Iuserspace/lib/wm -Iuserspace/lib/nanosvg -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
+	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/menubar/nanosvg_xos.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menubar/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menubar/menubar.ld \
+	  $(BUILD_DIR)/userspace/services/menubar/start.o \
+	  $(BUILD_DIR)/userspace/services/menubar/main.o \
+	  $(BUILD_DIR)/userspace/services/menubar/nanosvg_xos.o \
+	  $(BUILD_DIR)/userspace/services/menubar/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(MENUBAR_BLOB_C): $(MENUBAR_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menubar_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menubar_elf_data = menubar_elf_bytes;', 'size_t menubar_elf_len = sizeof(menubar_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- link ----------------------------------------------------------------
 $(KERNEL): $(OBJS) kernel/linker.ld
