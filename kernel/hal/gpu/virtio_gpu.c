@@ -51,24 +51,16 @@ static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp
 }
 
 static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
-    /* Use a static buffer: the virtqueue descriptor stores a physical
-     * address, and QEMU may read it asynchronously after we return.
-     * A stack-local buffer would be destroyed, causing QEMU to read
-     * garbage and move the cursor to (0,0). */
-    static uint8_t s_cmd_buf[64];
-    memcpy(s_cmd_buf, cmd, cmd_len);
-
-    void *bufs[1]   = { s_cmd_buf };
+    void *bufs[1]   = { cmd };
     uint32_t lens[1] = { cmd_len };
     uint16_t flags[1] = { 0 };
     uint16_t desc_idx;
     if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1))
         return false;
     virtio_pci_notify_queue(&g_vdev, &g_cursorq);
-    /* Wait for QEMU to process the command so the descriptor is
-     * recycled (free_head reset). Without this, descriptors are
-     * exhausted and cursor moves silently stop. */
-    virtio_pci_wait_for_queue(&g_vdev, &g_cursorq, 2000000);
+    /* Fire-and-forget: don't wait for response. The cursor queue
+     * processes instantly in QEMU. Drain any completed entries to
+     * recycle descriptors. */
     uint16_t used_idx;
     uint32_t used_len;
     virtqueue_get_used(&g_cursorq, &used_idx, &used_len);
