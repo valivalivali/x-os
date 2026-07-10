@@ -1008,8 +1008,23 @@ void display_main(void) {
                     }
                 click_done:;
                 }
-                if (ev.button == MOUSE_RIGHT && hit < 0)
-                    spawn_surface(ev.x, ev.y);
+                if (ev.button == MOUSE_RIGHT && hit < 0) {
+                    /* Notify the context menu service about the right-click */
+                    uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
+                    if (menu_port) {
+                        int32_t coords[2] = { ev.x, ev.y };
+                        ipc_msg_t mmsg;
+                        __builtin_memset(&mmsg, 0, sizeof(mmsg));
+                        mmsg.type = IPC_MSG_REQUEST;
+                        mmsg.sender_pid = 0;
+                        mmsg.payload_len = sizeof(coords);
+                        for (size_t i = 0; i < sizeof(coords); i++)
+                            mmsg.payload[i] = ((uint8_t*)coords)[i];
+                        sys_port_send(menu_port, &mmsg);
+                    } else {
+                        spawn_surface(ev.x, ev.y);
+                    }
+                }
                 if (ev.button == MOUSE_RIGHT && hit >= 0) {
                     int new_idx = hit;
                     int32_t wx = ev.x - surfaces[new_idx].x;
@@ -1035,6 +1050,18 @@ void display_main(void) {
                         uint8_t *pd = (uint8_t *)&mev;
                         for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
                         sys_port_send(surfaces[new_idx].reply_port, &mmsg);
+                    }
+                }
+                /* Left-click outside any surface: dismiss context menu if open */
+                if (ev.button == MOUSE_LEFT && hit < 0) {
+                    uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
+                    if (menu_port) {
+                        ipc_msg_t dmsg;
+                        __builtin_memset(&dmsg, 0, sizeof(dmsg));
+                        dmsg.type = IPC_MSG_REQUEST;
+                        dmsg.sender_pid = 0;
+                        dmsg.payload_len = 0;
+                        sys_port_send(menu_port, &dmsg);
                     }
                 }
             }

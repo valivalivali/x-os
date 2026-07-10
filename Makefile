@@ -96,13 +96,42 @@ CMDS_ELF       := $(BUILD_DIR)/userspace/cmds/cmds.elf
 CMDS_BLOB_C    := kernel/proc/cmds_elf_blob.c
 CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
 
+# Context menu service
+MENU_ELF       := $(BUILD_DIR)/userspace/services/menu/menu.elf
+MENU_BLOB_C    := kernel/proc/menu_elf_blob.c
+MENU_BLOB_O    := $(OBJ_DIR)/kernel/proc/menu_elf_blob.o
+MENU_SVG_H     := $(BUILD_DIR)/userspace/services/menu/menu_svg.h
+SUBMENU_SVG_H  := $(BUILD_DIR)/userspace/services/menu/submenu_svg.h
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
 NEWLIB_CFLAGS  := -I$(NEWLIB_PREFIX)/include
 NEWLIB_LIBS    := $(NEWLIB_PREFIX)/lib/libc.a $(NEWLIB_PREFIX)/lib/libm.a
+
+# ---- libc++ static library ------------------------------------------------
+LIBCXX_CONFIG := userspace/lib/libcxx_config
+LIBCXX_SRC    := /tmp/llvm-project-llvmorg-22.1.8/libcxx/src
+LLVM_CXX      := /opt/homebrew/opt/llvm/bin/clang++
+LLVM_AR       := /opt/homebrew/opt/llvm/bin/llvm-ar
+
+# ---- ThorVG static library -------------------------------------------------
+THORVG_DIR    := userspace/lib/thorvg
+THORVG_A      := $(BUILD_DIR)/thorvg/thorvg.a
+
+LIBCXX_SRCS   := string.cpp new.cpp memory.cpp verbose_abort.cpp exception.cpp stdexcept.cpp functional.cpp hash.cpp algorithm.cpp bind.cpp error_category.cpp system_error.cpp call_once.cpp typeinfo.cpp new_handler.cpp new_helpers.cpp
+LIBCXX_OBJS   := $(patsubst %.cpp,$(BUILD_DIR)/libcxx/%.o,$(LIBCXX_SRCS))
+LIBCXX_A      := $(BUILD_DIR)/libcxx/libc++.a
+
+LIBCXX_CXXFLAGS := \
+  --target=x86_64-unknown-none-elf -nostdlib -nostdinc++ \
+  -I$(LIBCXX_CONFIG) -I/opt/homebrew/opt/llvm/include/c++/v1 \
+  -I$(LIBCXX_SRC) \
+  -isystem $(NEWLIB_PREFIX)/include \
+  -fno-exceptions -fno-rtti -fno-threadsafe-statics -O2 -std=c++20 \
+  -D_LIBCPP_BUILDING_LIBRARY
 
 # CFLAGS for newlib-linked userspace programs
 LIBC_CFLAGS := \
@@ -124,7 +153,7 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
-.PHONY: all run run-uefi clean distclean setup limine cmds
+.PHONY: all run run-uefi clean distclean setup limine cmds thorvg
 
 all: $(ISO)
 
@@ -262,18 +291,20 @@ $(MENUBAR_SVG_H): userspace/services/menubar/menubar.svg scripts/svg_to_header.p
 	python3 scripts/svg_to_header.py userspace/services/menubar/menubar.svg $(MENUBAR_SVG_H)
 	@echo ">> generated $@"
 
-$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c $(MENUBAR_SVG_H) userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/menubar/menubar.ld
+$(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/main.c $(MENUBAR_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menubar/menubar.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menubar/start.S -o $(BUILD_DIR)/userspace/services/menubar/start.o
-	$(CC) $(USERSPACE_CFLAGS) -I$(BUILD_DIR)/userspace/services/menubar -Iuserspace/lib/nanosvg/stubs -Iuserspace/lib/wm -Iuserspace/lib/nanosvg -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
-	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/menubar/nanosvg_xos.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -I$(BUILD_DIR)/userspace/services/menubar -Iuserspace/lib/thorvg -Iuserspace/lib/wm -c userspace/services/menubar/main.c -o $(BUILD_DIR)/userspace/services/menubar/main.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/services/menubar/menubar_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menubar/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menubar/menubar.ld \
 	  $(BUILD_DIR)/userspace/services/menubar/start.o \
 	  $(BUILD_DIR)/userspace/services/menubar/main.o \
-	  $(BUILD_DIR)/userspace/services/menubar/nanosvg_xos.o \
+	  $(BUILD_DIR)/userspace/services/menubar/menubar_syscalls.o \
 	  $(BUILD_DIR)/userspace/services/menubar/syscall.o \
+	  $(THORVG_A) $(LIBCXX_A) $(NEWLIB_LIBS) \
 	  -o $@
+	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
 
 $(MENUBAR_BLOB_C): $(MENUBAR_ELF)
@@ -285,7 +316,7 @@ $(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ---- dock service (SVG-based, NanoSVG) ------------------------------------
+# ---- dock service (SVG-based, ThorVG) -------------------------------------
 dock: $(DOCK_ELF)
 
 $(DOCK_SVG_H): userspace/services/dock/dock.svg scripts/svg_to_header.py
@@ -293,18 +324,20 @@ $(DOCK_SVG_H): userspace/services/dock/dock.svg scripts/svg_to_header.py
 	python3 scripts/svg_to_header.py userspace/services/dock/dock.svg $(DOCK_SVG_H)
 	@echo ">> generated $@"
 
-$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DOCK_SVG_H) userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/dock/dock.ld
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DOCK_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/dock/dock.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
-	$(CC) $(USERSPACE_CFLAGS) -I$(BUILD_DIR)/userspace/services/dock -Iuserspace/lib/nanosvg/stubs -Iuserspace/lib/wm -Iuserspace/lib/nanosvg -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
-	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/dock/nanosvg_xos.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -I$(BUILD_DIR)/userspace/services/dock -Iuserspace/lib/thorvg -Iuserspace/lib/wm -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/services/dock/dock_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/dock/syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/dock/dock.ld \
 	  $(BUILD_DIR)/userspace/services/dock/start.o \
 	  $(BUILD_DIR)/userspace/services/dock/main.o \
-	  $(BUILD_DIR)/userspace/services/dock/nanosvg_xos.o \
+	  $(BUILD_DIR)/userspace/services/dock/dock_syscalls.o \
 	  $(BUILD_DIR)/userspace/services/dock/syscall.o \
+	  $(THORVG_A) $(LIBCXX_A) $(NEWLIB_LIBS) \
 	  -o $@
+	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
 
 $(DOCK_BLOB_C): $(DOCK_ELF)
@@ -341,6 +374,60 @@ $(CMDS_BLOB_C): $(CMDS_ELF)
 	@echo ">> generated $@"
 
 $(CMDS_BLOB_O): $(CMDS_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- libc++ static library ------------------------------------------------
+$(BUILD_DIR)/libcxx/%.o: $(LIBCXX_SRC)/%.cpp
+	@mkdir -p $(dir $@)
+	$(LLVM_CXX) $(LIBCXX_CXXFLAGS) -c $< -o $@
+
+$(LIBCXX_A): $(LIBCXX_OBJS)
+	$(LLVM_AR) rcs $@ $^
+	@echo ">> built $@"
+
+# ---- ThorVG static library -------------------------------------------------
+thorvg: $(THORVG_A)
+
+$(THORVG_A): scripts/build_thorvg.sh $(wildcard $(THORVG_DIR)/src/**/*.cpp) $(wildcard $(THORVG_DIR)/src/*.cpp) $(THORVG_DIR)/thorvg_xos.cpp $(THORVG_DIR)/thorvg_config.h $(THORVG_DIR)/src/common/config.h $(THORVG_DIR)/src/common/tvgLock.h
+	@mkdir -p $(BUILD_DIR)/thorvg
+	bash scripts/build_thorvg.sh
+
+# ---- context menu service (ThorVG-based) -----------------------------------
+menu: $(MENU_ELF)
+
+$(MENU_SVG_H): userspace/services/menu/Menu.svg scripts/svg_to_header_named.py
+	@mkdir -p $(dir $@)
+	python3 scripts/svg_to_header_named.py userspace/services/menu/Menu.svg $(MENU_SVG_H) menu_svg_data MENU_SVG_DATA_H
+	@echo ">> generated $@"
+
+$(SUBMENU_SVG_H): userspace/services/menu/Submenu.svg scripts/svg_to_header_named.py
+	@mkdir -p $(dir $@)
+	python3 scripts/svg_to_header_named.py userspace/services/menu/Submenu.svg $(SUBMENU_SVG_H) submenu_svg_data SUBMENU_SVG_DATA_H
+	@echo ">> generated $@"
+
+$(MENU_ELF): userspace/services/menu/start.S userspace/services/menu/main.c $(MENU_SVG_H) $(SUBMENU_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menu/start.S -o $(BUILD_DIR)/userspace/services/menu/start.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -I$(BUILD_DIR)/userspace/services/menu -Iuserspace/lib/thorvg -Iuserspace/lib/wm -c userspace/services/menu/main.c -o $(BUILD_DIR)/userspace/services/menu/main.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menu/menu.ld \
+	  $(BUILD_DIR)/userspace/services/menu/start.o \
+	  $(BUILD_DIR)/userspace/services/menu/main.o \
+	  $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o \
+	  $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o \
+	  $(THORVG_A) $(LIBCXX_A) $(NEWLIB_LIBS) \
+	  -o $@
+	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
+	@echo ">> linked $@"
+
+$(MENU_BLOB_C): $(MENU_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menu_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menu_elf_data = menu_elf_bytes;', 'size_t menu_elf_len = sizeof(menu_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(MENU_BLOB_O): $(MENU_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

@@ -338,8 +338,8 @@ int sys_chdir(const char *path) {
     return (int)syscall1(SYS_CHDIR, (uintptr_t)path);
 }
 
-int sys_brk(void *addr) {
-    return (int)syscall1(SYS_BRK, (uintptr_t)addr);
+uint64_t sys_brk(void *addr) {
+    return syscall1(SYS_BRK, (uintptr_t)addr);
 }
 
 /* POSIX socket wrappers */

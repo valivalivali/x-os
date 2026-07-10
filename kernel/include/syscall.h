@@ -240,7 +240,7 @@ int sys_fstat(int fd, void *statbuf);
 int sys_unlink(const char *path);
 int sys_getcwd(char *buf, size_t size);
 int sys_chdir(const char *path);
-int sys_brk(void *addr);
+uint64_t sys_brk(void *addr);
 
 /* POSIX socket wrappers */
 int sys_socket(int domain, int type, int protocol);

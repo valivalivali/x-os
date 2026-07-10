@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="201px" height="223px" viewBox="0 0 201 223" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>Menu</title>
+    <defs>
+        <path d="M20.8,0 L130.2,0 C137.480683,0 141.121024,0 143.901876,1.41691519 C146.347984,2.66326906 148.336731,4.6520163 149.583085,7.0981235 C151,9.87897613 151,13.5193174 151,20.8 L151,152.2 C151,159.480683 151,163.121024 149.583085,165.901876 C148.336731,168.347984 146.347984,170.336731 143.901876,171.583085 C141.121024,173 137.480683,173 130.2,173 L20.8,173 C13.5193174,173 9.87897613,173 7.0981235,171.583085 C4.6520163,170.336731 2.66326906,168.347984 1.41691519,165.901876 C0,163.121024 0,159.480683 0,152.2 L0,20.8 C0,13.5193174 0,9.87897613 1.41691519,7.0981235 C2.66326906,4.6520163 4.6520163,2.66326906 7.0981235,1.41691519 C9.87897613,0 13.5193174,0 20.8,0 Z" id="path-1"></path>
+        
+        
+    </defs>
+    <g id="Menu" stroke="none" fill="none" transform="translate(25, 25)" xlink:href="#path-1">
+        <use fill="#F5F5F5" fill-opacity="0.92" fill-rule="evenodd" xlink:href="#path-1"></use>
+        <g id="Menu-Item" transform="translate(12, 149)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-weight="400">
+            <text id="Item" font-size="10" letter-spacing="-0.153846154">
+                <tspan x="14" y="13.5">Import from iPhone</tspan>
+            </text>
+            <g id="Symbol" transform="translate(0, 1.5)" font-size="11" letter-spacing="-0.169230769">
+                <text id="􀉁">
+                    <tspan x="-1.45235642" y="10">􀟜</tspan>
+                </text>
+            </g>
+        </g>
+        <g id="Separator" transform="translate(12, 138)" fill="#E6E6E6" fill-rule="evenodd">
+            <path d="M-0.53,5 L127.53,5 C127.810026,5 127.950039,5 128.056995,5.05449674 C128.224522,5.13985578 128.33,5.31198055 128.33,5.5 C128.33,5.68801945 128.224522,5.86014422 128.056995,5.94550326 C127.950039,6 127.810026,6 127.53,6 L-0.53,6 C-0.810026253,6 -0.95003938,6 -1.05699525,5.94550326 C-1.2245218,5.86014422 -1.33,5.68801945 -1.33,5.5 C-1.33,5.31198055 -1.2245218,5.13985578 -1.05699525,5.05449674 C-0.95003938,5 -0.810026253,5 -0.53,5 Z" id="Rectangle"></path>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 119)">
+            <text id="􀆊" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154" fill="#4C4C4C">
+                <tspan x="118.053398" y="10">􀆊</tspan>
+            </text>
+            <path d="M5.8,0 L121.2,0 C125.68042,0 127.92063,0 129.631924,0.871947806 C131.938335,2.04712281 133.533594,4.26562793 133.913412,6.8261562 C134,7.40988455 134,8.1065897 134,9.5 C134,10.8934103 134,11.5901155 133.913412,12.1738438 C133.533594,14.7343721 131.938335,16.9528772 129.631924,18.1280522 C127.92063,19 125.68042,19 121.2,19 L5.8,19 C1.31957995,19 -0.920630073,19 -2.631924,18.1280522 C-4.93833481,16.9528772 -6.53359359,14.7343721 -6.91341208,12.1738438 C-7,11.5901155 -7,10.8934103 -7,9.5 C-7,8.1065897 -7,7.40988455 -6.91341208,6.8261562 C-6.53359359,4.26562793 -4.93833481,2.04712281 -2.631924,0.871947806 C-0.920630073,0 1.31957995,0 5.8,0 Z" id="BG" fill="#E6E6E6" fill-rule="evenodd"></path>
+            <text id="Submenu" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154" fill="#1A1A1A">
+                <tspan x="12" y="13.5">Clean Up By</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 100)">
+            <text id="Item" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154" fill="#1A1A1A">
+                <tspan x="14" y="13.5">Use Stacks</tspan>
+            </text>
+            <g id="Symbol" transform="translate(0, 1.5)"></g>
+        </g>
+        <g id="Header" transform="translate(12, 84)" fill="#727272" fill-rule="nonzero" font-family="SFPro-Bold, SF Pro" font-size="10" font-weight="bold" letter-spacing="-0.153846154">
+            <text>
+                <tspan x="12" y="12.5">Desktop Stacks</tspan>
+            </text>
+        </g>
+        <g id="Separator" transform="translate(12, 73)" fill="#E6E6E6" fill-rule="evenodd">
+            <path d="M-0.53,5 L127.53,5 C127.810026,5 127.950039,5 128.056995,5.05449674 C128.224522,5.13985578 128.33,5.31198055 128.33,5.5 C128.33,5.68801945 128.224522,5.86014422 128.056995,5.94550326 C127.950039,6 127.810026,6 127.53,6 L-0.53,6 C-0.810026253,6 -0.95003938,6 -1.05699525,5.94550326 C-1.2245218,5.86014422 -1.33,5.68801945 -1.33,5.5 C-1.33,5.31198055 -1.2245218,5.13985578 -1.05699525,5.05449674 C-0.95003938,5 -0.810026253,5 -0.53,5 Z" id="Rectangle"></path>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 54)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-weight="400">
+            <text id="Item" font-size="10" letter-spacing="-0.153846154">
+                <tspan x="14" y="13.5">Change Wallpaper...</tspan>
+            </text>
+            <g id="Symbol" transform="translate(0, 1.5)" font-size="11" letter-spacing="-0.169230769">
+                <text id="􀉁">
+                    <tspan x="-3.02370753" y="10">􀏅</tspan>
+                </text>
+            </g>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 35)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-weight="400">
+            <text id="Item" font-size="10" letter-spacing="-0.153846154">
+                <tspan x="14" y="13.5">Get Info</tspan>
+            </text>
+            <g id="Symbol" transform="translate(0, 1.5)" font-size="11" letter-spacing="-0.169230769">
+                <text id="􀉁">
+                    <tspan x="-2.08842387" y="10">􀅴</tspan>
+                </text>
+            </g>
+        </g>
+        <g id="Separator" transform="translate(12, 24)" fill="#E6E6E6" fill-rule="evenodd">
+            <path d="M-0.53,5 L127.53,5 C127.810026,5 127.950039,5 128.056995,5.05449674 C128.224522,5.13985578 128.33,5.31198055 128.33,5.5 C128.33,5.68801945 128.224522,5.86014422 128.056995,5.94550326 C127.950039,6 127.810026,6 127.53,6 L-0.53,6 C-0.810026253,6 -0.95003938,6 -1.05699525,5.94550326 C-1.2245218,5.86014422 -1.33,5.68801945 -1.33,5.5 C-1.33,5.31198055 -1.2245218,5.13985578 -1.05699525,5.05449674 C-0.95003938,5 -0.810026253,5 -0.53,5 Z" id="Rectangle"></path>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 5)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-weight="400">
+            <text id="Item" font-size="10" letter-spacing="-0.153846154">
+                <tspan x="14" y="13.5">New Folder</tspan>
+            </text>
+            <g id="Symbol" transform="translate(0, 1.5)" font-size="11" letter-spacing="-0.169230769">
+                <text id="􀉁">
+                    <tspan x="-2.87788417" y="10">􀈕</tspan>
+                </text>
+            </g>
+        </g>
+    </g>
+</svg>

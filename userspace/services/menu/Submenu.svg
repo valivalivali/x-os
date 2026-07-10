@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="169px" height="174px" viewBox="0 0 169 174" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>Submenu</title>
+    <defs>
+        <path d="M20.8,0 L98.2,0 C105.480683,0 109.121024,0 111.901876,1.41691519 C114.347984,2.66326906 116.336731,4.6520163 117.583085,7.0981235 C119,9.87897613 119,13.5193174 119,20.8 L119,103.2 C119,110.480683 119,114.121024 117.583085,116.901876 C116.336731,119.347984 114.347984,121.336731 111.901876,122.583085 C109.121024,124 105.480683,124 98.2,124 L20.8,124 C13.5193174,124 9.87897613,124 7.0981235,122.583085 C4.6520163,121.336731 2.66326906,119.347984 1.41691519,116.901876 C0,114.121024 0,110.480683 0,103.2 L0,20.8 C0,13.5193174 0,9.87897613 1.41691519,7.0981235 C2.66326906,4.6520163 4.6520163,2.66326906 7.0981235,1.41691519 C9.87897613,0 13.5193174,0 20.8,0 Z" id="path-1"></path>
+        <filter x="-31.5%" y="-30.2%" width="163.0%" height="160.5%" filterUnits="objectBoundingBox" id="filter-2">
+            <feOffset dx="0" dy="0" in="SourceAlpha" result="shadowOffsetOuter1"></feOffset>
+            <feGaussianBlur stdDeviation="12.5" in="shadowOffsetOuter1" result="shadowBlurOuter1"></feGaussianBlur>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.16 0" type="matrix" in="shadowBlurOuter1" result="shadowMatrixOuter1"></feColorMatrix>
+            <feOffset dx="0" dy="0" in="SourceAlpha" result="shadowOffsetOuter2"></feOffset>
+            <feGaussianBlur stdDeviation="1" in="shadowOffsetOuter2" result="shadowBlurOuter2"></feGaussianBlur>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.1 0" type="matrix" in="shadowBlurOuter2" result="shadowMatrixOuter2"></feColorMatrix>
+            <feMerge>
+                <feMergeNode in="shadowMatrixOuter1"></feMergeNode>
+                <feMergeNode in="shadowMatrixOuter2"></feMergeNode>
+            </feMerge>
+        </filter>
+        <filter x="-24.8%" y="-23.8%" width="149.6%" height="147.6%" filterUnits="objectBoundingBox" id="filter-3">
+            <feMorphology radius="1" operator="erode" in="SourceAlpha" result="shadowSpreadInner1"></feMorphology>
+            <feGaussianBlur stdDeviation="4" in="shadowSpreadInner1" result="shadowBlurInner1"></feGaussianBlur>
+            <feOffset dx="0" dy="0" in="shadowBlurInner1" result="shadowOffsetInner1"></feOffset>
+            <feComposite in="shadowOffsetInner1" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="shadowInnerInner1"></feComposite>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.2 0" type="matrix" in="shadowInnerInner1" result="shadowMatrixInner1"></feColorMatrix>
+            <feGaussianBlur stdDeviation="1" in="SourceAlpha" result="shadowBlurInner2"></feGaussianBlur>
+            <feOffset dx="-1" dy="-1" in="shadowBlurInner2" result="shadowOffsetInner2"></feOffset>
+            <feComposite in="shadowOffsetInner2" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="shadowInnerInner2"></feComposite>
+            <feColorMatrix values="0 0 0 0 0.1   0 0 0 0 0.1   0 0 0 0 0.1  0 0 0 1 0" type="matrix" in="shadowInnerInner2" result="shadowMatrixInner2"></feColorMatrix>
+            <feGaussianBlur stdDeviation="1" in="SourceAlpha" result="shadowBlurInner3"></feGaussianBlur>
+            <feOffset dx="1" dy="1" in="shadowBlurInner3" result="shadowOffsetInner3"></feOffset>
+            <feComposite in="shadowOffsetInner3" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="shadowInnerInner3"></feComposite>
+            <feColorMatrix values="0 0 0 0 0.1   0 0 0 0 0.1   0 0 0 0 0.1  0 0 0 1 0" type="matrix" in="shadowInnerInner3" result="shadowMatrixInner3"></feColorMatrix>
+            <feMorphology radius="1.5" operator="dilate" in="SourceAlpha" result="shadowSpreadInner4"></feMorphology>
+            <feGaussianBlur stdDeviation="0.125" in="shadowSpreadInner4" result="shadowBlurInner4"></feGaussianBlur>
+            <feOffset dx="2" dy="2" in="shadowBlurInner4" result="shadowOffsetInner4"></feOffset>
+            <feComposite in="shadowOffsetInner4" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="shadowInnerInner4"></feComposite>
+            <feColorMatrix values="0 0 0 0 1   0 0 0 0 1   0 0 0 0 1  0 0 0 0.7 0" type="matrix" in="shadowInnerInner4" result="shadowMatrixInner4"></feColorMatrix>
+            <feMerge>
+                <feMergeNode in="shadowMatrixInner1"></feMergeNode>
+                <feMergeNode in="shadowMatrixInner2"></feMergeNode>
+                <feMergeNode in="shadowMatrixInner3"></feMergeNode>
+                <feMergeNode in="shadowMatrixInner4"></feMergeNode>
+            </feMerge>
+        </filter>
+    </defs>
+    <g id="Submenu" stroke="none" fill="none" transform="translate(25, 25)" xlink:href="#path-1">
+        <use fill="black" fill-opacity="1" filter="url(#filter-2)" xlink:href="#path-1"></use>
+        <use fill-opacity="0.7" fill="#FFFFFF" fill-rule="evenodd" style="mix-blend-mode: lighten;" xlink:href="#path-1"></use>
+        <use fill="#FAFAFA" fill-rule="evenodd" style="mix-blend-mode: darken;" xlink:href="#path-1"></use>
+        <use fill="black" fill-opacity="1" filter="url(#filter-3)" xlink:href="#path-1"></use>
+        <g id="Menu-Item" transform="translate(12, 100)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+            <text id="Item" style="mix-blend-mode: normal;">
+                <tspan x="0" y="13.5">Tags</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 81)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+            <text id="Item" style="mix-blend-mode: normal;">
+                <tspan x="0" y="13.5">Size</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 62)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+            <text id="Item" style="mix-blend-mode: normal;">
+                <tspan x="0" y="13.5">Date Created</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 43)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+            <text id="Item" style="mix-blend-mode: normal;">
+                <tspan x="0" y="13.5">Date Modified</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 24)" fill="#1A1A1A" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+            <text id="Item" style="mix-blend-mode: normal;">
+                <tspan x="0" y="13.5">Kind</tspan>
+            </text>
+        </g>
+        <g id="Menu-Item" transform="translate(12, 5)">
+            <path d="M5.8,0 L89.2,0 C93.68042,0 95.9206301,0 97.631924,0.871947806 C99.9383348,2.04712281 101.533594,4.26562793 101.913412,6.8261562 C102,7.40988455 102,8.1065897 102,9.5 C102,10.8934103 102,11.5901155 101.913412,12.1738438 C101.533594,14.7343721 99.9383348,16.9528772 97.631924,18.1280522 C95.9206301,19 93.68042,19 89.2,19 L5.8,19 C1.31957995,19 -0.920630073,19 -2.631924,18.1280522 C-4.93833481,16.9528772 -6.53359359,14.7343721 -6.91341208,12.1738438 C-7,11.5901155 -7,10.8934103 -7,9.5 C-7,8.1065897 -7,7.40988455 -6.91341208,6.8261562 C-6.53359359,4.26562793 -4.93833481,2.04712281 -2.631924,0.871947806 C-0.920630073,0 1.31957995,0 5.8,0 Z" id="BG" fill="#0069F9" fill-rule="evenodd"></path>
+            <text id="Item" fill="#FFFFFF" fill-rule="nonzero" font-family="SFPro-Medium, SF Pro" font-size="10" font-weight="400" letter-spacing="-0.153846154">
+                <tspan x="0" y="13.5">Name</tspan>
+            </text>
+        </g>
+    </g>
+</svg>

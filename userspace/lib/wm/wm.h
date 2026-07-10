@@ -87,6 +87,12 @@ typedef struct {
     uint32_t x, y, w, h;    /* dirty rect; 0,0,0,0 = full surface */
 } wm_dirty_msg_t;
 
+/* App -> Composer: destroy surface */
+typedef struct {
+    uint32_t type;          /* WM_DESTROY_SURFACE */
+    uint32_t surface_idx;
+} wm_destroy_msg_t;
+
 /* Composer -> App: mouse event in content area */
 typedef struct {
     uint32_t type;          /* WM_MOUSE_EVENT */
@@ -158,5 +164,6 @@ typedef struct {
 
 #define WM_COMPOSER_PORT_NS  3   /* namespace lookup id for composer port */
 #define WM_SHELL_BRIDGE_PORT_NS 5  /* namespace lookup id for terminal shell bridge */
+#define WM_MENU_PORT_NS      6  /* namespace lookup id for context menu service */
 
 #endif /* WM_H */

@@ -82,7 +82,7 @@ static uint64_t sys_proc_spawn(uint64_t uelf, uint64_t len,
                                uint64_t a3, uint64_t a4,
                                uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
-    if (!uelf || len == 0 || len > 4 * 1024 * 1024) {
+    if (!uelf || len == 0 || len > 8 * 1024 * 1024) {
         return 0; /* invalid args */
     }
     /* Copy ELF from userspace to kernel heap.
@@ -175,6 +175,8 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t zsh_elf_len;
     extern const uint8_t *cmds_elf_data;
     extern size_t cmds_elf_len;
+    extern const uint8_t *menu_elf_data;
+    extern size_t menu_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
@@ -182,6 +184,7 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     else if (index == 2) { data = dock_elf_data; len = dock_elf_len; }
     else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
     else if (index == 5) { data = cmds_elf_data; len = cmds_elf_len; }
+    else if (index == 6) { data = menu_elf_data; len = menu_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;

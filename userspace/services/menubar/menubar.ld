@@ -28,4 +28,7 @@ SECTIONS
         *(.bss)
         *(.bss.*)
     }
+
+    _end = .;
+    PROVIDE(end = .);
 }

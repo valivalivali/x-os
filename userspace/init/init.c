@@ -10,11 +10,11 @@ static void log(const char *s) {
     syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
 }
 
-static uint8_t blob_buf[2 * 1024 * 1024];
+static uint8_t blob_buf[8 * 1024 * 1024];
 
 static void spawn_blob(int index, const char *name) {
     size_t len = syscall2(SYS_SVC_BLOB, index, 0);
-    if (len > 0 && len <= 2 * 1024 * 1024) {
+    if (len > 0 && len <= 8 * 1024 * 1024) {
         size_t n = syscall3(SYS_SVC_BLOB, index, (uintptr_t)blob_buf, len);
         log("[init] spawn ");
         log(name);
@@ -78,6 +78,7 @@ void init_main(void) {
     spawn_blob(1, "menubar");
     spawn_blob(2, "dock");
     spawn_blob(4, "zsh");
+    spawn_blob(6, "menu");
 
     for (;;) syscall0(SYS_YIELD);
 }

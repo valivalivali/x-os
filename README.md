@@ -2,9 +2,9 @@
 
 A clean-slate x86_64 microkernel operating system built from scratch. No POSIX baggage, no legacy Unix assumptions. The kernel stays minimal: scheduling, memory management, IPC ports, and hardware abstraction. Everything else (display server, filesystem, shell) lives in ring-3 userspace and communicates over message passing.
 
-![X OS Desktop](docs/screenshots/desktop-gpu.jpg)
+![X OS Desktop](docs/screenshots/desktop-thorvg.jpg)
 
-*X OS running in QEMU with GPU-accelerated rendering — menu bar, dock with app icons, and compositor surfaces at 2560×1600.*
+*X OS running in QEMU with GPU-accelerated rendering — menu bar, dock with app icons, right-click context menu, and compositor surfaces at 2560×1600. SVG rendering powered by ThorVG.*
 
 ## What It Is
 
@@ -136,11 +136,14 @@ x/
 │   ├── init/          # PID 1
 │   ├── runtime/       # Syscall wrappers (shared C library)
 │   ├── lib/
-│   │   └── xgfx/      # Graphics library (paths, fills, text, scaled text)
+│   │   ├── xgfx/      # Graphics library (paths, fills, text, scaled text)
+│   │   ├── thorvg/    # ThorVG vector graphics engine (SVG rendering)
+│   │   └── cpp_runtime/ # C++ runtime support for freestanding environment
 │   └── services/
 │       ├── composer/  # Display server
 │       ├── dock/      # Bottom dock panel
 │       ├── menubar/   # Top menu bar panel
+│       ├── menu/      # Right-click context menu service
 │       └── xplorer/   # File manager app
 ├── Makefile
 └── disk.img        # Raw 4 MiB block device image (auto-created)

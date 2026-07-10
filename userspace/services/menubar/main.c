@@ -1,18 +1,19 @@
 /* menubar/main.c — SVG-based menu bar service for X OS
  *
- * Parses a Figma-exported SVG menu bar using NanoSVG,
+ * Parses a Figma-exported SVG menu bar using ThorVG,
  * rasterizes it, and renders it onto a compositor panel surface.
  */
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* WM protocol */
 #include "wm.h"
 
-/* NanoSVG — implementation is in nanosvg_xos.c, here we just get the types */
-#include "nanosvg.h"
-#include "nanosvgrast.h"
+/* ThorVG C wrapper */
+#include "thorvg_xos.h"
 
 /* Generated SVG data */
 #include "svg_data.h"
@@ -137,26 +138,21 @@ void menubar_main(void) {
         g_px[i] = 0x00000000;
     }
 
-    extern void *malloc(size_t);
     size_t svg_len = 0;
     while (svg_data[svg_len]) svg_len++;
 
-    char *svg_buf = (char *)malloc(svg_len + 1);
-    if (!svg_buf) {
-        log("[menubar] svg buffer alloc failed\n");
-        return;
-    }
-    for (size_t i = 0; i <= svg_len; i++) svg_buf[i] = svg_data[i];
+    /* Initialize ThorVG */
+    thorvg_xos_init();
 
     log("[menubar] parsing SVG...\n");
-    NSVGimage *image = nsvgParse(svg_buf, "px", 96.0f);
-    if (!image) {
+    thorvg_xos_doc_t *doc = thorvg_xos_parse(svg_data, (int)svg_len);
+    if (!doc) {
         log("[menubar] SVG parse failed\n");
         return;
     }
 
-    int img_w = (int)image->width;
-    int img_h = (int)image->height;
+    int img_w = thorvg_xos_width(doc);
+    int img_h = thorvg_xos_height(doc);
     if (img_w <= 0) img_w = 1008;
     if (img_h <= 0) img_h = 72;
 
@@ -166,15 +162,10 @@ void menubar_main(void) {
         log("[menubar] raster alloc failed\n");
         return;
     }
-
-    NSVGrasterizer *rast = nsvgCreateRasterizer();
-    if (!rast) {
-        log("[menubar] rasterizer creation failed\n");
-        return;
-    }
+    memset(raster, 0, (size_t)img_w * img_h * 4);
 
     log("[menubar] rasterizing...\n");
-    nsvgRasterize(rast, image, 0, 0, 1.0f, raster, img_w, img_h, img_w * 4);
+    thorvg_xos_render(doc, raster, img_w, img_h, img_w * 4);
     log("[menubar] SVG rasterized\n");
 
     /* Clear surface to fully transparent so the desktop gradient shows
@@ -183,19 +174,13 @@ void menubar_main(void) {
         g_px[i] = 0x00000000;
 
     /* SVG is now 2560x72 — maps 1:1 to the surface.  No stretching.
-     * Copy raster directly, preserving the SVG's alpha channel so the
-     * composer can alpha-blend the menubar over the desktop gradient. */
+     * Copy raster directly as uint32_t values (ARGB), preserving alpha. */
     int copy_w = img_w < (int)surf_w ? img_w : (int)surf_w;
     int copy_h = img_h < (int)surf_h ? img_h : (int)surf_h;
+    uint32_t *raster32 = (uint32_t *)raster;
     for (int y = 0; y < copy_h; y++) {
         for (int x = 0; x < copy_w; x++) {
-            int idx = (y * img_w + x) * 4;
-            unsigned char r = raster[idx + 0];
-            unsigned char g = raster[idx + 1];
-            unsigned char b = raster[idx + 2];
-            unsigned char a = raster[idx + 3];
-            if (a > 0)
-                g_px[y * surf_w + x] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+            g_px[y * surf_w + x] = raster32[y * img_w + x];
         }
     }
 
