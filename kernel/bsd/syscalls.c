@@ -11,6 +11,30 @@
 #include "kernel/memory/vmm.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/sched/sched.h"
+#include "kernel/lib/string.h"
+
+/* Kernel-side termios definitions (adapted from XNU bsd/sys/termios.h) */
+#define NCCS 20
+struct ktermios {
+    unsigned long   c_iflag;
+    unsigned long   c_oflag;
+    unsigned long   c_cflag;
+    unsigned long   c_lflag;
+    unsigned char   c_cc[NCCS];
+    unsigned long   c_ispeed;
+    unsigned long   c_ospeed;
+};
+struct kwinsize {
+    unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
+};
+
+/* ioctl request codes */
+#define KTIOCGETA   0x40487413
+#define KTIOCSETA   0x80487414
+#define KTIOCGWINSZ 0x40087468
+#define KTIOCSWINSZ 0x80087467
+#define KTIOCGPGRP  0x40047477
+#define KTIOCSPGRP  0x80047476
 
 /* Socket layer functions — implemented in bsd/kern/uipc_socket_xos.c */
 extern int socreate(int domain, int type, int protocol);
@@ -209,8 +233,73 @@ uint64_t sys_fcntl_impl(uint64_t fd, uint64_t cmd, uint64_t arg,
 
 uint64_t sys_ioctl_impl(uint64_t fd, uint64_t cmd, uint64_t arg,
                         uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)fd; (void)cmd; (void)arg; (void)a4; (void)a5; (void)a6;
-    return 0;
+    (void)a4; (void)a5; (void)a6;
+
+    /* Only handle terminal ioctls for stdin/stdout/stderr (fds 0-2) */
+    if (fd > 2) return (uint64_t)-1;
+
+    /* Default terminal settings — canonical mode with echo, like a real tty */
+    static struct ktermios default_termios = {
+        .c_iflag = 0x00000002 | 0x00000100 | 0x00002000 | 0x00000200 | 0x00000800,
+        .c_oflag = 0x00000001 | 0x00000002,
+        .c_cflag = 0x00000800 | 0x00000300,
+        .c_lflag = 0x00000008 | 0x00000100 | 0x00000080 | 0x00000400 | 0x00000002 | 0x00000001 | 0x00000040,
+        .c_cc = { 0x04, 0xff, 0xff, 0x7f, 0x17, 0x15, 0x12, 0xff,
+                  0x03, 0x1c, 0x1a, 0x19, 0x11, 0x13, 0x16, 0x0f,
+                  0x01, 0x00, 0x14, 0xff },
+        .c_ispeed = 9600,
+        .c_ospeed = 9600,
+    };
+
+    static struct ktermios proc_termios;
+    static int termios_initialized = 0;
+    if (!termios_initialized) {
+        proc_termios = default_termios;
+        termios_initialized = 1;
+    }
+
+    switch (cmd) {
+    case KTIOCGETA:
+        if (arg) {
+            memcpy((void *)arg, &proc_termios, sizeof(struct ktermios));
+            return 0;
+        }
+        return (uint64_t)-1;
+
+    case KTIOCSETA:
+        if (arg) {
+            memcpy(&proc_termios, (void *)arg, sizeof(struct ktermios));
+            return 0;
+        }
+        return (uint64_t)-1;
+
+    case KTIOCGWINSZ:
+        if (arg) {
+            struct kwinsize *ws = (struct kwinsize *)arg;
+            ws->ws_row = 25;
+            ws->ws_col = 80;
+            ws->ws_xpixel = 0;
+            ws->ws_ypixel = 0;
+            return 0;
+        }
+        return (uint64_t)-1;
+
+    case KTIOCSWINSZ:
+        return 0;
+
+    case KTIOCGPGRP:
+        if (arg) {
+            *(int *)arg = 0;
+            return 0;
+        }
+        return (uint64_t)-1;
+
+    case KTIOCSPGRP:
+        return 0;
+
+    default:
+        return 0;
+    }
 }
 
 /* ------------------------------------------------------------------ */

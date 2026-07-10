@@ -17,6 +17,8 @@
 #include <ctype.h>
 #include <sys/times.h>
 #include <sys/utsname.h>
+#include <stdarg.h>
+#include <termios.h>
 
 #include "kernel/include/syscall.h"
 
@@ -212,8 +214,8 @@ off_t _lseek(int fd, off_t offset, int whence) {
 }
 
 int _isatty(int fd) {
-    (void)fd;
-    return 1;  /* everything is a tty for now */
+    struct termios t;
+    return tcgetattr(fd, &t) == 0 ? 1 : 0;
 }
 
 int _fstat(int fd, struct stat *st) {
@@ -329,7 +331,6 @@ _READ_WRITE_RETURN_TYPE write(int fd, const void *buf, size_t cnt) { return _wri
 int open(const char *file, int flags, ...) { (void)0; return _open(file, flags, 0); }
 int close(int fd) { return _close(fd); }
 off_t lseek(int fd, off_t offset, int whence) { return _lseek(fd, offset, whence); }
-int isatty(int fd) { return _isatty(fd); }
 int fstat(int fd, struct stat *st) { return _fstat(fd, st); }
 int stat(const char *file, struct stat *st) { return _stat(file, st); }
 int lstat(const char *file, struct stat *st) { return _stat(file, st); }
@@ -434,6 +435,62 @@ int fcntl(int fd, int cmd, ...) { (void)fd;(void)cmd; return 0; }
 pid_t waitpid(pid_t pid, int *status, int options) { return sys_waitpid((int)pid, status, options); }
 pid_t vfork(void) { return _fork(); }
 mode_t umask(mode_t mask) { (void)mask; return 0; }
+
+/* Real termios implementation — uses SYS_IOCTL to talk to kernel PTY layer */
+int ioctl(int fd, unsigned long request, ...) {
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    return (int)syscall3(SYS_IOCTL, (uintptr_t)fd, (uintptr_t)request, (uintptr_t)arg);
+}
+
+speed_t cfgetispeed(const struct termios *t) { return t ? t->c_ispeed : 0; }
+speed_t cfgetospeed(const struct termios *t) { return t ? t->c_ospeed : 0; }
+int cfsetispeed(struct termios *t, speed_t s) { if (t) t->c_ispeed = s; return 0; }
+int cfsetospeed(struct termios *t, speed_t s) { if (t) t->c_ospeed = s; return 0; }
+int cfsetspeed(struct termios *t, speed_t s) {
+    if (t) { t->c_ispeed = s; t->c_ospeed = s; }
+    return 0;
+}
+
+int tcgetattr(int fd, struct termios *t) {
+    if (!t) return -1;
+    return ioctl(fd, TIOCGETA, t);
+}
+
+int tcsetattr(int fd, int act, const struct termios *t) {
+    if (!t) return -1;
+    unsigned long req;
+    switch (act & ~TCSASOFT) {
+        case TCSANOW:   req = TIOCSETA; break;
+        case TCSADRAIN: req = TIOCSETA; break;  /* kernel drains for us */
+        case TCSAFLUSH: req = TIOCSETA; break;  /* kernel flushes for us */
+        default: return -1;
+    }
+    return ioctl(fd, req, (void *)(uintptr_t)t);
+}
+
+int tcdrain(int fd) { (void)fd; return 0; }
+int tcflow(int fd, int action) { (void)fd; (void)action; return 0; }
+int tcflush(int fd, int which) { (void)fd; (void)which; return 0; }
+int tcsendbreak(int fd, int dur) { (void)fd; (void)dur; return 0; }
+
+void cfmakeraw(struct termios *t) {
+    if (!t) return;
+    t->c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    t->c_oflag &= ~OPOST;
+    t->c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    t->c_cflag &= ~(CSIZE | PARENB);
+    t->c_cflag |= CS8;
+    t->c_cc[VMIN] = 1;
+    t->c_cc[VTIME] = 0;
+}
+
+int isatty(int fd) {
+    struct termios t;
+    return tcgetattr(fd, &t) == 0 ? 1 : 0;
+}
 
 /* zsh extras */
 int clock_gettime(clockid_t clk_id, struct timespec *tp) {
