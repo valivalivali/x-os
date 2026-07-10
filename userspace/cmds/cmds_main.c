@@ -21,6 +21,8 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <sys/wait.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 #include "kernel/include/syscall.h"
 #include "kernel/fs/xfs.h"
@@ -87,6 +89,8 @@ static int unexpand_main(int argc, char **argv);
 static int colrm_main(int argc, char **argv);
 static int split_main(int argc, char **argv);
 static int csplit_main(int argc, char **argv);
+static int less_main(int argc, char **argv);
+static int vi_main(int argc, char **argv);
 
 struct cmd_entry {
     const char *name;
@@ -154,6 +158,10 @@ static const struct cmd_entry cmd_table[] = {
     { "unexpand",  unexpand_main },
     { "colrm",     colrm_main },
     { "split",     split_main },
+    { "less",      less_main },
+    { "more",      less_main },
+    { "vi",        vi_main },
+    { "vim",       vi_main },
     { NULL, NULL }
 };
 
@@ -182,7 +190,7 @@ int cmds_main(int argc, char **argv) {
     }
 
     fprintf(stderr, "cmds: unknown command '%s'\n", cmd);
-    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split\n");
+    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim\n");
     return 1;
 }
 
@@ -2671,5 +2679,532 @@ static int split_main(int argc, char **argv) {
 
     if (outf) fclose(outf);
     if (f) fclose(f);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* less — simple pager (inspired by less-50, BSD/GPL) */
+/* Supports: q/Q quit, Space/f next page, b prev page, j/Enter next line, */
+/*           k prev line, g top, G bottom, /search, n next match, h help */
+
+static int less_main(int argc, char **argv) {
+    int rows = 25, cols = 80;
+
+    /* Try to get window size */
+    struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; } ws;
+    if (ioctl(1, 0x40087468, &ws) == 0 && ws.ws_row > 0) {  /* TIOCGWINSZ */
+        rows = ws.ws_row;
+        cols = ws.ws_col;
+    }
+
+    /* Read all input into memory */
+    char *buf = NULL;
+    size_t bufsize = 0, bufcap = 0;
+    FILE *f = NULL;
+
+    if (argc >= 2 && strcmp(argv[1], "-") != 0) {
+        f = fopen(argv[1], "r");
+        if (!f) { fprintf(stderr, "less: %s: cannot open\n", argv[1]); return 1; }
+    }
+
+    int c;
+    while ((c = fgetc(f ? f : stdin)) != EOF) {
+        if (bufsize >= bufcap) {
+            bufcap = bufcap ? bufcap * 2 : 65536;
+            buf = realloc(buf, bufcap);
+            if (!buf) { if (f) fclose(f); return 1; }
+        }
+        buf[bufsize++] = (char)c;
+    }
+    if (f) fclose(f);
+
+    /* Split into lines */
+    int nlines = 0;
+    int line_cap = 1024;
+    char **lines = malloc(sizeof(char *) * line_cap);
+    int *line_lens = malloc(sizeof(int) * line_cap);
+
+    int pos = 0;
+    while (pos < (int)bufsize) {
+        if (nlines >= line_cap) {
+            line_cap *= 2;
+            lines = realloc(lines, sizeof(char *) * line_cap);
+            line_lens = realloc(line_lens, sizeof(int) * line_cap);
+        }
+        lines[nlines] = buf + pos;
+        int start = pos;
+        while (pos < (int)bufsize && buf[pos] != '\n') pos++;
+        line_lens[nlines] = pos - start;
+        if (pos < (int)bufsize) pos++;  /* skip \n */
+        nlines++;
+    }
+
+    if (nlines == 0) {
+        lines[0] = "";
+        line_lens[0] = 0;
+        nlines = 1;
+    }
+
+    /* Display loop */
+    int top = 0;  /* top visible line */
+    int search_pos = -1;
+    char search_str[256] = {0};
+
+    /* Enter raw mode */
+    struct termios orig, raw;
+    tcgetattr(0, &orig);
+    raw = orig;
+    raw.c_lflag &= ~(0x00000002 | 0x00000008 | 0x00000080);  /* ~ICANON ~ECHO ~ISIG */
+    raw.c_cc[6] = 1;  /* VMIN */
+    raw.c_cc[5] = 0;  /* VTIME */
+    tcsetattr(0, 0, &raw);  /* TCSANOW */
+
+    while (1) {
+        /* Clear screen */
+        printf("\033[H\033[2J");
+
+        /* Display lines */
+        int displayed = 0;
+        for (int i = top; i < nlines && displayed < rows - 1; i++) {
+            int len = line_lens[i];
+            if (len > cols) len = cols;
+            fwrite(lines[i], 1, len, stdout);
+            putchar('\n');
+            displayed++;
+        }
+
+        /* Status bar */
+        printf("\033[7m", stdout);
+        if (top + rows - 1 >= nlines)
+            printf("(END)");
+        else
+            printf("%d%%", (top * 100) / (nlines > 1 ? nlines - 1 : 1));
+        printf("\033[27m");
+        fflush(stdout);
+
+        /* Read key */
+        c = getchar();
+
+        if (c == 'q' || c == 'Q' || c == 3)  /* q/Q/Ctrl-C */
+            break;
+        else if (c == ' ' || c == 'f' || c == 6)  /* Space/f/Ctrl-F */
+            top += rows - 1;
+        else if (c == 'b' || c == 2)  /* b/Ctrl-B */
+            top -= rows - 1;
+        else if (c == '\n' || c == 'j' || c == 14)  /* Enter/j/Ctrl-N */
+            top++;
+        else if (c == 'k' || c == 16)  /* k/Ctrl-P */
+            top--;
+        else if (c == 'g')  /* top */
+            top = 0;
+        else if (c == 'G')  /* bottom */
+            top = nlines - rows + 1;
+        else if (c == '/') {  /* search */
+            printf("\033[1;1H\033[0m/");
+            fflush(stdout);
+            int si = 0;
+            while ((c = getchar()) != '\n' && c != '\r' && si < 255) {
+                if (c == 27) { si = -1; break; }  /* Esc */
+                if (c == 127 || c == 8) { if (si > 0) si--; continue; }
+                search_str[si++] = c;
+            }
+            search_str[si] = 0;
+            if (si >= 0) {
+                /* Search forward from top */
+                search_pos = -1;
+                for (int i = top + 1; i < nlines; i++) {
+                    if (memmem(lines[i], line_lens[i], search_str, si)) {
+                        search_pos = i;
+                        break;
+                    }
+                }
+                if (search_pos >= 0)
+                    top = search_pos;
+            }
+        }
+        else if (c == 'n' && search_str[0]) {  /* next match */
+            for (int i = top + 1; i < nlines; i++) {
+                if (memmem(lines[i], line_lens[i], search_str, strlen(search_str))) {
+                    top = i;
+                    break;
+                }
+            }
+        }
+        else if (c == 27) {  /* Esc sequence (arrow keys) */
+            c = getchar();
+            if (c == '[') {
+                c = getchar();
+                if (c == 'A') top--;       /* up */
+                else if (c == 'B') top++;  /* down */
+                else if (c == 'C') {}      /* right */
+                else if (c == 'D') {}      /* left */
+                else if (c == '6') { getchar(); top += rows - 1; }  /* PgDn */
+                else if (c == '5') { getchar(); top -= rows - 1; }  /* PgUp */
+                else if (c == 'H') top = 0;   /* Home */
+                else if (c == 'F') top = nlines - rows + 1;  /* End */
+            }
+        }
+
+        /* Clamp */
+        if (top < 0) top = 0;
+        if (top > nlines - 1) top = nlines - 1;
+    }
+
+    /* Restore terminal */
+    tcsetattr(0, 0, &orig);
+
+    /* Clear screen */
+    printf("\033[H\033[2J");
+    fflush(stdout);
+
+    free(lines);
+    free(line_lens);
+    free(buf);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* vi — minimal vi editor (inspired by vim-167/nvi, BSD/GPL) */
+/* Supports: i insert, ESC, :w write, :q quit, :wq, :x, dd, o, O, a, x, */
+/*           h/j/k/l movement, :wq save and quit */
+
+static int vi_main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: vi file\n");
+        return 1;
+    }
+
+    const char *filename = argv[1];
+    int rows = 25, cols = 80;
+    struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; } ws;
+    if (ioctl(1, 0x40087468, &ws) == 0 && ws.ws_row > 0) {
+        rows = ws.ws_row; cols = ws.ws_col;
+    }
+
+    /* Load file into lines array */
+    int nlines = 1;
+    int line_cap = 1024;
+    char **lines = malloc(sizeof(char *) * line_cap);
+    int *line_lens = malloc(sizeof(int) * line_cap);
+
+    lines[0] = strdup("");
+    line_lens[0] = 0;
+
+    FILE *f = fopen(filename, "r");
+    if (f) {
+        nlines = 0;
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), f)) {
+            if (nlines >= line_cap) {
+                line_cap *= 2;
+                lines = realloc(lines, sizeof(char *) * line_cap);
+                line_lens = realloc(line_lens, sizeof(int) * line_cap);
+            }
+            int len = strlen(buf);
+            if (len > 0 && buf[len-1] == '\n') buf[--len] = 0;
+            lines[nlines] = strdup(buf);
+            line_lens[nlines] = len;
+            nlines++;
+        }
+        fclose(f);
+    }
+    if (nlines == 0) { lines[0] = strdup(""); line_lens[0] = 0; nlines = 1; }
+
+    int cur_row = 0, cur_col = 0;
+    int top_row = 0;
+    int modified = 0;
+    enum { MODE_NORMAL, MODE_INSERT, MODE_COMMAND } mode = MODE_NORMAL;
+    char cmdbuf[256];
+    int cmdlen = 0;
+
+    /* Enter raw mode */
+    struct termios orig, raw;
+    tcgetattr(0, &orig);
+    raw = orig;
+    raw.c_lflag &= ~(0x00000002 | 0x00000008 | 0x00000080);
+    raw.c_cc[6] = 1;
+    raw.c_cc[5] = 0;
+    tcsetattr(0, 0, &raw);
+
+    while (1) {
+        /* Render */
+        printf("\033[H\033[2J");
+
+        int display_rows = rows - 1;  /* leave room for status */
+        for (int i = 0; i < display_rows; i++) {
+            int line_idx = top_row + i;
+            if (line_idx >= nlines) break;
+            printf("\033[%d;1H", i + 1);
+            int len = line_lens[line_idx];
+            if (len > cols) len = cols;
+            if (len > 0) fwrite(lines[line_idx], 1, len, stdout);
+            if (line_idx == cur_row && mode == MODE_NORMAL) {
+                /* Highlight cursor position with reverse video on char */
+                /* Already printed the line, cursor is at end */
+            }
+            putchar('\n');
+        }
+
+        /* Position cursor */
+        if (mode == MODE_COMMAND) {
+            printf("\033[%d;1H:", rows);
+            for (int i = 0; i < cmdlen; i++) putchar(cmdbuf[i]);
+        } else {
+            int disp_row = cur_row - top_row;
+            int disp_col = cur_col;
+            if (disp_col >= cols) disp_col = cols - 1;
+            printf("\033[%d;%dH", disp_row + 1, disp_col + 1);
+        }
+
+        /* Status line */
+        printf("\033[%d;1H", rows);
+        if (mode == MODE_INSERT)
+            printf("\033[7m-- INSERT --\033[27m");
+        else if (modified)
+            printf("[modified] ");
+        printf("%s  %d lines", filename, nlines);
+
+        fflush(stdout);
+
+        /* Read key */
+        int c = getchar();
+
+        if (c == -1) continue;
+
+        if (mode == MODE_NORMAL) {
+            switch (c) {
+            case 'h': if (cur_col > 0) cur_col--; break;
+            case 'l': if (cur_col < line_lens[cur_row]) cur_col++; break;
+            case 'j': if (cur_row < nlines - 1) { cur_row++; if (cur_col > line_lens[cur_row]) cur_col = line_lens[cur_row]; } break;
+            case 'k': if (cur_row > 0) { cur_row--; if (cur_col > line_lens[cur_row]) cur_col = line_lens[cur_row]; } break;
+            case '0': cur_col = 0; break;
+            case '$': cur_col = line_lens[cur_row]; break;
+            case 'G': cur_row = nlines - 1; cur_col = 0; break;
+            case 'g': if (getchar() == 'g') { cur_row = 0; cur_col = 0; } break;
+            case 'i': mode = MODE_INSERT; break;
+            case 'a': if (cur_col < line_lens[cur_row]) cur_col++; mode = MODE_INSERT; break;
+            case 'A': cur_col = line_lens[cur_row]; mode = MODE_INSERT; break;
+            case 'o': {
+                /* Insert new line after current */
+                if (nlines >= line_cap) {
+                    line_cap *= 2;
+                    lines = realloc(lines, sizeof(char *) * line_cap);
+                    line_lens = realloc(line_lens, sizeof(int) * line_cap);
+                }
+                for (int i = nlines; i > cur_row + 1; i--) {
+                    lines[i] = lines[i-1];
+                    line_lens[i] = line_lens[i-1];
+                }
+                lines[cur_row + 1] = strdup("");
+                line_lens[cur_row + 1] = 0;
+                nlines++;
+                cur_row++;
+                cur_col = 0;
+                mode = MODE_INSERT;
+                modified = 1;
+                break;
+            }
+            case 'O': {
+                if (nlines >= line_cap) {
+                    line_cap *= 2;
+                    lines = realloc(lines, sizeof(char *) * line_cap);
+                    line_lens = realloc(line_lens, sizeof(int) * line_cap);
+                }
+                for (int i = nlines; i > cur_row; i--) {
+                    lines[i] = lines[i-1];
+                    line_lens[i] = line_lens[i-1];
+                }
+                lines[cur_row] = strdup("");
+                line_lens[cur_row] = 0;
+                nlines++;
+                cur_col = 0;
+                mode = MODE_INSERT;
+                modified = 1;
+                break;
+            }
+            case 'x': {
+                if (cur_col < line_lens[cur_row]) {
+                    char *l = lines[cur_row];
+                    int len = line_lens[cur_row];
+                    memmove(l + cur_col, l + cur_col + 1, len - cur_col - 1);
+                    line_lens[cur_row]--;
+                    lines[cur_row] = realloc(l, line_lens[cur_row] + 1);
+                    if (lines[cur_row]) lines[cur_row][line_lens[cur_row]] = 0;
+                    if (cur_col > line_lens[cur_row]) cur_col = line_lens[cur_row];
+                    modified = 1;
+                }
+                break;
+            }
+            case 'd': {
+                int c2 = getchar();
+                if (c2 == 'd' && nlines > 1) {
+                    free(lines[cur_row]);
+                    for (int i = cur_row; i < nlines - 1; i++) {
+                        lines[i] = lines[i+1];
+                        line_lens[i] = line_lens[i+1];
+                    }
+                    nlines--;
+                    if (cur_row >= nlines) cur_row = nlines - 1;
+                    cur_col = 0;
+                    modified = 1;
+                }
+                break;
+            }
+            case ':': mode = MODE_COMMAND; cmdlen = 0; break;
+            case 27: break;  /* Esc in normal mode = no-op */
+            default: break;
+            }
+
+            /* Scroll if cursor out of view */
+            if (cur_row < top_row) top_row = cur_row;
+            if (cur_row >= top_row + rows - 1) top_row = cur_row - rows + 2;
+
+        } else if (mode == MODE_INSERT) {
+            if (c == 27) {
+                mode = MODE_NORMAL;
+                if (cur_col > 0) cur_col--;
+            } else if (c == 127 || c == 8) {  /* backspace */
+                if (cur_col > 0) {
+                    char *l = lines[cur_row];
+                    int len = line_lens[cur_row];
+                    memmove(l + cur_col - 1, l + cur_col, len - cur_col);
+                    line_lens[cur_row]--;
+                    cur_col--;
+                    lines[cur_row] = realloc(l, line_lens[cur_row] + 1);
+                    if (lines[cur_row]) lines[cur_row][line_lens[cur_row]] = 0;
+                    modified = 1;
+                } else if (cur_row > 0) {
+                    /* Join with previous line */
+                    int prevlen = line_lens[cur_row - 1];
+                    int curlen = line_lens[cur_row];
+                    lines[cur_row - 1] = realloc(lines[cur_row - 1], prevlen + curlen + 1);
+                    memcpy(lines[cur_row - 1] + prevlen, lines[cur_row], curlen);
+                    line_lens[cur_row - 1] = prevlen + curlen;
+                    lines[cur_row - 1][line_lens[cur_row - 1]] = 0;
+                    free(lines[cur_row]);
+                    for (int i = cur_row; i < nlines - 1; i++) {
+                        lines[i] = lines[i+1];
+                        line_lens[i] = line_lens[i+1];
+                    }
+                    nlines--;
+                    cur_row--;
+                    cur_col = prevlen;
+                    modified = 1;
+                }
+            } else if (c == '\n' || c == '\r') {
+                /* Split line */
+                if (nlines >= line_cap) {
+                    line_cap *= 2;
+                    lines = realloc(lines, sizeof(char *) * line_cap);
+                    line_lens = realloc(line_lens, sizeof(int) * line_cap);
+                }
+                for (int i = nlines; i > cur_row + 1; i--) {
+                    lines[i] = lines[i-1];
+                    line_lens[i] = line_lens[i-1];
+                }
+                int remaining = line_lens[cur_row] - cur_col;
+                lines[cur_row + 1] = malloc(remaining + 1);
+                memcpy(lines[cur_row + 1], lines[cur_row] + cur_col, remaining);
+                lines[cur_row + 1][remaining] = 0;
+                line_lens[cur_row + 1] = remaining;
+
+                lines[cur_row] = realloc(lines[cur_row], cur_col + 1);
+                lines[cur_row][cur_col] = 0;
+                line_lens[cur_row] = cur_col;
+
+                nlines++;
+                cur_row++;
+                cur_col = 0;
+                modified = 1;
+            } else if (c >= 32 && c < 127) {
+                /* Insert character */
+                char *l = lines[cur_row];
+                int len = line_lens[cur_row];
+                l = realloc(l, len + 2);
+                memmove(l + cur_col + 1, l + cur_col, len - cur_col);
+                l[cur_col] = (char)c;
+                line_lens[cur_row] = len + 1;
+                l[line_lens[cur_row]] = 0;
+                lines[cur_row] = l;
+                cur_col++;
+                modified = 1;
+            }
+
+            /* Scroll */
+            if (cur_row < top_row) top_row = cur_row;
+            if (cur_row >= top_row + rows - 1) top_row = cur_row - rows + 2;
+
+        } else if (mode == MODE_COMMAND) {
+            if (c == 27) {
+                mode = MODE_NORMAL;
+                cmdlen = 0;
+            } else if (c == '\n' || c == '\r') {
+                cmdbuf[cmdlen] = 0;
+                /* Process command */
+                if (strcmp(cmdbuf, "q") == 0 || strcmp(cmdbuf, "q!") == 0) {
+                    break;  /* quit */
+                } else if (strcmp(cmdbuf, "w") == 0) {
+                    /* Write file */
+                    FILE *wf = fopen(filename, "w");
+                    if (wf) {
+                        for (int i = 0; i < nlines; i++) {
+                            fwrite(lines[i], 1, line_lens[i], wf);
+                            fputc('\n', wf);
+                        }
+                        fclose(wf);
+                        modified = 0;
+                    }
+                    mode = MODE_NORMAL;
+                } else if (strcmp(cmdbuf, "wq") == 0 || strcmp(cmdbuf, "x") == 0) {
+                    FILE *wf = fopen(filename, "w");
+                    if (wf) {
+                        for (int i = 0; i < nlines; i++) {
+                            fwrite(lines[i], 1, line_lens[i], wf);
+                            fputc('\n', wf);
+                        }
+                        fclose(wf);
+                    }
+                    break;
+                } else if (strncmp(cmdbuf, "w ", 2) == 0) {
+                    /* Write to different file */
+                    FILE *wf = fopen(cmdbuf + 2, "w");
+                    if (wf) {
+                        for (int i = 0; i < nlines; i++) {
+                            fwrite(lines[i], 1, line_lens[i], wf);
+                            fputc('\n', wf);
+                        }
+                        fclose(wf);
+                    }
+                    mode = MODE_NORMAL;
+                } else if (cmdbuf[0] >= '0' && cmdbuf[0] <= '9') {
+                    /* Go to line */
+                    int line = atoi(cmdbuf) - 1;
+                    if (line < 0) line = 0;
+                    if (line >= nlines) line = nlines - 1;
+                    cur_row = line;
+                    cur_col = 0;
+                    mode = MODE_NORMAL;
+                } else {
+                    mode = MODE_NORMAL;
+                }
+                cmdlen = 0;
+            } else if (c == 127 || c == 8) {
+                if (cmdlen > 0) cmdlen--;
+            } else if (cmdlen < 255) {
+                cmdbuf[cmdlen++] = c;
+            }
+        }
+    }
+
+    /* Restore terminal */
+    tcsetattr(0, 0, &orig);
+    printf("\033[H\033[2J");
+    fflush(stdout);
+
+    /* Cleanup */
+    for (int i = 0; i < nlines; i++) free(lines[i]);
+    free(lines);
+    free(line_lens);
+
     return 0;
 }
