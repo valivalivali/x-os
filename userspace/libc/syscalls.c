@@ -514,6 +514,12 @@ int nice(int inc) { (void)inc; return 0; }
 
 /* More zsh stubs */
 int link(const char *oldpath, const char *newpath) { (void)oldpath; (void)newpath; return -1; }
+int symlink(const char *target, const char *linkpath) { (void)target; (void)linkpath; errno = ENOSYS; return -1; }
+ssize_t readlink(const char *path, char *buf, size_t bufsiz) { (void)path; (void)buf; (void)bufsiz; errno = EINVAL; return -1; }
+int rmdir(const char *path) { (void)path; errno = ENOSYS; return -1; }
+int mkfifo(const char *path, mode_t mode) { (void)path; (void)mode; errno = ENOSYS; return -1; }
+int chown(const char *path, uid_t owner, gid_t group) { (void)path; (void)owner; (void)group; return 0; }
+int chmod(const char *path, mode_t mode) { (void)path; (void)mode; return 0; }
 unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
 int access(const char *path, int mode) { (void)path; (void)mode; return 0; }
 unsigned int sleep(unsigned int seconds) { (void)seconds; return 0; }
