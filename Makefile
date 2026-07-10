@@ -87,8 +87,12 @@ MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
 MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 MENUBAR_SVG_H  := $(BUILD_DIR)/userspace/services/menubar/svg_data.h
 
+CMDS_ELF       := $(BUILD_DIR)/userspace/cmds/cmds.elf
+CMDS_BLOB_C    := kernel/proc/cmds_elf_blob.c
+CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
+
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(CMDS_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -103,7 +107,8 @@ LIBC_CFLAGS := \
   -mno-sse -mno-sse2 -mno-mmx \
   -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove \
   -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -I. -I$(LIMINE_DIR) $(NEWLIB_CFLAGS)
+  -I. -I$(LIMINE_DIR) $(NEWLIB_CFLAGS) \
+  -D_POSIX_TIMERS=1 -D_POSIX_MONOTONIC_CLOCK=1
 
 LIBC_LDFLAGS := \
   -nostdlib -static -no-pie -z max-page-size=0x1000 \
@@ -114,7 +119,7 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
-.PHONY: all run run-uefi clean distclean setup limine
+.PHONY: all run run-uefi clean distclean setup limine cmds
 
 all: $(ISO)
 
@@ -272,6 +277,34 @@ $(MENUBAR_BLOB_C): $(MENUBAR_ELF)
 	@echo ">> generated $@"
 
 $(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- shell commands (multi-call binary, busybox-style) -------------------
+cmds: $(CMDS_ELF)
+
+$(CMDS_ELF): userspace/cmds/cmds_start.S userspace/cmds/cmds_main.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/cmds/cmds.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/cmds/cmds_start.S -o $(BUILD_DIR)/userspace/cmds/cmds_start.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/cmds/cmds_main.c -o $(BUILD_DIR)/userspace/cmds/cmds_main.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/cmds/cmds_syscalls.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/cmds/cmds_xos_syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/cmds/cmds.ld \
+	  $(BUILD_DIR)/userspace/cmds/cmds_start.o \
+	  $(BUILD_DIR)/userspace/cmds/cmds_main.o \
+	  $(BUILD_DIR)/userspace/cmds/cmds_syscalls.o \
+	  $(BUILD_DIR)/userspace/cmds/cmds_xos_syscall.o \
+	  $(NEWLIB_LIBS) \
+	  -o $@
+	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
+	@echo ">> linked $@"
+
+$(CMDS_BLOB_C): $(CMDS_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t cmds_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *cmds_elf_data = cmds_elf_bytes;', 'size_t cmds_elf_len = sizeof(cmds_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(CMDS_BLOB_O): $(CMDS_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

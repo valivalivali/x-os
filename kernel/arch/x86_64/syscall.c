@@ -171,11 +171,14 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t menubar_elf_len;
     extern const uint8_t *zsh_elf_data;
     extern size_t zsh_elf_len;
+    extern const uint8_t *cmds_elf_data;
+    extern size_t cmds_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
     else if (index == 1) { data = menubar_elf_data; len = menubar_elf_len; }
     else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
+    else if (index == 5) { data = cmds_elf_data; len = cmds_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;

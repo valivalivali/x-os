@@ -677,3 +677,98 @@ int xfs_ftruncate(int fd, int size) {
     write_inode(f->inode_block, &inode);
     return 0;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Exists — check if a path resolves to an inode */
+
+int xfs_exists(const char *path) {
+    if (!path || path[0] != '/') return 0;
+    xfs_inode_t inode;
+    return resolve_path(path, &inode) != 0 ? 1 : 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Create standard Unix/macOS directory hierarchy.
+ * Based on Apple's files-974.120.2 hierarchy spec.
+ * Since XFS has no symlink support, /etc, /var, /tmp are real directories
+ * (not /private symlinks like macOS). */
+
+static void mkdir_if_missing(const char *path) {
+    if (!xfs_exists(path)) {
+        if (xfs_mkdir(path) == 0) {
+            kprintf("[xfs] created %s\n", path);
+        } else {
+            kprintf("[xfs] FAILED to create %s\n", path);
+        }
+    }
+}
+
+void xfs_create_hierarchy(void) {
+    /* Core Unix directories */
+    mkdir_if_missing("/bin");
+    mkdir_if_missing("/sbin");
+    mkdir_if_missing("/etc");
+    mkdir_if_missing("/tmp");
+    mkdir_if_missing("/dev");
+    mkdir_if_missing("/proc");
+    mkdir_if_missing("/mnt");
+    mkdir_if_missing("/opt");
+    mkdir_if_missing("/home");
+    mkdir_if_missing("/cores");
+
+    /* /usr hierarchy */
+    mkdir_if_missing("/usr");
+    mkdir_if_missing("/usr/bin");
+    mkdir_if_missing("/usr/sbin");
+    mkdir_if_missing("/usr/lib");
+    mkdir_if_missing("/usr/libexec");
+    mkdir_if_missing("/usr/include");
+    mkdir_if_missing("/usr/share");
+    mkdir_if_missing("/usr/share/man");
+    mkdir_if_missing("/usr/share/misc");
+    mkdir_if_missing("/usr/local");
+    mkdir_if_missing("/usr/local/bin");
+    mkdir_if_missing("/usr/local/lib");
+    mkdir_if_missing("/usr/local/include");
+
+    /* /var hierarchy */
+    mkdir_if_missing("/var");
+    mkdir_if_missing("/var/log");
+    mkdir_if_missing("/var/run");
+    mkdir_if_missing("/var/tmp");
+    mkdir_if_missing("/var/spool");
+    mkdir_if_missing("/var/db");
+    mkdir_if_missing("/var/mail");
+    mkdir_if_missing("/var/empty");
+    mkdir_if_missing("/var/folders");
+    mkdir_if_missing("/var/vm");
+
+    /* macOS-style directories */
+    mkdir_if_missing("/Applications");
+    mkdir_if_missing("/Applications/Utilities");
+    mkdir_if_missing("/Library");
+    mkdir_if_missing("/Library/Preferences");
+    mkdir_if_missing("/Library/Caches");
+    mkdir_if_missing("/Library/Logs");
+    mkdir_if_missing("/Library/Frameworks");
+    mkdir_if_missing("/Library/Filesystems");
+
+    /* /System hierarchy */
+    mkdir_if_missing("/System");
+    mkdir_if_missing("/System/Library");
+
+    /* /Users hierarchy */
+    mkdir_if_missing("/Users");
+    mkdir_if_missing("/Users/Shared");
+
+    /* /private (macOS compatibility — real dirs since no symlinks) */
+    mkdir_if_missing("/private");
+    mkdir_if_missing("/private/etc");
+    mkdir_if_missing("/private/var");
+    mkdir_if_missing("/private/tmp");
+
+    /* /Volumes — mount points for removable media */
+    mkdir_if_missing("/Volumes");
+
+    kputs("[xfs] directory hierarchy ready\n");
+}

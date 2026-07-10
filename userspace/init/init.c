@@ -23,6 +23,29 @@ static void spawn_blob(int index, const char *name) {
     }
 }
 
+static void write_blob_to_file(int index, const char *path) {
+    size_t len = syscall2(SYS_SVC_BLOB, index, 0);
+    if (len == 0 || len > 2 * 1024 * 1024) {
+        log("[init] blob too large or empty: ");
+        log(path);
+        log("\n");
+        return;
+    }
+    size_t n = syscall3(SYS_SVC_BLOB, index, (uintptr_t)blob_buf, len);
+    int fd = sys_open(path, XFS_O_CREAT | XFS_O_WRONLY | XFS_O_TRUNC);
+    if (fd < 0) {
+        log("[init] failed to create ");
+        log(path);
+        log("\n");
+        return;
+    }
+    sys_write(fd, blob_buf, n);
+    sys_close(fd);
+    log("[init] wrote ");
+    log(path);
+    log("\n");
+}
+
 static void seed_fs(void) {
     sys_mkdir("/Applications");
     sys_mkdir("/Documents");
@@ -47,6 +70,9 @@ void init_main(void) {
     log("[init] start\n");
 
     seed_fs();
+
+    /* Write multi-call cmds binary to /bin/cmds for exec from shell */
+    write_blob_to_file(5, "/bin/cmds");
 
     spawn_blob(0, "composer");
     spawn_blob(1, "menubar");

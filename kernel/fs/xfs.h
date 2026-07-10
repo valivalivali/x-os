@@ -12,7 +12,7 @@
 #define XFS_MAGIC       0x58465331   /* "XFS1" */
 #define XFS_VERSION     1
 #define XFS_BLOCK_SIZE  4096
-#define XFS_NAME_MAX    48
+#define XFS_NAME_MAX    64
 
 /* Per-process file descriptor (userspace sees an int fd) */
 #define XFS_MAX_FDS     32
@@ -58,3 +58,5 @@ int  xfs_stat(const char *path, xfs_dirent_t *out);
 int  xfs_fstat(int fd, xfs_dirent_t *out);
 int  xfs_unlink(const char *path);
 int  xfs_ftruncate(int fd, int size);
+int  xfs_exists(const char *path);
+void xfs_create_hierarchy(void);

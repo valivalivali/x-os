@@ -436,7 +436,7 @@ pid_t vfork(void) { return _fork(); }
 mode_t umask(mode_t mask) { (void)mask; return 0; }
 
 /* zsh extras */
-int clock_gettime(int clk_id, struct timespec *tp) {
+int clock_gettime(clockid_t clk_id, struct timespec *tp) {
     (void)clk_id;
     if (tp) {
         uint64_t ticks = 0;
@@ -473,3 +473,32 @@ struct passwd *getpwnam(const char *name) { (void)name; return NULL; }
 /* zsh internal resource info stubs */
 void set_resinfo(void *p) { (void)p; }
 void free_resinfo(void *p) { (void)p; }
+
+/* Missing newlib functions */
+int nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
+    (void)rmtp;
+    if (rqtp) {
+        uint64_t ms = (uint64_t)rqtp->tv_sec * 1000 + rqtp->tv_nsec / 1000000;
+        if (ms > 0) {
+            uint64_t end = 0;
+            __asm__ volatile("syscall" : "=a"(end) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+            end += ms;
+            for (;;) {
+                uint64_t now = 0;
+                __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+                if (now >= end) break;
+                syscall0(SYS_YIELD);
+            }
+        }
+    }
+    return 0;
+}
+
+int gethostname(char *name, size_t len) __attribute__((weak));
+int gethostname(char *name, size_t len) {
+    if (name && len >= 5) {
+        /* Manual copy — avoid SSE */
+        name[0]='x'; name[1]='-'; name[2]='o'; name[3]='s'; name[4]='\0';
+    }
+    return 0;
+}

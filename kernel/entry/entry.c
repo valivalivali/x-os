@@ -95,6 +95,7 @@ void kmain(void) {
     if (bdev) {
         xfs_format(bdev);
         xfs_mount(bdev);
+        xfs_create_hierarchy();
     } else {
         boot_puts("no block device available\n");
     }
