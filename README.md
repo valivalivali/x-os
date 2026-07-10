@@ -4,6 +4,8 @@ A clean-slate x86_64 microkernel operating system built from scratch. No POSIX b
 
 ![X OS Desktop](docs/screenshots/desktop-gpu.jpg)
 
+*X OS running in QEMU with GPU-accelerated rendering — menu bar, dock with app icons, and compositor surfaces at 2560×1600.*
+
 ## What It Is
 
 X OS is a microkernel designed for the AI era. No decades of compatibility debt, no legacy Unix assumptions, no POSIX baggage. The goal is an operating system that feels native to intelligent agents and human users alike: beautiful, consistent, and fully open to modification.

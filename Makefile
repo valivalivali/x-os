@@ -87,12 +87,17 @@ MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
 MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 MENUBAR_SVG_H  := $(BUILD_DIR)/userspace/services/menubar/svg_data.h
 
+DOCK_ELF       := $(BUILD_DIR)/userspace/services/dock/dock.elf
+DOCK_BLOB_C    := kernel/proc/dock_elf_blob.c
+DOCK_BLOB_O    := $(OBJ_DIR)/kernel/proc/dock_elf_blob.o
+DOCK_SVG_H     := $(BUILD_DIR)/userspace/services/dock/svg_data.h
+
 CMDS_ELF       := $(BUILD_DIR)/userspace/cmds/cmds.elf
 CMDS_BLOB_C    := kernel/proc/cmds_elf_blob.c
 CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
 
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(CMDS_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -277,6 +282,37 @@ $(MENUBAR_BLOB_C): $(MENUBAR_ELF)
 	@echo ">> generated $@"
 
 $(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- dock service (SVG-based, NanoSVG) ------------------------------------
+dock: $(DOCK_ELF)
+
+$(DOCK_SVG_H): userspace/services/dock/dock.svg scripts/svg_to_header.py
+	@mkdir -p $(dir $@)
+	python3 scripts/svg_to_header.py userspace/services/dock/dock.svg $(DOCK_SVG_H)
+	@echo ">> generated $@"
+
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DOCK_SVG_H) userspace/lib/nanosvg/nanosvg_xos.c userspace/lib/nanosvg/nanosvg.h userspace/lib/nanosvg/nanosvgrast.h userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/services/dock/dock.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
+	$(CC) $(USERSPACE_CFLAGS) -I$(BUILD_DIR)/userspace/services/dock -Iuserspace/lib/nanosvg/stubs -Iuserspace/lib/wm -Iuserspace/lib/nanosvg -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
+	$(CC) $(USERSPACE_CFLAGS) -Iuserspace/lib/nanosvg/stubs -c userspace/lib/nanosvg/nanosvg_xos.c -o $(BUILD_DIR)/userspace/services/dock/nanosvg_xos.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/dock/syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/dock/dock.ld \
+	  $(BUILD_DIR)/userspace/services/dock/start.o \
+	  $(BUILD_DIR)/userspace/services/dock/main.o \
+	  $(BUILD_DIR)/userspace/services/dock/nanosvg_xos.o \
+	  $(BUILD_DIR)/userspace/services/dock/syscall.o \
+	  -o $@
+	@echo ">> linked $@"
+
+$(DOCK_BLOB_C): $(DOCK_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t dock_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *dock_elf_data = dock_elf_bytes;', 'size_t dock_elf_len = sizeof(dock_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(DOCK_BLOB_O): $(DOCK_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

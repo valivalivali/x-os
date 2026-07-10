@@ -76,6 +76,7 @@ void init_main(void) {
 
     spawn_blob(0, "composer");
     spawn_blob(1, "menubar");
+    spawn_blob(2, "dock");
     spawn_blob(4, "zsh");
 
     for (;;) syscall0(SYS_YIELD);

@@ -1,0 +1,136 @@
+<svg width="962" height="97" viewBox="0 0 962 97" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- Dock background: frosted glass light mode -->
+<rect x="40" y="32" width="882" height="57" rx="24" fill="#FFFFFF" fill-opacity="0.35"/>
+<rect x="40" y="32" width="882" height="57" rx="24" fill="#FAFAFA" fill-opacity="0.55"/>
+
+<!-- Finder: blue with smiley -->
+<rect x="48" y="42" width="36" height="36" rx="8" fill="#1E9FFF"/>
+<circle cx="58" cy="55" r="2.5" fill="white"/>
+<circle cx="74" cy="55" r="2.5" fill="white"/>
+<path d="M56 65 Q66 72 76 65" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
+
+<!-- Launchpad: dark with 3x3 grid -->
+<rect x="93" y="42" width="36" height="36" rx="8" fill="#3A3A3C"/>
+<circle cx="103" cy="52" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="111" cy="52" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="119" cy="52" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="103" cy="60" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="111" cy="60" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="119" cy="60" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="103" cy="68" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="111" cy="68" r="2" fill="white" fill-opacity="0.8"/>
+<circle cx="119" cy="68" r="2" fill="white" fill-opacity="0.8"/>
+
+<!-- Safari: blue with compass -->
+<rect x="138" y="42" width="36" height="36" rx="8" fill="#007AFF"/>
+<circle cx="156" cy="60" r="13" fill="#5AC8FA"/>
+<path d="M156 50 L159 59 L156 70 L153 59 Z" fill="white"/>
+<path d="M156 50 L159 59 L156 56 Z" fill="#FF3B30"/>
+
+<!-- Messages: green with speech bubble -->
+<rect x="183" y="42" width="36" height="36" rx="8" fill="#34C759"/>
+<path d="M191 52 Q191 49 194 49 L208 49 Q211 49 211 52 L211 60 Q211 63 208 63 L202 63 L198 67 L198 63 L194 63 Q191 63 191 60 Z" fill="white"/>
+
+<!-- Mail: blue with envelope -->
+<rect x="228" y="42" width="36" height="36" rx="8" fill="#1E9FFF"/>
+<rect x="234" y="50" width="24" height="20" rx="3" fill="white"/>
+<path d="M234 52 L246 62 L258 52" stroke="#1E9FFF" stroke-width="2" fill="none"/>
+
+<!-- Maps: yellow with pin -->
+<rect x="273" y="42" width="36" height="36" rx="8" fill="#FFCC00"/>
+<circle cx="291" cy="56" r="6" fill="#FF3B30"/>
+<path d="M291 62 L291 72" stroke="#FF3B30" stroke-width="3" stroke-linecap="round"/>
+<circle cx="291" cy="56" r="2" fill="white"/>
+
+<!-- Photos: white with flower -->
+<rect x="318" y="42" width="36" height="36" rx="8" fill="#F5F5F7"/>
+<circle cx="336" cy="60" r="5" fill="#FF3B30"/>
+<circle cx="330" cy="55" r="4" fill="#FF9500"/>
+<circle cx="342" cy="55" r="4" fill="#FFCC00"/>
+<circle cx="330" cy="65" r="4" fill="#34C759"/>
+<circle cx="342" cy="65" r="4" fill="#007AFF"/>
+
+<!-- FaceTime: green with camera -->
+<rect x="363" y="42" width="36" height="36" rx="8" fill="#34C759"/>
+<rect x="369" y="52" width="18" height="16" rx="3" fill="white"/>
+<path d="M387 56 L393 52 L393 68 L387 64 Z" fill="white"/>
+
+<!-- Calendar: white with red header -->
+<rect x="408" y="42" width="36" height="36" rx="8" fill="#FFFFFF"/>
+<rect x="408" y="42" width="36" height="12" rx="8" fill="#FF3B30"/>
+<rect x="408" y="48" width="36" height="6" fill="#FF3B30"/>
+<rect x="414" y="58" width="3" height="6" fill="#8E8E93"/>
+<rect x="420" y="58" width="3" height="6" fill="#8E8E93"/>
+<rect x="426" y="58" width="3" height="6" fill="#8E8E93"/>
+<rect x="432" y="58" width="3" height="6" fill="#8E8E93"/>
+<rect x="438" y="58" width="3" height="6" fill="#8E8E93"/>
+
+<!-- Contacts: gray with person -->
+<rect x="453" y="42" width="36" height="36" rx="8" fill="#8E8E93"/>
+<circle cx="471" cy="54" r="5" fill="white"/>
+<path d="M463 72 Q463 62 471 62 Q479 62 479 72 Z" fill="white"/>
+
+<!-- Reminders: white with checklist -->
+<rect x="498" y="42" width="36" height="36" rx="8" fill="#FFFFFF"/>
+<circle cx="508" cy="52" r="3" fill="#FF9500"/>
+<rect x="514" y="50" width="14" height="2" rx="1" fill="#8E8E93"/>
+<circle cx="508" cy="60" r="3" fill="#FF3B30"/>
+<rect x="514" y="58" width="14" height="2" rx="1" fill="#8E8E93"/>
+<circle cx="508" cy="68" r="3" fill="#34C759"/>
+<rect x="514" y="66" width="14" height="2" rx="1" fill="#8E8E93"/>
+
+<!-- Notes: yellow with lines -->
+<rect x="543" y="42" width="36" height="36" rx="8" fill="#FFCC00"/>
+<rect x="549" y="48" width="24" height="24" rx="2" fill="white"/>
+<rect x="552" y="53" width="18" height="2" fill="#FFCC00"/>
+<rect x="552" y="58" width="18" height="2" fill="#FFCC00"/>
+<rect x="552" y="63" width="12" height="2" fill="#FFCC00"/>
+
+<!-- Freeform: white with shapes -->
+<rect x="588" y="42" width="36" height="36" rx="8" fill="#FFFFFF"/>
+<circle cx="598" cy="55" r="4" fill="#FF3B30"/>
+<rect x="606" y="51" width="8" height="8" fill="#007AFF"/>
+<path d="M598 65 L610 65 L604 73 Z" fill="#34C759"/>
+
+<!-- TV: black with screen -->
+<rect x="633" y="42" width="36" height="36" rx="8" fill="#1C1C1E"/>
+<rect x="639" y="49" width="24" height="16" rx="2" fill="#5AC8FA"/>
+<rect x="645" y="67" width="12" height="3" rx="1" fill="#8E8E93"/>
+
+<!-- Music: pink with note -->
+<rect x="678" y="42" width="36" height="36" rx="8" fill="#FF375F"/>
+<circle cx="688" cy="68" r="4" fill="white"/>
+<circle cx="700" cy="65" r="4" fill="white"/>
+<rect x="691" y="52" width="2" height="17" fill="white"/>
+<rect x="703" y="49" width="2" height="17" fill="white"/>
+<path d="M691 52 L705 49 L705 53 L691 56 Z" fill="white"/>
+
+<!-- News: red with lines -->
+<rect x="723" y="42" width="36" height="36" rx="8" fill="#FF3B30"/>
+<rect x="729" y="48" width="24" height="24" rx="2" fill="white"/>
+<rect x="732" y="51" width="18" height="3" fill="#FF3B30"/>
+<rect x="732" y="56" width="18" height="1.5" fill="#8E8E93"/>
+<rect x="732" y="59" width="18" height="1.5" fill="#8E8E93"/>
+<rect x="732" y="62" width="14" height="1.5" fill="#8E8E93"/>
+<rect x="732" y="65" width="18" height="1.5" fill="#8E8E93"/>
+
+<!-- App Store: blue with A -->
+<rect x="768" y="42" width="36" height="36" rx="8" fill="#007AFF"/>
+<path d="M786 50 L780 68 L783 68 L784.5 64 L787.5 64 L789 68 L792 68 Z" fill="white"/>
+<path d="M785 62 L787 62 L786 58 Z" fill="white"/>
+
+<!-- Separator -->
+<rect x="813" y="47" width="1" height="26" fill="#3C3C43" fill-opacity="0.29"/>
+
+<!-- Folder: blue with folder shape -->
+<rect x="833" y="42" width="36" height="36" rx="8" fill="#5AC8FA"/>
+<path d="M839 50 Q839 48 841 48 L847 48 L849 50 L859 50 Q861 50 861 52 L861 66 Q861 68 859 68 L841 68 Q839 68 839 66 Z" fill="white"/>
+
+<!-- Trash: gray with can -->
+<rect x="878" y="42" width="36" height="36" rx="8" fill="#8E8E93"/>
+<rect x="888" y="50" width="16" height="3" rx="1" fill="white"/>
+<rect x="891" y="53" width="10" height="2" fill="white"/>
+<rect x="893" y="55" width="2" height="14" fill="white"/>
+<rect x="897" y="55" width="2" height="14" fill="white"/>
+<rect x="901" y="55" width="2" height="14" fill="white"/>
+</svg>
