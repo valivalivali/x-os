@@ -337,6 +337,11 @@ int lstat(const char *file, struct stat *st) { return _stat(file, st); }
 int unlink(const char *name) { return _unlink(name); }
 int fork(void) { return _fork(); }
 int execve(const char *name, char *const argv[], char *const env[]) { return _execve(name, argv, env); }
+int execv(const char *path, char *const argv[]) { return _execve(path, argv, NULL); }
+int rename(const char *oldp, const char *newp) {
+    (void)oldp; (void)newp;
+    return -1;
+}
 pid_t wait(int *status) { return _wait(status); }
 int kill(int pid, int sig) { return _kill(pid, sig); }
 pid_t getpid(void) { return _getpid(); }
