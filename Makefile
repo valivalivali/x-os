@@ -100,8 +100,8 @@ CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
 MENU_ELF       := $(BUILD_DIR)/userspace/services/menu/menu.elf
 MENU_BLOB_C    := kernel/proc/menu_elf_blob.c
 MENU_BLOB_O    := $(OBJ_DIR)/kernel/proc/menu_elf_blob.o
-MENU_SVG_H     := $(BUILD_DIR)/userspace/services/menu/menu_svg.h
-SUBMENU_SVG_H  := $(BUILD_DIR)/userspace/services/menu/submenu_svg.h
+# Menu is now built with Rust + egui (no SVG)
+MENU_RUST_LIB  := $(BUILD_DIR)/userspace/services/menu/libxos_context_menu.a
 
 # Add generated blob objects explicitly to kernel link
 OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O)
@@ -393,31 +393,28 @@ $(THORVG_A): scripts/build_thorvg.sh $(wildcard $(THORVG_DIR)/src/**/*.cpp) $(wi
 	@mkdir -p $(BUILD_DIR)/thorvg
 	bash scripts/build_thorvg.sh
 
-# ---- context menu service (ThorVG-based) -----------------------------------
+# ---- context menu service (Rust + egui) -----------------------------------
 menu: $(MENU_ELF)
 
-$(MENU_SVG_H): userspace/services/menu/Menu.svg scripts/svg_to_header_named.py
+# Build the Rust staticlib for the context menu
+$(MENU_RUST_LIB): userspace/services/menu/Cargo.toml userspace/services/menu/src/lib.rs userspace/services/menu/src/runtime.rs
 	@mkdir -p $(dir $@)
-	python3 scripts/svg_to_header_named.py userspace/services/menu/Menu.svg $(MENU_SVG_H) menu_svg_data MENU_SVG_DATA_H
-	@echo ">> generated $@"
+	cd userspace/services/menu && cargo build --release --target x86_64-unknown-none
+	cp userspace/services/menu/target/x86_64-unknown-none/release/libxos_context_menu.a $@
+	@echo ">> built $@"
 
-$(SUBMENU_SVG_H): userspace/services/menu/Submenu.svg scripts/svg_to_header_named.py
-	@mkdir -p $(dir $@)
-	python3 scripts/svg_to_header_named.py userspace/services/menu/Submenu.svg $(SUBMENU_SVG_H) submenu_svg_data SUBMENU_SVG_DATA_H
-	@echo ">> generated $@"
-
-$(MENU_ELF): userspace/services/menu/start.S userspace/services/menu/main.c $(MENU_SVG_H) $(SUBMENU_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
+$(MENU_ELF): userspace/services/menu/shim.c userspace/services/menu/start.S $(MENU_RUST_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menu/start.S -o $(BUILD_DIR)/userspace/services/menu/start.o
-	$(CC) $(LIBC_CFLAGS) -msse -msse2 -I$(BUILD_DIR)/userspace/services/menu -Iuserspace/lib/thorvg -Iuserspace/lib/wm -c userspace/services/menu/main.c -o $(BUILD_DIR)/userspace/services/menu/main.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -c userspace/services/menu/shim.c -o $(BUILD_DIR)/userspace/services/menu/shim.o
 	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menu/menu.ld \
 	  $(BUILD_DIR)/userspace/services/menu/start.o \
-	  $(BUILD_DIR)/userspace/services/menu/main.o \
+	  $(BUILD_DIR)/userspace/services/menu/shim.o \
 	  $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o \
 	  $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o \
-	  $(THORVG_A) $(LIBCXX_A) $(NEWLIB_LIBS) \
+	  $(MENU_RUST_LIB) $(NEWLIB_LIBS) \
 	  -o $@
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"

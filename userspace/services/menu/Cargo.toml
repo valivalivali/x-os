@@ -1,0 +1,13 @@
+[package]
+name = "xos-context-menu"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+egui = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/egui" }
+epaint = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/epaint" }
+emath = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/emath" }
+ecolor = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/ecolor" }

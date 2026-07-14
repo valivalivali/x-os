@@ -68,18 +68,21 @@ Tested on macOS with Apple Silicon. You need:
   brew install qemu
   ```
 
-  Option B — build latest from source into `/opt/qemu-head`:
+  Option B — build QEMU v11 from source with virgl/ANGLE GPU rendering (recommended for GPU acceleration on Apple Silicon):
   ```
-  git clone https://gitlab.com/qemu-project/qemu.git
-  cd qemu
-  mkdir build && cd build
-  ../configure --prefix=/opt/qemu-head --target-list=x86_64-softmmu \
-    --enable-virtiofsd --enable-spice --enable-cocoa
-  make -j$(sysctl -n hw.ncpu)
-  sudo make install
+  # Install the startergo tap for virgl/ANGLE dependencies
+  brew tap startergo/homebrew-qemu-virgl
+  brew trust startergo/qemu-virgl
+  brew install libangle libepoxy-angle virglrenderer spice-protocol spice-server \
+    meson ninja glib pixman pkg-config dtc vde libssh
+
+  # Build QEMU v11.0.2 with Cocoa + virgl + OpenGL ES
+  bash tools/build-qemu-virgl.sh
   ```
 
-  The Makefile checks `/opt/qemu-head` first, then the Homebrew prefix, then falls back to `qemu-system-x86_64` in your PATH.
+  This builds QEMU v11.0.2 with `virtio-gpu-gl-pci` support, Cocoa display, and OpenGL ES rendering via ANGLE/virglrenderer. The script handles patching, building, installing to `/opt/qemu-head`, fixing dylib paths, and code-signing with HVF entitlements.
+
+  The Makefile checks `/opt/qemu-head` first, then the Homebrew `qemu-virgl` prefix, then the Homebrew `qemu` prefix, then falls back to `qemu-system-x86_64` in your PATH.
 
 ## Build
 

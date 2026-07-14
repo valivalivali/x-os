@@ -72,6 +72,85 @@ else
     echo "  Patch already applied, skipping."
 fi
 
+# Step 2b: Fix patch incompatibilities with QEMU v11 API changes
+echo "=== Fixing patch incompatibilities with QEMU v11 ==="
+
+# Fix 1: egl-helpers.c — patch merged qemu_egl_init_dpy_platform into
+# qemu_egl_get_display incorrectly. Restore qemu_egl_get_display to just
+# return the EGLDisplay, and add qemu_egl_init_dpy_platform as a wrapper.
+EGL_HELPERS="${BUILD_DIR}/qemu/ui/egl-helpers.c"
+if grep -q 'return qemu_egl_init_dpy(dpy, mode);' "${EGL_HELPERS}" 2>/dev/null; then
+    python3 -c "
+import re
+with open('${EGL_HELPERS}', 'r') as f:
+    c = f.read()
+old = '''    if (dpy == EGL_NO_DISPLAY) {
+        error_report(\"egl: eglGetDisplay failed\");
+        return -1;
+    }
+
+    return qemu_egl_init_dpy(dpy, mode);
+}
+
+#endif
+
+#if defined(CONFIG_X11) || defined(CONFIG_GBM)
+int qemu_egl_init_dpy_x11(EGLNativeDisplayType dpy, DisplayGLMode mode)'''
+new = '''    if (dpy == EGL_NO_DISPLAY) {
+        error_report(\"egl: eglGetDisplay failed\");
+        return EGL_NO_DISPLAY;
+    }
+
+    return dpy;
+}
+
+#endif
+
+#if defined(CONFIG_X11) || defined(CONFIG_GBM)
+static int qemu_egl_init_dpy_platform(EGLNativeDisplayType dpy,
+                                       EGLenum platform,
+                                       DisplayGLMode mode)
+{
+    EGLDisplay edpy = qemu_egl_get_display(dpy, platform);
+    if (edpy == EGL_NO_DISPLAY) {
+        return -1;
+    }
+    return qemu_egl_init_dpy(edpy, mode);
+}
+
+int qemu_egl_init_dpy_x11(EGLNativeDisplayType dpy, DisplayGLMode mode)'''
+c = c.replace(old, new)
+with open('${EGL_HELPERS}', 'w') as f:
+    f.write(c)
+print('  Fixed qemu_egl_get_display / qemu_egl_init_dpy_platform')
+"
+fi
+
+# Fix 2: egl-helpers.c — cast EGLNativeDisplayType (int on macOS) to void*
+# for eglGetPlatformDisplayEXT
+if grep -q 'eglGetPlatformDisplayEXT(platform, native, NULL)' "${EGL_HELPERS}" 2>/dev/null; then
+    sed -i '' 's/eglGetPlatformDisplayEXT(platform, native, NULL)/eglGetPlatformDisplayEXT(platform, (void *)(intptr_t)native, NULL)/' "${EGL_HELPERS}"
+    echo "  Fixed EGLNativeDisplayType cast for eglGetPlatformDisplayEXT"
+fi
+
+# Fix 3: egl-helpers.h — add missing declarations for Cocoa EGL functions
+EGL_HELPERS_H="${BUILD_DIR}/qemu/include/ui/egl-helpers.h"
+if ! grep -q 'qemu_egl_init_dpy_cocoa' "${EGL_HELPERS_H}" 2>/dev/null; then
+    sed -i '' '/^#endif \/\* EGL_HELPERS_H \*\//i\
+\
+EGLSurface qemu_egl_init_surface(EGLContext ectx, EGLNativeWindowType win);\
+int qemu_egl_init_dpy_cocoa(DisplayGLMode mode);\
+' "${EGL_HELPERS_H}"
+    echo "  Added missing EGL helper declarations to header"
+fi
+
+# Fix 4: cocoa.m — qemu_egl_create_context now takes 3 args (added share_context)
+COCOA_M="${BUILD_DIR}/qemu/ui/cocoa.m"
+if grep -q 'qemu_egl_create_context(dgc, params);' "${COCOA_M}" 2>/dev/null; then
+    sed -i '' 's/qemu_egl_create_context(dgc, params);/qemu_egl_create_context(dgc, params, EGL_NO_CONTEXT);/' "${COCOA_M}"
+    echo "  Fixed qemu_egl_create_context call signature (3 args)"
+fi
+
 # Step 3: Set up Python venv (QEMU needs tomli for configure)
 echo "=== Setting up Python venv ==="
 PYTHON3="$(which python3)"
