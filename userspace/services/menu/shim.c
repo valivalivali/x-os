@@ -48,8 +48,8 @@ static uint32_t g_surf_h = 0;
 static int g_surface_active = 0;
 
 /* Menu dimensions — will be set dynamically */
-static int g_menu_w = 200;
-static int g_menu_h = 240;
+static int g_menu_w = 450;
+static int g_menu_h = 400;
 
 /* Rust context menu state */
 static void *g_menu_state = NULL;
@@ -241,6 +241,42 @@ static void handle_mouse_event(wm_mouse_event_msg_t *mev) {
     }
 }
 
+/* Process only the last mouse event from a batch, skipping intermediate moves.
+ * This prevents the menu service from blocking the compositor with redundant renders. */
+static void drain_and_process_mouse_events(void) {
+    ipc_msg_t msg;
+    wm_mouse_event_msg_t last_mev;
+    int have_mev = 0;
+    int have_click = 0;
+
+    while (sys_port_recv(g_surf_port, &msg, 0)) {
+        if (msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
+            wm_mouse_event_msg_t *mev = (wm_mouse_event_msg_t *)msg.payload;
+            if (mev->type == WM_MOUSE_EVENT) {
+                /* Always process clicks immediately, batch moves */
+                if (mev->action != 0) {
+                    /* Click/release — process this one and any preceding */
+                    if (have_mev) {
+                        handle_mouse_event(&last_mev);
+                        have_mev = 0;
+                    }
+                    handle_mouse_event(mev);
+                    have_click = 1;
+                } else {
+                    /* Move — just remember the latest position */
+                    last_mev = *mev;
+                    have_mev = 1;
+                }
+            }
+        }
+    }
+
+    /* Process the last buffered move event */
+    if (!have_click && have_mev) {
+        handle_mouse_event(&last_mev);
+    }
+}
+
 /* ---- Main ---------------------------------------------------------------- */
 
 void menu_main(void) {
@@ -269,7 +305,8 @@ void menu_main(void) {
         ipc_msg_t msg;
         int just_showed = 0;
 
-        if (sys_port_recv(g_ns_port, &msg, 0)) {
+        /* Drain all namespace port messages (right-click triggers, dismissals) */
+        while (sys_port_recv(g_ns_port, &msg, 0)) {
             if (msg.payload_len == 0) {
                 if (g_surface_active) {
                     hide_menu();
@@ -291,16 +328,13 @@ void menu_main(void) {
                 while (sys_port_recv(g_ns_port, &msg, 0)) {
                     /* discard */
                 }
+                break;
             }
         }
 
-        if (!just_showed && g_surf_port && sys_port_recv(g_surf_port, &msg, 0)) {
-            if (msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
-                wm_mouse_event_msg_t *mev = (wm_mouse_event_msg_t *)msg.payload;
-                if (mev->type == WM_MOUSE_EVENT) {
-                    handle_mouse_event(mev);
-                }
-            }
+        /* Drain all surface port messages (mouse events) — batched */
+        if (!just_showed && g_surf_port) {
+            drain_and_process_mouse_events();
         }
 
         syscall0(SYS_YIELD);

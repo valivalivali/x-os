@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "constify"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -114,6 +123,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_software_backend"
+version = "0.0.3"
+dependencies = [
+ "ahash",
+ "constify",
+ "egui",
+ "hashbrown",
+ "strength_reduce",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -134,6 +154,7 @@ dependencies = [
  "color",
  "ecolor",
  "emath",
+ "epaint_default_fonts",
  "fearless_simd 0.2.0",
  "fearless_simd 0.3.0",
  "font-types 0.11.3",
@@ -151,6 +172,10 @@ dependencies = [
  "unicode-general-category",
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "epaint_default_fonts"
+version = "0.35.0"
 
 [[package]]
 name = "euclid"
@@ -358,6 +383,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
+name = "strength_reduce"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
+
+[[package]]
 name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -404,6 +435,7 @@ version = "0.1.0"
 dependencies = [
  "ecolor",
  "egui",
+ "egui_software_backend",
  "emath",
  "epaint",
 ]

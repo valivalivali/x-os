@@ -9,6 +9,7 @@ disk.img
 
 # fetched third-party
 boot/uefi/limine/
+third_party/llvm-project-libcxx/
 
 # os cruft
 .DS_Store

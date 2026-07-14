@@ -112,8 +112,13 @@ NEWLIB_CFLAGS  := -I$(NEWLIB_PREFIX)/include
 NEWLIB_LIBS    := $(NEWLIB_PREFIX)/lib/libc.a $(NEWLIB_PREFIX)/lib/libm.a
 
 # ---- libc++ static library ------------------------------------------------
-LIBCXX_CONFIG := userspace/lib/libcxx_config
-LIBCXX_SRC    := /tmp/llvm-project-llvmorg-22.1.8/libcxx/src
+LIBCXX_CONFIG     := userspace/lib/libcxx_config
+# Vendored persistently under third_party/ (NOT /tmp) so the source survives
+# reboots/`/tmp` cleanup. Fetched on demand by the $(LIBCXX_SRC_MARKER) rule.
+LIBCXX_TAG        := llvmorg-22.1.8
+LIBCXX_VENDOR_DIR := third_party/llvm-project-libcxx
+LIBCXX_SRC        := $(LIBCXX_VENDOR_DIR)/libcxx/src
+LIBCXX_SRC_MARKER := $(LIBCXX_VENDOR_DIR)/.fetched
 LLVM_CXX      := /opt/homebrew/opt/llvm/bin/clang++
 LLVM_AR       := /opt/homebrew/opt/llvm/bin/llvm-ar
 
@@ -153,7 +158,7 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
-.PHONY: all run run-uefi clean distclean setup limine cmds thorvg
+.PHONY: all run run-uefi clean distclean setup limine cmds thorvg libcxx-src
 
 all: $(ISO)
 
@@ -378,12 +383,27 @@ $(CMDS_BLOB_O): $(CMDS_BLOB_C)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- libc++ static library ------------------------------------------------
+# Fetch just the libcxx/ subtree of llvm-project at LIBCXX_TAG via a sparse,
+# blobless, depth-1 clone (avoids pulling the ~1GB+ monorepo). Vendored under
+# third_party/ instead of /tmp so it survives reboots.
+libcxx-src: $(LIBCXX_SRC_MARKER)
+$(LIBCXX_SRC_MARKER):
+	@echo ">> fetching llvm-project libcxx source ($(LIBCXX_TAG))"
+	rm -rf $(LIBCXX_VENDOR_DIR)
+	git clone --depth=1 --filter=blob:none --sparse --branch=$(LIBCXX_TAG) \
+	  https://github.com/llvm/llvm-project.git $(LIBCXX_VENDOR_DIR)
+	cd $(LIBCXX_VENDOR_DIR) && git sparse-checkout set libcxx
+	touch $@
+	@echo ">> fetched $(LIBCXX_VENDOR_DIR)"
+
 $(BUILD_DIR)/libcxx/%.o: $(LIBCXX_SRC)/%.cpp
 	@mkdir -p $(dir $@)
 	$(LLVM_CXX) $(LIBCXX_CXXFLAGS) -c $< -o $@
 
-$(LIBCXX_A): $(LIBCXX_OBJS)
-	$(LLVM_AR) rcs $@ $^
+# $(LIBCXX_SRC_MARKER) is listed first so the source is fetched (and its
+# .cpp files exist on disk) before make tries to apply the pattern rule above.
+$(LIBCXX_A): $(LIBCXX_SRC_MARKER) $(LIBCXX_OBJS)
+	$(LLVM_AR) rcs $@ $(LIBCXX_OBJS)
 	@echo ">> built $@"
 
 # ---- ThorVG static library -------------------------------------------------
@@ -474,7 +494,7 @@ $(DISK_IMG):
 	@dd if=/dev/zero of=$@ bs=1M count=4 status=none
 
 # ---- one-time setup ------------------------------------------------------
-setup: limine
+setup: limine libcxx-src
 
 limine: $(LIMINE)
 $(LIMINE):
@@ -488,6 +508,6 @@ clean:
 	rm -rf $(BUILD_DIR) $(ISO)
 
 distclean: clean
-	rm -rf $(LIMINE_DIR)
+	rm -rf $(LIMINE_DIR) $(LIBCXX_VENDOR_DIR)
 
 -include $(DEPS)
