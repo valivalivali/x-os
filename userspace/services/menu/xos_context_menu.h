@@ -17,6 +17,9 @@ void xos_context_menu_destroy(void *state);
 /* Feed a mouse event to the context menu. */
 void xos_context_menu_mouse_event(void *state, int32_t x, int32_t y, uint32_t button, uint32_t action);
 
+/* Trigger the context menu to open at position (0,0) relative to surface. */
+void xos_context_menu_trigger(void *state);
+
 /* Run one frame. Returns 1 if an item was clicked, 0 otherwise. */
 uint32_t xos_context_menu_run_frame(void *state, uint32_t *pixels, uint32_t width, uint32_t height);
 

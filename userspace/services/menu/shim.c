@@ -201,6 +201,13 @@ static void show_menu(int32_t x, int32_t y) {
         return;
     }
 
+    /* Trigger the egui context menu to open */
+    xos_context_menu_trigger(g_menu_state);
+
+    /* Run first frame to render the menu */
+    xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
+    send_dirty(0, 0, g_surf_w, g_surf_h);
+
     log("[menu] menu surface created\n");
 }
 
@@ -214,20 +221,23 @@ static void handle_mouse_event(wm_mouse_event_msg_t *mev) {
 
     xos_context_menu_mouse_event(g_menu_state, mev->x, mev->y, mev->button, mev->action);
 
-    if (mev->action == 1 && mev->button == 1) {
-        uint32_t clicked = xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
-        if (clicked) {
-            uint32_t action = xos_context_menu_get_action(g_menu_state);
-            log_int("[menu] action: ", (int)action, "\n");
-            hide_menu();
-            return;
-        }
+    /* Run a frame with the mouse event */
+    uint32_t clicked = xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
+    send_dirty(0, 0, g_surf_w, g_surf_h);
+
+    if (clicked) {
+        uint32_t action = xos_context_menu_get_action(g_menu_state);
+        log_int("[menu] action: ", (int)action, "\n");
         hide_menu();
         return;
     }
 
-    if (mev->action == 0) {
-        xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
+    /* If left-click outside menu, close it */
+    if (mev->action == 1 && mev->button == 1) {
+        uint32_t is_open = xos_context_menu_is_open(g_menu_state);
+        if (!is_open) {
+            hide_menu();
+        }
     }
 }
 
@@ -257,6 +267,7 @@ void menu_main(void) {
 
     for (;;) {
         ipc_msg_t msg;
+        int just_showed = 0;
 
         if (sys_port_recv(g_ns_port, &msg, 0)) {
             if (msg.payload_len == 0) {
@@ -274,10 +285,16 @@ void menu_main(void) {
                     hide_menu();
                 }
                 show_menu(click_x, click_y);
+                just_showed = 1;
+
+                /* Drain any stale dismiss messages that might be queued */
+                while (sys_port_recv(g_ns_port, &msg, 0)) {
+                    /* discard */
+                }
             }
         }
 
-        if (g_surf_port && sys_port_recv(g_surf_port, &msg, 0)) {
+        if (!just_showed && g_surf_port && sys_port_recv(g_surf_port, &msg, 0)) {
             if (msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
                 wm_mouse_event_msg_t *mev = (wm_mouse_event_msg_t *)msg.payload;
                 if (mev->type == WM_MOUSE_EVENT) {
