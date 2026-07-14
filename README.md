@@ -2,9 +2,9 @@
 
 A clean-slate x86_64 microkernel operating system built from scratch. No POSIX baggage, no legacy Unix assumptions. The kernel stays minimal: scheduling, memory management, IPC ports, and hardware abstraction. Everything else (display server, filesystem, shell) lives in ring-3 userspace and communicates over message passing.
 
-![X OS Desktop](docs/screenshots/desktop-thorvg.jpg)
+![X OS Desktop](docs/screenshots/desktop-egui.png)
 
-*X OS running in QEMU with GPU-accelerated rendering — menu bar, dock with app icons, right-click context menu, and compositor surfaces at 2560×1600. SVG rendering powered by ThorVG.*
+*X OS running in QEMU with GPU-accelerated rendering — menu bar, dock with app icons, right-click context menu with egui, and compositor surfaces at 2560×1600. UI powered by egui with custom no_std CPU rasterizer.*
 
 ## What It Is
 

@@ -408,34 +408,17 @@ static void blit_surface_clipped(const surface_info_t *s,
  * higher array index is on top (most recently raised).
  * For decorated windows: draw decoration first, then blit content
  * offset by WM_TITLE_BAR_H below the window origin. */
-/* Desktop gradient: bright blue at top → vibrant purple at bottom.
- * Base color is computed per-row (vertical gradient), diagonal highlight
- * is added inline during fill for zero function-call overhead. */
+/* Desktop background: solid deep ocean blue (#0A2540). */
 
 static uint32_t desktop_bg_base(int y) {
-    /* Top color:    #2B4A8A (bright blue)    */
-    /* Bottom color: #4A2070 (vibrant purple)  */
-    uint32_t tr = 0x2B, tg = 0x4A, tb = 0x8A;
-    uint32_t br = 0x4A, bg_ = 0x20, bb = 0x70;
-    uint32_t t = (fb_h > 0) ? ((uint32_t)y * 255 / (uint32_t)fb_h) : 0;
-    uint32_t it = 255 - t;
-    uint32_t r = (tr * it + br * t) / 255;
-    uint32_t g = (tg * it + bg_ * t) / 255;
-    uint32_t b = (tb * it + bb * t) / 255;
-    return (r << 16) | (g << 8) | b;  /* alpha=0, will be OR'd with 0xFF000000 */
+    (void)y;
+    /* Solid color: #2A6BAD (lighter ocean blue) */
+    return (0x2A << 16) | (0x6B << 8) | 0xAD;  /* alpha=0, will be OR'd with 0xFF000000 */
 }
 
 static inline uint32_t desktop_bg_color(int x, int y) {
-    uint32_t base = desktop_bg_base(y);
-    uint32_t r = (base >> 16) & 0xFF;
-    uint32_t g = (base >> 8) & 0xFF;
-    uint32_t b = base & 0xFF;
-    uint32_t diag = ((uint32_t)x + (uint32_t)y) / 120;
-    if (diag > 8) diag = 8;
-    r += diag; g += diag;
-    if (r > 255) r = 255;
-    if (g > 255) g = 255;
-    return 0xFF000000 | (r << 16) | (g << 8) | b;
+    (void)x;
+    return 0xFF000000 | desktop_bg_base(y);
 }
 
 static void draw_region(int x0, int y0, int x1, int y1) {
@@ -443,23 +426,13 @@ static void draw_region(int x0, int y0, int x1, int y1) {
     if (x1 > fb_w) x1 = fb_w; if (y1 > fb_h) y1 = fb_h;
     if (x0 >= x1 || y0 >= y1) return;
 
-    /* First: clear the region to desktop gradient.
-     * Optimized: compute base color per row, add diagonal highlight
-     * in a tight loop without function call overhead. */
+    /* First: clear the region to solid desktop color. */
     int rw = x1 - x0;
     for (int py = y0; py < y1; py++) {
         uint32_t *dst = &backing[py * stride + x0];
-        uint32_t base = desktop_bg_base(py);
-        uint32_t r0 = (base >> 16) & 0xFF;
-        uint32_t g0 = (base >> 8) & 0xFF;
-        uint32_t b0 = base & 0xFF;
+        uint32_t color = 0xFF000000 | desktop_bg_base(py);
         for (int i = 0; i < rw; i++) {
-            int px = x0 + i;
-            uint32_t diag = ((uint32_t)px + (uint32_t)py) / 120;
-            if (diag > 8) diag = 8;
-            uint32_t r = r0 + diag; if (r > 255) r = 255;
-            uint32_t g = g0 + diag; if (g > 255) g = 255;
-            dst[i] = 0xFF000000 | (r << 16) | (g << 8) | b0;
+            dst[i] = color;
         }
     }
 
