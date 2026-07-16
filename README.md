@@ -2,7 +2,7 @@
 
 **A forward-looking operating system built from scratch for the AI era.**
 
-Not Linux. Not FreeBSD. Not Windows. Not macOS. These operating systems were designed decades ago for a world of human-only users, carrying layers of backwards compatibility that constrain what's possible. X OS is a clean-slate microkernel that asks a different question: *what would an OS look like if it were designed today — for intelligent agents and human users alike?*
+X OS is a clean-slate microkernel operating system designed for a world where intelligent agents and human users work together. It asks a simple question: *what would an OS look like if it were designed today — for agentic programming, programmatic interaction, and human-AI collaboration?*
 
 ![X OS Desktop](docs/screenshots/desktop-egui.png)
 
@@ -12,29 +12,27 @@ Not Linux. Not FreeBSD. Not Windows. Not macOS. These operating systems were des
 
 ## Why
 
-Every mainstream operating system is burdened by decades of legacy. POSIX, the Unix ABI, Win32 — these are anchors, not foundations. They exist to preserve compatibility with software written 30+ years ago. That debt makes it nearly impossible to rethink fundamental assumptions about how users (human or AI) interact with a computer.
+Software is changing. AI agents don't just call APIs — they read code, write code, run commands, debug, and iterate. They need an environment that is observable, scriptable, and mutable at a level that current operating systems weren't designed to provide.
 
-X OS starts from zero. The kernel provides the bare minimum — scheduling, memory, IPC, hardware drivers. Everything else is a userspace service that can be inspected, modified, or replaced without touching the kernel. No decades-old ABI to maintain. No legacy cruft. Just a clean foundation for what comes next.
+X OS starts from a different premise. The system is built so that **every service is inspectable, every component is replaceable, and every interaction is programmable** — not through tooling layered on top, but as a first-class architectural principle. The microkernel exposes IPC ports that any process (human or agent) can use to query, control, and extend the system in real time.
 
 ### Principles
 
-- **Minimal backwards compatibility** — the past is not the priority. The system is designed for what's ahead, not what came before.
-- **AI-native, not AI-bolted-on** — the architecture assumes that both humans and intelligent agents are first-class users of the OS.
-- **Everything is inspectable and mutable** — services run in ring 3, communicate over IPC, and can be modified while the system runs.
-- **Beautiful by default** — the UI is consistent, polished, and coherent. Customization is encouraged within guardrails that prevent chaos.
-- **Microkernel, not monolith** — the kernel stays tiny. Display, filesystem, networking, shell — all are userspace processes.
+- **AI-native architecture** — the OS assumes agents are first-class users. IPC, service discovery, and system introspection are designed for programmatic use from day one.
+- **Microkernel by design** — the kernel handles scheduling, memory, IPC, and hardware. Everything else — display, filesystem, networking, shell — is a userspace service that can be inspected, modified, or replaced while the system runs.
+- **Everything is observable** — services communicate over IPC ports with a nameserver for discovery. Any process can query the system state, subscribe to events, or intervene. This is not a debugging feature; it is the architecture.
+- **Clean slate** — no decades-old ABI to maintain, no legacy cruft. The system is free to make the right decision for today and for what comes next.
+- **Forward-looking** — designed for what's ahead: agentic workflows, programmatic interaction, and human-AI collaboration.
 
 ---
 
-## Vision & Evolution
+## Vision
 
-The core idea of X OS is fixed: **a forward-looking operating system built for the AI era, designed for agentic workflows and intelligent users.** That will not change.
+The core idea is fixed: **a forward-looking operating system built for the AI era, designed for agentic workflows and intelligent users.** That will not change.
 
-How we get there — the architecture, the UI, the technologies we choose, what we prioritize — will absolutely change. As contributors and great minds join the project, the system will evolve in ways no single person can predict. Design decisions made today may be revised tomorrow. Components may be rewritten, replaced, or removed. That's not a risk; that's the point. A system built for the future must be willing to change.
+Everything else is open. The architecture, the UI, the technologies, the priorities — all will evolve as the project grows and as the landscape of AI-native computing takes shape. Design decisions made today may be revised tomorrow. Components may be rewritten, replaced, or removed. That's not a risk; that's the point.
 
-What stays constant is the rejection of legacy-for-its-own-sake. We are not maintaining compatibility with the past. We are building for what's next.
-
-The desktop environment aims to feel familiar — a menu bar, a dock, windows, a cursor. We lean into known desktop conventions because they work and users already understand them. That said, this is not a commitment. If we discover something fundamentally better, we will explore it. The goal is not to copy any existing OS, but to provide an interface that is intuitive today and open to reinvention tomorrow.
+The desktop environment aims to feel familiar — a menu bar, a dock, windows, a cursor. We lean into known conventions because they work and users already understand them. But this is not a commitment. If we discover something fundamentally better, we will explore it. The goal is to build an interface that is intuitive today and open to reinvention tomorrow.
 
 ---
 
