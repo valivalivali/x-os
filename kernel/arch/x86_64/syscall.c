@@ -487,15 +487,25 @@ static uint64_t sys_gpu_transfer_3d_impl(uint64_t resource_id, uint64_t x,
                                          uint64_t y, uint64_t z, uint64_t w,
                                          uint64_t h, uint64_t a6) {
     (void)a6;
-    /* Compute stride for tightly-packed RGBA8 data (4 bytes/pixel).
-     * virglrenderer needs the row stride to read the attached backing memory. */
-    uint32_t stride = (uint32_t)w * 4;
-    uint32_t layer_stride = (uint32_t)w * (uint32_t)h * 4;
+    /* Stride must be the RESOURCE row pitch, not the transfer-box width.
+     * Guest backing is a full linear image; sub-rect transfers start at
+     * offset = y*stride + x*4. Using w*4 as stride scrambled partial uploads. */
+    uint32_t res_w = (uint32_t)w;
+    uint32_t res_h = (uint32_t)h;
+    (void)virtio_gpu_res_dims((uint32_t)resource_id, &res_w, &res_h);
+    if (res_w == 0) res_w = (uint32_t)w;
+    if (res_h == 0) res_h = (uint32_t)h;
+
+    uint32_t stride = res_w * 4;
+    uint32_t layer_stride = stride * res_h;
+    uint64_t offset = (uint64_t)y * (uint64_t)stride + (uint64_t)x * 4;
     return virtio_gpu_transfer_to_host_3d_for((uint32_t)resource_id,
                                               (uint32_t)x, (uint32_t)y,
                                               (uint32_t)z, (uint32_t)w,
                                               (uint32_t)h, 1,
-                                              0, 0, stride, layer_stride) ? 0 : (uint64_t)-1;
+                                              offset, 0, stride, layer_stride)
+               ? 0
+               : (uint64_t)-1;
 }
 
 static uint64_t sys_open_impl(uint64_t path, uint64_t flags,

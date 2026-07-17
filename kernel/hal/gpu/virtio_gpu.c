@@ -18,6 +18,44 @@ static int g_initialized = 0;
 static int g_virgl = 0;
 static uint32_t g_next_resource_id = 100;  /* start high to avoid scanout/cursor ids */
 
+/* Track 3D resource dimensions so TRANSFER_TO_HOST can use the real row
+ * stride (resource width), not the transfer-box width. Wrong stride on
+ * sub-rects scrambled the desktop under the context menu. */
+#define GPU_RES_DIMS_MAX 64
+static struct {
+    uint32_t id;
+    uint32_t width;
+    uint32_t height;
+} g_res_dims[GPU_RES_DIMS_MAX];
+static uint32_t g_res_dims_n;
+
+static void gpu_track_res_dims(uint32_t id, uint32_t width, uint32_t height) {
+    for (uint32_t i = 0; i < g_res_dims_n; i++) {
+        if (g_res_dims[i].id == id) {
+            g_res_dims[i].width = width;
+            g_res_dims[i].height = height;
+            return;
+        }
+    }
+    if (g_res_dims_n < GPU_RES_DIMS_MAX) {
+        g_res_dims[g_res_dims_n].id = id;
+        g_res_dims[g_res_dims_n].width = width;
+        g_res_dims[g_res_dims_n].height = height;
+        g_res_dims_n++;
+    }
+}
+
+bool virtio_gpu_res_dims(uint32_t resource_id, uint32_t *width, uint32_t *height) {
+    for (uint32_t i = 0; i < g_res_dims_n; i++) {
+        if (g_res_dims[i].id == resource_id) {
+            if (width) *width = g_res_dims[i].width;
+            if (height) *height = g_res_dims[i].height;
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t g_cursor_resource_id = 2;
 static uint64_t g_cursor_phys = 0;
 static uint32_t g_cursor_w = 64;
@@ -411,6 +449,8 @@ bool virtio_gpu_resource_create_3d_for(uint32_t resource_id, uint32_t target,
     bool ok3d = gpu_send_recv(&create, sizeof(create), &resp, sizeof(resp));
     kprintf("[virtio-gpu] res_create_3d(id=%u target=%u %ux%u bind=%u) %s resp=0x%x\n",
             resource_id, target, width, height, bind, ok3d ? "OK" : "FAIL", resp.type);
+    if (ok3d)
+        gpu_track_res_dims(resource_id, width, height);
     return ok3d;
 }
 

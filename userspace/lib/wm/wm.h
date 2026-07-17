@@ -33,6 +33,7 @@
 #define WM_WINDOW_CLOSE     18   /* composer -> app: user clicked close   */
 #define WM_SET_TITLE        19   /* app -> composer: update title         */
 #define WM_KEY_EVENT        20   /* composer -> app: keyboard event       */
+#define WM_SURFACE_GPU_READY 21  /* app -> composer: GPU resource ready   */
 
 /* ---- Window flags ----------------------------------------------------- */
 
@@ -42,6 +43,7 @@
 #define WM_FLAG_CLOSABLE   0x08   /* window has close button              */
 #define WM_FLAG_MINIMIZABLE 0x10  /* window has minimize button           */
 #define WM_FLAG_NORMAL     0x00   /* standard decorated window            */
+#define WM_FLAG_GPU       0x20   /* GPU-backed surface (app renders on GPU) */
 
 /* Default flags for a normal window */
 #define WM_FLAG_DEFAULT    (WM_FLAG_RESIZABLE | WM_FLAG_CLOSABLE | WM_FLAG_MINIMIZABLE)
@@ -85,7 +87,24 @@ typedef struct {
     uint32_t type;          /* WM_SURFACE_DIRTY */
     uint32_t surface_idx;
     uint32_t x, y, w, h;    /* dirty rect; 0,0,0,0 = full surface */
+    /* Optional: set WM_DIRTY_RESTORE_DESKTOP when OVERLAY topology changed
+     * (submenu open/close) so composer re-transfers DESKTOP under the rect.
+     * Hover-only updates omit this and skip the desktop transfer. */
+    uint32_t flags;
 } wm_dirty_msg_t;
+
+#define WM_DIRTY_RESTORE_DESKTOP  0x1u
+
+/* App -> Composer: GPU render target is ready
+ * Sent after the app has created its virgl context and render target
+ * resource. The compositor attaches this resource to its own context
+ * and creates a sampler view to composite it. */
+typedef struct {
+    uint32_t type;          /* WM_SURFACE_GPU_READY */
+    uint32_t surface_idx;
+    uint32_t gpu_res_id;    /* virtio-gpu resource ID of the render target */
+    uint32_t gpu_ctx_id;    /* virgl context ID the resource belongs to */
+} wm_surface_gpu_ready_msg_t;
 
 /* App -> Composer: destroy surface */
 typedef struct {

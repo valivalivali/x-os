@@ -72,13 +72,20 @@ static uint32_t cursor_stage[CURSOR_W];
 #define SURF_W  2560
 #define SURF_H  1600
 
-/* Z-levels: higher number = rendered on top, hit-tested first.
- * 1 = desktop bg (implicit), 2 = windows, 3 = panels/dock/menu,
- * 4 = tooltips/menus/cursor. */
-#define SURF_LEVEL_DESKTOP  0  /* background (not a surface) */
-#define SURF_LEVEL_NORMAL   1  /* windows */
-#define SURF_LEVEL_PANEL    2  /* dock, menu bar, panels */
-#define SURF_LEVEL_OVERLAY  3  /* tooltips, menus */
+/* Layer stack (bottom → top). Higher = on top / hit-tested first.
+ *
+ *   L1 DESKTOP  — wallpaper / icons (CPU backing, cached in scanout)
+ *   L2 NORMAL   — unfocused app windows
+ *   L3 PANEL    — dock, menu bar, focused chrome
+ *   L3 OVERLAY  — context menus / popups (GPU quads; must not redraw L1)
+ *   L4 CURSOR   — hardware cursor (virtio-gpu), never in the FB composite
+ *
+ * Overlay updates use overlay_fast: blit menu on top of the cached L1–L3
+ * scanout. Destroy restores L1–L3 from backing for the menu rect only. */
+#define SURF_LEVEL_DESKTOP  0  /* L1 — background (not a surface) */
+#define SURF_LEVEL_NORMAL   1  /* L2 — app windows */
+#define SURF_LEVEL_PANEL    2  /* L3 — dock / menu bar */
+#define SURF_LEVEL_OVERLAY  3  /* L3 — menus / popups (above panels) */
 
 typedef struct {
     int32_t  x, y;               /* window origin (top of decoration if decorated) */
@@ -91,10 +98,16 @@ typedef struct {
     /* Dirty rect tracking (surface-local coords; 0,0,0,0 = full surface) */
     int      dirty;
     uint32_t dirty_x, dirty_y, dirty_w, dirty_h;
+    int      dirty_restore;     /* WM_DIRTY_RESTORE_DESKTOP — re-xfer DESKTOP */
     int      hidden;            /* 1 = minimized, not rendered */
     /* Window management */
     uint32_t flags;             /* WM_FLAG_* */
     char     title[32];         /* window title for decoration */
+    /* GPU-backed surface support */
+    int      is_gpu;            /* 1 = GPU-rendered surface (no shared memory) */
+    uint32_t gpu_res_id;        /* virtio-gpu resource ID of app's render target */
+    uint32_t gpu_ctx_id;        /* virgl context ID the resource belongs to */
+    uint32_t gpu_sv_handle;     /* compositor-side sampler view handle */
 } surface_info_t;
 
 static int surface_decorated(const surface_info_t *s) {
@@ -110,8 +123,31 @@ static int         surface_count = 0;
 static int         drag_idx = -1;
 static int         focused_idx = -1;
 static int         drag_off_x, drag_off_y;
-static int         ipc_new_surface = 0;
 static int         z_changed = 0;
+/* Localized damage — NEVER promote OVERLAY create/destroy to full-screen.
+ * QEMU recopies the entire scanout on every flush, so full-FB damage is
+ * extremely expensive at 2560×1600. */
+static int         damage_pending = 0;
+static int         dmg_x0, dmg_y0, dmg_x1, dmg_y1;
+static int         dmg_restore = 0; /* 1 = must re-xfer DESKTOP under damage */
+
+static void damage_add(int x0, int y0, int x1, int y1, int need_restore) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > fb_w) x1 = fb_w;
+    if (y1 > fb_h) y1 = fb_h;
+    if (x1 <= x0 || y1 <= y0) return;
+    if (!damage_pending) {
+        dmg_x0 = x0; dmg_y0 = y0; dmg_x1 = x1; dmg_y1 = y1;
+        damage_pending = 1;
+    } else {
+        if (x0 < dmg_x0) dmg_x0 = x0;
+        if (y0 < dmg_y0) dmg_y0 = y0;
+        if (x1 > dmg_x1) dmg_x1 = x1;
+        if (y1 > dmg_y1) dmg_y1 = y1;
+    }
+    if (need_restore) dmg_restore = 1;
+}
 
 static int32_t     old_sx[MAX_SURFACES];
 static int32_t     old_sy[MAX_SURFACES];
@@ -515,7 +551,12 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     sp->pixels = NULL;
     sp->dirty = 0;
     sp->dirty_x = sp->dirty_y = sp->dirty_w = sp->dirty_h = 0;
+    sp->dirty_restore = 0;
     sp->hidden = 0;
+    sp->is_gpu = (flags & WM_FLAG_GPU) ? 1 : 0;
+    sp->gpu_res_id = 0;
+    sp->gpu_ctx_id = 0;
+    sp->gpu_sv_handle = 0;
     /* Copy title */
     for (int i = 0; i < 31; i++) {
         sp->title[i] = title ? title[i] : '\0';
@@ -526,21 +567,16 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     uint64_t buf_vaddr = SHARED_SURFACE_BASE + (uint64_t)slot * SHARED_SURFACE_SLOT;
     uint32_t npages = (SURF_W * SURF_H * 4 + PAGE_SIZE - 1) / PAGE_SIZE;
     int ok = 1;
-    for (uint32_t p = 0; p < npages; p++) {
-        uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
-        if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) { ok = 0; break; }
-    }
-    if (ok) {
-        sp->pixels = (uint32_t *)buf_vaddr;
-        /* Share buffer with owning app and send ready message. */
+
+    if (sp->is_gpu) {
+        /* GPU surfaces don't need shared memory — the app renders directly
+         * to a GPU resource. We still send surface_ready so the app knows
+         * its surface index, but buf_vaddr is 0 (unused). */
+        sp->pixels = NULL;
         if (owner_pid != 0 && reply_port != 0) {
-            for (uint32_t p = 0; p < npages; p++) {
-                uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
-                sys_mem_share(va, owner_pid, va, VMM_RW | VMM_U);
-            }
             surface_ready_msg_t sr;
             sr.type = COMPOSER_SURFACE_READY;
-            sr.buf_vaddr = buf_vaddr;
+            sr.buf_vaddr = 0;  /* GPU surface: no shared buffer */
             sr.surface_idx = (uint32_t)slot;
             ipc_msg_t smsg;
             smsg.type = IPC_MSG_EVENT;
@@ -551,6 +587,34 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
             uint8_t *pd = (uint8_t *)&sr;
             for (size_t i = 0; i < sizeof(sr); i++) smsg.payload[i] = pd[i];
             sys_port_send(reply_port, &smsg);
+        }
+    } else {
+        for (uint32_t p = 0; p < npages; p++) {
+            uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
+            if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) { ok = 0; break; }
+        }
+        if (ok) {
+            sp->pixels = (uint32_t *)buf_vaddr;
+            /* Share buffer with owning app and send ready message. */
+            if (owner_pid != 0 && reply_port != 0) {
+                for (uint32_t p = 0; p < npages; p++) {
+                    uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
+                    sys_mem_share(va, owner_pid, va, VMM_RW | VMM_U);
+                }
+                surface_ready_msg_t sr;
+                sr.type = COMPOSER_SURFACE_READY;
+                sr.buf_vaddr = buf_vaddr;
+                sr.surface_idx = (uint32_t)slot;
+                ipc_msg_t smsg;
+                smsg.type = IPC_MSG_EVENT;
+                smsg.sender_pid = 0;
+                for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) smsg.caps[i] = CAP_NULL;
+                smsg.cap_count = 0;
+                smsg.payload_len = sizeof(sr);
+                uint8_t *pd = (uint8_t *)&sr;
+                for (size_t i = 0; i < sizeof(sr); i++) smsg.payload[i] = pd[i];
+                sys_port_send(reply_port, &smsg);
+            }
         }
     }
     if (sp->pixels) {
@@ -809,6 +873,19 @@ void display_main(void) {
     else
         blit_rect(0, 0, fb_w, fb_h);
 
+    /* Initialize GPU compositing context for virgl 3D surface compositing.
+     * This creates a 3D framebuffer render target and switches scanout to it.
+     * When active, the compositor uses gpu_comp_present() instead of
+     * sys_gpu_flush() to composite CPU content + GPU surfaces. */
+    if (gpu_mode) {
+        int gcomp = gpu_comp_init(fb_w, fb_h, 0, 0, backing, stride);
+        if (gcomp) {
+            log("[composer] GPU compositing initialized\n");
+        } else {
+            log("[composer] GPU compositing not available, using 2D path\n");
+        }
+    }
+
     log("[composer] ready\n");
 
     /* fs sanity check */
@@ -1038,9 +1115,40 @@ void display_main(void) {
                     }
                 }
             }
-            if (ev.type == EV_MOUSE_UP && ev.button == MOUSE_LEFT) {
-                log("[composer] mouse up (left), drag end\n");
-                drag_idx = -1;
+            if (ev.type == EV_MOUSE_UP) {
+                if (ev.button == MOUSE_LEFT) {
+                    log("[composer] mouse up (left), drag end\n");
+                    drag_idx = -1;
+                }
+                /* Forward button-up so egui can complete clicks (hovered widgets). */
+                int hit = surface_at(ev.x, ev.y);
+                int up_idx = hit;
+                if (up_idx < 0 && focused_idx >= 0 && surfaces[focused_idx].valid)
+                    up_idx = focused_idx;
+                if (up_idx >= 0 && surfaces[up_idx].reply_port) {
+                    int32_t wx = ev.x - surfaces[up_idx].x;
+                    int32_t wy = ev.y - surfaces[up_idx].y;
+                    if (surface_decorated(&surfaces[up_idx]))
+                        wy -= WM_TITLE_BAR_H;
+                    uint32_t btn = (ev.button == MOUSE_RIGHT) ? 2u : 1u;
+                    mouse_event_msg_t mev = {
+                        .type = COMPOSER_MOUSE_EVENT,
+                        .x = wx,
+                        .y = wy,
+                        .button = btn,
+                        .action = 2, /* up */
+                        .surface_idx = (uint32_t)up_idx
+                    };
+                    ipc_msg_t mmsg;
+                    mmsg.type = IPC_MSG_EVENT;
+                    mmsg.sender_pid = 0;
+                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
+                    mmsg.cap_count = 0;
+                    mmsg.payload_len = sizeof(mev);
+                    uint8_t *pd = (uint8_t *)&mev;
+                    for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
+                    sys_port_send(surfaces[up_idx].reply_port, &mmsg);
+                }
             }
             /* Forward mouse move to app for hover/resize tracking */
             if (ev.type == EV_MOUSE_MOVE) {
@@ -1085,7 +1193,9 @@ void display_main(void) {
                         spawn_surface_custom(cm->x, cm->y, cm->w, cm->h,
                                              cm->flags, cm->owner_pid,
                                              cm->reply_port, cm->title);
-                        ipc_new_surface = 1;
+                        /* Do NOT flush on CREATE. OVERLAY waits for GPU_READY;
+                         * PANEL/NORMAL wait for SURFACE_DIRTY. A full-screen
+                         * flush here was copying 2560×1600 for every panel. */
                     }
                 }
                 if (msg_type == COMPOSER_DESTROY_SURFACE) {
@@ -1093,10 +1203,23 @@ void display_main(void) {
                     if (msg.payload_len >= 8) {
                         uint32_t idx = ((uint32_t *)msg.payload)[1];
                         if (idx < (uint32_t)surface_count) {
+                            surface_info_t *ds = &surfaces[idx];
+                            int was_overlay = (ds->level == SURF_LEVEL_OVERLAY);
+                            int ex0 = ds->x, ey0 = ds->y;
+                            int ex1 = ds->x + (int)ds->w;
+                            int ey1 = ds->y + surface_total_h(ds);
                             gpu_comp_destroy_surface(idx);
-                            surfaces[idx].valid = 0;
-                            surfaces[idx].pixels = NULL;
-                            z_changed = 1;
+                            ds->valid = 0;
+                            ds->pixels = NULL;
+                            ds->is_gpu = 0;
+                            ds->gpu_res_id = 0;
+                            ds->gpu_ctx_id = 0;
+                            ds->gpu_sv_handle = 0;
+                            /* Overlay: erase only its rect (restore DESKTOP).
+                             * Other surfaces: localized damage, not full FB. */
+                            damage_add(ex0, ey0, ex1, ey1, was_overlay ? 1 : 0);
+                            if (!was_overlay)
+                                z_changed = 1; /* stacking may matter for windows */
                             log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
                         }
                     }
@@ -1177,6 +1300,11 @@ void display_main(void) {
                             surface_info_t *s = &surfaces[sd->surface_idx];
                             if (s->valid) {
                                 s->dirty = 1;
+                                /* OVERLAY may set restore when switching fly-outs
+                                 * (clear old fly-out rect from cached scanout).
+                                 * Destroy uses damage_add(..., restore=1). */
+                                if (sd->flags & WM_DIRTY_RESTORE_DESKTOP)
+                                    s->dirty_restore = 1;
                                 if (sd->w == 0 && sd->h == 0) {
                                     s->dirty_x = 0; s->dirty_y = 0;
                                     s->dirty_w = s->w; s->dirty_h = s->h;
@@ -1184,6 +1312,43 @@ void display_main(void) {
                                     s->dirty_x = sd->x; s->dirty_y = sd->y;
                                     s->dirty_w = sd->w; s->dirty_h = sd->h;
                                 }
+                            }
+                        }
+                    }
+                }
+                if (msg_type == WM_SURFACE_GPU_READY) {
+                    log("[composer] IPC: SURFACE_GPU_READY\n");
+                    if (msg.payload_len >= sizeof(wm_surface_gpu_ready_msg_t)) {
+                        wm_surface_gpu_ready_msg_t *gr =
+                            (wm_surface_gpu_ready_msg_t *)msg.payload;
+                        if (gr->surface_idx < (uint32_t)surface_count) {
+                            surface_info_t *s = &surfaces[gr->surface_idx];
+                            if (s->valid && s->is_gpu) {
+                                s->gpu_res_id = gr->gpu_res_id;
+                                s->gpu_ctx_id = gr->gpu_ctx_id;
+                                /* Attach the app's render target resource to
+                                 * the compositor's virgl context so we can
+                                 * sample from it. */
+                                sys_gpu_ctx_attach(GPU_CTX_ID, gr->gpu_res_id);
+                                /* Create a sampler view for this resource.
+                                 * Use a dynamic handle based on surface index
+                                 * to avoid collisions. */
+                                uint32_t sv_handle = 100 + gr->surface_idx;
+                                gpu_comp_create_gpu_surface_sv(
+                                    gr->surface_idx,
+                                    gr->gpu_res_id,
+                                    sv_handle);
+                                s->gpu_sv_handle = sv_handle;
+                                /* First paint: overlay_fast blit on top of the
+                                 * already-correct DESKTOP FB (no full restore). */
+                                s->dirty = 1;
+                                s->dirty_restore = 0;
+                                s->dirty_x = 0;
+                                s->dirty_y = 0;
+                                s->dirty_w = s->w;
+                                s->dirty_h = s->h;
+                                log_int("[composer]  GPU surface ready: res=",
+                                        (int32_t)gr->gpu_res_id, "\n");
                             }
                         }
                     }
@@ -1281,15 +1446,15 @@ void display_main(void) {
             surface_moved = compute_move_dirty_rect(&dirty_x0, &dirty_y0, &dirty_x1, &dirty_y1);
         }
 
-        if (first || ipc_new_surface || z_changed) {
-            /* Full screen needs redraw. */
+        if (first || z_changed) {
+            /* Boot / stacking change — full screen. */
             dirty_x0 = 0; dirty_y0 = 0;
             dirty_x1 = fb_w; dirty_y1 = fb_h;
             has_dirty = 1;
         } else if (surface_moved) {
             has_dirty = 1;
         } else {
-            /* Per-surface dirty rects. */
+            /* Per-surface dirty rects + localized create/destroy damage. */
             for (int i = 0; i < surface_count; i++) {
                 surface_info_t *s = &surfaces[i];
                 if (!s->valid || !s->dirty) continue;
@@ -1318,6 +1483,18 @@ void display_main(void) {
                 }
                 has_dirty = 1;
             }
+            if (damage_pending) {
+                if (!has_dirty) {
+                    dirty_x0 = dmg_x0; dirty_y0 = dmg_y0;
+                    dirty_x1 = dmg_x1; dirty_y1 = dmg_y1;
+                } else {
+                    if (dmg_x0 < dirty_x0) dirty_x0 = dmg_x0;
+                    if (dmg_y0 < dirty_y0) dirty_y0 = dmg_y0;
+                    if (dmg_x1 > dirty_x1) dirty_x1 = dmg_x1;
+                    if (dmg_y1 > dirty_y1) dirty_y1 = dmg_y1;
+                }
+                has_dirty = 1;
+            }
         }
 
         if (!has_dirty && !cursor_moved) {
@@ -1334,22 +1511,92 @@ void display_main(void) {
         /* Per-frame logs removed to avoid serial spam. */
         (void)cursor_moved;
 
-        /* Redraw affected region into backing, then blit to framebuffer. */
+        /* Redraw affected region into backing, then present. */
         if (has_dirty) {
             if (dirty_x0 < 0) dirty_x0 = 0;
             if (dirty_y0 < 0) dirty_y0 = 0;
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
             if (dirty_y1 > fb_h) dirty_y1 = fb_h;
 
-            draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
-            if (!gpu_mode)
-                blit_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+            /* Layered present:
+             *  overlay_only  — L3 menu dirty; keep L1/L2/L3 panels cached in
+             *                  scanout (overlay_fast, no backing redraw).
+             *  overlay_erase — menu destroyed; L1–L3 already correct in CPU
+             *                  backing (menu never painted there) — just
+             *                  re-transfer that rect, skip draw_region. */
+            int overlay_only = 0;
+            int overlay_erase = 0;
+            int overlay_l1_xfer = 0; /* fly-out switch: refresh L1 under menu rect */
+            if (!first && !z_changed && !surface_moved && !damage_pending) {
+                overlay_only = 1;
+                int any = 0;
+                for (int i = 0; i < surface_count; i++) {
+                    surface_info_t *s = &surfaces[i];
+                    if (!s->valid || !s->dirty) continue;
+                    any = 1;
+                    if (s->dirty_restore) overlay_l1_xfer = 1;
+                    if (!s->is_gpu || s->level != SURF_LEVEL_OVERLAY) {
+                        overlay_only = 0;
+                        break;
+                    }
+                }
+                if (!any) overlay_only = 0;
+            } else if (damage_pending && dmg_restore && !z_changed && !surface_moved) {
+                int other = 0;
+                for (int i = 0; i < surface_count; i++) {
+                    if (surfaces[i].valid && surfaces[i].dirty) { other = 1; break; }
+                }
+                if (!other) overlay_erase = 1;
+            }
+
+            if (!overlay_only && !overlay_erase) {
+                /* L1/L2/L3 panel change — rebuild backing then upload. */
+                draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                if (!gpu_mode)
+                    blit_rect(dirty_x0, dirty_y0,
+                              dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+            }
+            /* overlay_only / overlay_erase: backing already has correct L1–L3
+             * (menu is GPU-only). Never redraw the desktop for a menu click. */
+
+            if (gpu_comp_active()) {
+                gpu_comp_gpu_surf_t gpu_surfs[MAX_SURFACES];
+                int ngpu = 0;
+                if (!overlay_erase) {
+                    for (int i = 0; i < surface_count; i++) {
+                        surface_info_t *s = &surfaces[i];
+                        if (!s->valid || s->hidden) continue;
+                        if (!s->is_gpu || !s->gpu_sv_handle) continue;
+                        if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
+                            continue;
+                        int draw_y = s->y;
+                        if (surface_decorated(s))
+                            draw_y += WM_TITLE_BAR_H;
+                        gpu_surfs[ngpu].sv_handle = s->gpu_sv_handle;
+                        gpu_surfs[ngpu].x = s->x;
+                        gpu_surfs[ngpu].y = draw_y;
+                        gpu_surfs[ngpu].w = s->w;
+                        gpu_surfs[ngpu].h = s->h;
+                        ngpu++;
+                    }
+                }
+
+                /* Never overlay_fast for menus: alpha blit onto a prior overlay
+                 * leaves ghost fly-outs where the new texture is transparent.
+                 * Always re-xfer L1 under the dirty rect, then draw the quad. */
+                (void)overlay_l1_xfer;
+                int overlay_fast = 0;
+                gpu_comp_present(fb_w, fb_h, gpu_surfs, ngpu,
+                                 dirty_x0, dirty_y0,
+                                 dirty_x1 - dirty_x0, dirty_y1 - dirty_y0,
+                                 overlay_fast);
+            }
         }
 
         if (gpu_mode) {
             /* Hardware cursor: QEMU composites cursor on top during scanout.
              * Just move it; no erase/redraw needed. */
-            if (has_dirty)
+            if (has_dirty && !gpu_comp_active())
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),
                               (uint32_t)(dirty_y1 - dirty_y0));
@@ -1367,10 +1614,12 @@ void display_main(void) {
         /* Clear per-surface dirty flags. */
         for (int i = 0; i < surface_count; i++) {
             surfaces[i].dirty = 0;
+            surfaces[i].dirty_restore = 0;
             old_sx[i] = surfaces[i].x;
             old_sy[i] = surfaces[i].y;
         }
-        ipc_new_surface = 0;
+        damage_pending = 0;
+        dmg_restore = 0;
         z_changed = 0;
         old_cx = draw_x; old_cy = draw_y;
         first = 0;

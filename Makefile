@@ -103,6 +103,10 @@ MENU_BLOB_O    := $(OBJ_DIR)/kernel/proc/menu_elf_blob.o
 # Menu is now built with Rust + egui (no SVG)
 MENU_RUST_LIB  := $(BUILD_DIR)/userspace/services/menu/libxos_context_menu.a
 
+# GPU rendering backend + platform layer for egui apps
+EGUI_VIRGL_LIB   := $(BUILD_DIR)/third_party/egui_virgl_backend/libegui_virgl_backend.a
+EGUI_PLATFORM_LIB := $(BUILD_DIR)/userspace/lib/egui_platform/libxos_egui_platform.a
+
 # Add generated blob objects explicitly to kernel link
 OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O)
 
@@ -416,14 +420,14 @@ $(THORVG_A): scripts/build_thorvg.sh $(wildcard $(THORVG_DIR)/src/**/*.cpp) $(wi
 # ---- context menu service (Rust + egui) -----------------------------------
 menu: $(MENU_ELF)
 
-# Build the Rust staticlib for the context menu
-$(MENU_RUST_LIB): userspace/services/menu/Cargo.toml userspace/services/menu/src/lib.rs userspace/services/menu/src/runtime.rs
+# Build the Rust staticlib for the context menu (GPU backend)
+$(MENU_RUST_LIB): userspace/services/menu/Cargo.toml userspace/services/menu/src/lib.rs $(EGUI_VIRGL_LIB)
 	@mkdir -p $(dir $@)
-	cd userspace/services/menu && cargo build --release --target x86_64-unknown-none
+	cd userspace/services/menu && CARGO_TARGET_DIR="$(CURDIR)/userspace/services/menu/target" cargo build --release --target x86_64-unknown-none
 	cp userspace/services/menu/target/x86_64-unknown-none/release/libxos_context_menu.a $@
 	@echo ">> built $@"
 
-$(MENU_ELF): userspace/services/menu/shim.c userspace/services/menu/start.S $(MENU_RUST_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
+$(MENU_ELF): userspace/services/menu/shim.c userspace/services/menu/start.S $(MENU_RUST_LIB) $(EGUI_VIRGL_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menu/start.S -o $(BUILD_DIR)/userspace/services/menu/start.o
 	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -c userspace/services/menu/shim.c -o $(BUILD_DIR)/userspace/services/menu/shim.o
@@ -434,7 +438,7 @@ $(MENU_ELF): userspace/services/menu/shim.c userspace/services/menu/start.S $(ME
 	  $(BUILD_DIR)/userspace/services/menu/shim.o \
 	  $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o \
 	  $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o \
-	  $(MENU_RUST_LIB) $(NEWLIB_LIBS) \
+	  $(MENU_RUST_LIB) $(EGUI_VIRGL_LIB) $(NEWLIB_LIBS) \
 	  -o $@
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
@@ -447,6 +451,23 @@ $(MENU_BLOB_C): $(MENU_ELF)
 $(MENU_BLOB_O): $(MENU_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- egui GPU backend + platform layer (Rust staticlibs) -----------------
+egui-gpu: $(EGUI_VIRGL_LIB) $(EGUI_PLATFORM_LIB)
+
+$(EGUI_VIRGL_LIB): third_party/egui_virgl_backend/Cargo.toml third_party/egui_virgl_backend/src/lib.rs third_party/egui_virgl_backend/src/runtime.rs third_party/egui_software_backend/src/lib.rs
+	@mkdir -p $(dir $@)
+	# Force a local target dir — some environments redirect CARGO_TARGET_DIR
+	# to a cache, which left make linking a stale .a (old VirGL draw path).
+	cd third_party/egui_virgl_backend && CARGO_TARGET_DIR="$(CURDIR)/third_party/egui_virgl_backend/target" cargo build --release --target x86_64-unknown-none
+	cp third_party/egui_virgl_backend/target/x86_64-unknown-none/release/libegui_virgl_backend.a $@
+	@echo ">> built $@"
+
+$(EGUI_PLATFORM_LIB): userspace/lib/egui_platform/Cargo.toml userspace/lib/egui_platform/src/lib.rs $(EGUI_VIRGL_LIB)
+	@mkdir -p $(dir $@)
+	cd userspace/lib/egui_platform && cargo build --release --target x86_64-unknown-none
+	cp userspace/lib/egui_platform/target/x86_64-unknown-none/release/libxos_egui_platform.a $@
+	@echo ">> built $@"
 
 # ---- link ----------------------------------------------------------------
 $(KERNEL): $(OBJS) kernel/linker.ld

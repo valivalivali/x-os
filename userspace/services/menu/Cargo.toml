@@ -11,4 +11,9 @@ egui = { version = "0.35", default-features = false, features = ["default_fonts"
 epaint = { version = "0.35", default-features = false, features = ["default_fonts"], path = "../../../third_party/egui/crates/epaint" }
 emath = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/emath" }
 ecolor = { version = "0.35", default-features = false, path = "../../../third_party/egui/crates/ecolor" }
-egui_software_backend = { version = "0.0.3", default-features = false, path = "../../../third_party/egui_software_backend" }
+egui_software_backend = { version = "0.0.3", default-features = false, path = "../../../third_party/egui_software_backend", optional = true }
+egui_virgl_backend = { path = "../../../third_party/egui_virgl_backend", default-features = false }
+
+[features]
+default = []
+cpu-backend = ["egui_software_backend"]

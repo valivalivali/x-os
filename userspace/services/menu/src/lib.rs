@@ -1,45 +1,41 @@
 //! X OS Context Menu Service
 //!
-//! Provides right-click context menus for the X OS desktop using egui's
-//! real context menu API (`Response::context_menu`, `SubMenuButton`).
+//! Stock egui menu APIs so hover / fly-outs work like desktop egui:
+//!   - [`Popup`] + [`PopupKind::Menu`] + [`menu_style`]
+//!   - [`Ui::menu_button`] / [`Ui::button`] (SubMenuButton opens on hover)
 //!
-//! This module is compiled as a static library and called from a thin
-//! C shim that handles IPC with the compositor.
-//!
-//! The menu structure:
-//!   New Folder
-//!   Get Info
-//!   Change Wallpaper
-//!   ---
-//!   Use Stacks
-//!   Clean Up By ▸
-//!     Name
-//!     Date Modified
-//!     Kind
-//!     Size
-//!   ---
-//!   Import from iPhone
+//! Every pointer event (and idle ticks) runs a full egui frame. Scanout
+//! presents only when the painted hover / fly-out topology changes —
+//! QEMU recopies the full framebuffer on each flush.
 
 #![no_std]
 #![allow(dead_code)]
 
 extern crate alloc;
 
-mod runtime;
-
 use alloc::boxed::Box;
+use core::cell::Cell;
 
+use egui::menu::menu_style;
 use egui::{
-    Context, Ui, Vec2, Color32, Sense, RawInput, CornerRadius, Margin,
-    Event, PointerButton, Modifiers,
+    Align, Color32, Context, Event, Id, Layout, Modifiers, PointerButton, Popup,
+    PopupCloseBehavior, PopupKind, RawInput, Sense, Shadow, Vec2, pos2,
 };
-use egui_software_backend::{BufferMutRef, ColorFieldOrder, EguiSoftwareRender};
+use egui_virgl_backend::EguiVirglBackend;
 
-// ---- Menu action types -------------------------------------------------
+fn apply_menu_style(style: &mut egui::Style) {
+    menu_style(style);
+    let menu_bg = Color32::from_rgb(36, 36, 36);
+    style.visuals.window_fill = menu_bg;
+    style.visuals.panel_fill = menu_bg;
+    style.visuals.extreme_bg_color = menu_bg;
+    style.visuals.faint_bg_color = menu_bg;
+    style.visuals.popup_shadow = Shadow::NONE;
+    style.visuals.window_shadow = Shadow::NONE;
+    /* Submenus use Area fade-in; keep it instant for overlay compositing. */
+    style.animation_time = 0.0;
+}
 
-/// Actions that a context menu item can trigger.
-/// These are returned to the caller (the C shim) so it can perform
-/// the appropriate IPC/syscall to carry out the action.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
@@ -60,7 +56,6 @@ pub enum MenuAction {
     ShowViewOptions = 14,
 }
 
-/// State of the context menu: which item (if any) was selected.
 pub struct MenuResult {
     pub action: MenuAction,
     pub closed: bool,
@@ -75,234 +70,222 @@ impl Default for MenuResult {
     }
 }
 
-// ---- Context menu builder ----------------------------------------------
+fn take_action(result: &mut MenuResult, action: MenuAction, ui: &egui::Ui) {
+    result.action = action;
+    result.closed = true;
+    ui.close();
+}
 
-/// Show the context menu using egui's real `Popup::context_menu` API.
-///
-/// We allocate a full-surface widget and call `response.context_menu()` on it.
-/// egui handles popup positioning at the pointer, submenu hover/click,
-/// and close-on-click-outside behavior.
-pub fn show_desktop_context_menu(
-    ui: &mut Ui,
+fn show_desktop_context_menu(
+    ui: &mut egui::Ui,
     result: &mut MenuResult,
+    menu_open: &mut bool,
+    submenu_id: &mut u32,
 ) {
     let ctx = ui.ctx().clone();
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, apply_menu_style);
+    }
 
-    // Set style on the context BEFORE the popup is created.
-    // Frame::popup() reads style.visuals.popup_shadow at popup creation time,
-    // so setting it inside the closure (after frame creation) has no effect.
-    ctx.style_mut_of(egui::Theme::Dark, |style| {
-        style.visuals.popup_shadow = egui::Shadow::default(); // no shadow — our CPU renderer can't blur
-        style.visuals.window_fill = Color32::from_rgb(40, 40, 40); // solid opaque panel
-        style.visuals.window_stroke = egui::Stroke::new(1.0, Color32::from_rgb(80, 80, 80));
-        style.visuals.menu_corner_radius = CornerRadius::same(8);
-        style.visuals.selection.bg_fill = Color32::from_rgb(0, 0x69, 0xF9); // macOS blue hover
-        style.spacing.item_spacing = Vec2::new(0.0, 2.0);
-        style.spacing.button_padding = Vec2::new(12.0, 4.0);
-        style.spacing.menu_margin = Margin { left: 6, right: 6, top: 6, bottom: 6 };
-        style.visuals.widgets.hovered.corner_radius = CornerRadius::same(5);
-        style.visuals.widgets.active.corner_radius = CornerRadius::same(5);
-        style.visuals.widgets.inactive.corner_radius = CornerRadius::same(5);
-    });
+    if !*menu_open {
+        return;
+    }
 
-    // Allocate a widget that fills the entire surface so right-clicks are detected
-    let max_rect = ui.max_rect();
-    let response = ui.allocate_rect(max_rect, Sense::click());
+    /* Tiny anchor — Popup places the real menu; SubMenuButton owns fly-outs. */
+    let anchor = ui.interact(
+        egui::Rect::from_min_size(pos2(8.0, 8.0), Vec2::splat(1.0)),
+        Id::new("xos_ctx_menu_anchor"),
+        Sense::click(),
+    );
 
-    // Use egui's real context_menu API — opens on secondary click,
-    // positions at the pointer, handles submenus and close behavior
-    response.context_menu(|ui| {
-        if ui.add(menu_button("New Folder")).clicked() {
-            result.action = MenuAction::NewFolder;
-            result.closed = true;
-            ui.close();
-        }
-        if ui.add(menu_button("Get Info")).clicked() {
-            result.action = MenuAction::GetInfo;
-            result.closed = true;
-            ui.close();
-        }
-        if ui.add(menu_button("Change Wallpaper")).clicked() {
-            result.action = MenuAction::ChangeWallpaper;
-            result.closed = true;
-            ui.close();
-        }
+    let was_open = *menu_open;
+    let open_sub = Cell::new(0u32);
 
-        ui.separator();
-
-        if ui.add(menu_button_check("Use Stacks", false)).clicked() {
-            result.action = MenuAction::UseStacks;
-            result.closed = true;
-            ui.close();
-        }
-
-        // Clean Up By ▸ (submenu) — ui.menu_button creates SubMenuButton inside menu context
-        ui.menu_button("Clean Up By", |ui| {
-            if ui.add(menu_button("Name")).clicked() {
-                result.action = MenuAction::CleanUpByName;
-                result.closed = true;
-                ui.close();
+    Popup::from_response(&anchor)
+        .kind(PopupKind::Menu)
+        .layout(Layout::top_down_justified(Align::Min))
+        .style(apply_menu_style)
+        .at_position(pos2(8.0, 8.0))
+        .open_bool(menu_open)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .width(200.0)
+        .show(|ui| {
+            if ui.button("New Folder").clicked() {
+                take_action(result, MenuAction::NewFolder, ui);
             }
-            if ui.add(menu_button("Date Modified")).clicked() {
-                result.action = MenuAction::CleanUpByDateModified;
-                result.closed = true;
-                ui.close();
+            if ui.button("Get Info").clicked() {
+                take_action(result, MenuAction::GetInfo, ui);
             }
-            if ui.add(menu_button("Kind")).clicked() {
-                result.action = MenuAction::CleanUpByKind;
-                result.closed = true;
-                ui.close();
+            if ui.button("Change Wallpaper").clicked() {
+                take_action(result, MenuAction::ChangeWallpaper, ui);
             }
-            if ui.add(menu_button("Size")).clicked() {
-                result.action = MenuAction::CleanUpBySize;
-                result.closed = true;
-                ui.close();
-            }
-        });
 
-        ui.separator();
+            ui.separator();
 
-        // Sort By ▸ (submenu)
-        ui.menu_button("Sort By", |ui| {
-            if ui.add(menu_button("Name")).clicked() {
-                result.action = MenuAction::SortByName;
-                result.closed = true;
-                ui.close();
+            if ui.button("Use Stacks").clicked() {
+                take_action(result, MenuAction::UseStacks, ui);
             }
-            if ui.add(menu_button("Date Modified")).clicked() {
-                result.action = MenuAction::SortByDate;
-                result.closed = true;
-                ui.close();
+
+            ui.menu_button("Clean Up By", |ui| {
+                open_sub.set(1);
+                if ui.button("Name").clicked() {
+                    take_action(result, MenuAction::CleanUpByName, ui);
+                }
+                if ui.button("Date Modified").clicked() {
+                    take_action(result, MenuAction::CleanUpByDateModified, ui);
+                }
+                if ui.button("Kind").clicked() {
+                    take_action(result, MenuAction::CleanUpByKind, ui);
+                }
+                if ui.button("Size").clicked() {
+                    take_action(result, MenuAction::CleanUpBySize, ui);
+                }
+            });
+
+            ui.menu_button("Sort By", |ui| {
+                open_sub.set(2);
+                if ui.button("Name").clicked() {
+                    take_action(result, MenuAction::SortByName, ui);
+                }
+                if ui.button("Date Modified").clicked() {
+                    take_action(result, MenuAction::SortByDate, ui);
+                }
+                if ui.button("Size").clicked() {
+                    take_action(result, MenuAction::SortBySize, ui);
+                }
+                if ui.button("Kind").clicked() {
+                    take_action(result, MenuAction::SortByKind, ui);
+                }
+            });
+
+            ui.separator();
+
+            if ui.button("Import from iPhone").clicked() {
+                take_action(result, MenuAction::ImportFromIPhone, ui);
             }
-            if ui.add(menu_button("Size")).clicked() {
-                result.action = MenuAction::SortBySize;
-                result.closed = true;
-                ui.close();
-            }
-            if ui.add(menu_button("Kind")).clicked() {
-                result.action = MenuAction::SortByKind;
-                result.closed = true;
-                ui.close();
+            if ui.button("Show View Options").clicked() {
+                take_action(result, MenuAction::ShowViewOptions, ui);
             }
         });
 
-        ui.separator();
+    *submenu_id = open_sub.get();
 
-        if ui.add(menu_button("Import from iPhone")).clicked() {
-            result.action = MenuAction::ImportFromIPhone;
-            result.closed = true;
-            ui.close();
+    if was_open && !*menu_open && !result.closed {
+        result.closed = true;
+        result.action = MenuAction::None;
+    }
+}
+
+/* Order-independent (XOR) so HashSet iteration cannot false-trigger presents. */
+fn hover_fingerprint(ctx: &Context) -> u64 {
+    ctx.interaction_snapshot(|snap| {
+        let mut h: u64 = snap.hovered.len() as u64;
+        for id in &snap.hovered {
+            h ^= id.value();
         }
-
-        ui.separator();
-
-        if ui.add(menu_button("Show View Options")).clicked() {
-            result.action = MenuAction::ShowViewOptions;
-            result.closed = true;
-            ui.close();
-        }
-    });
+        h
+    })
 }
 
-/// Create a standard menu button widget (macOS-style).
-fn menu_button(text: &str) -> egui::Button<'_> {
-    egui::Button::new(text)
-        .min_size(Vec2::new(160.0, 0.0))
-        .frame(false)
-        .corner_radius(CornerRadius::same(5))
-}
-
-/// Create a menu button with a checkmark (for toggle items).
-fn menu_button_check(text: &str, checked: bool) -> egui::Button<'_> {
-    let label = if checked {
-        alloc::format!("✓ {}", text)
-    } else {
-        alloc::format!("   {}", text)
-    };
-    egui::Button::new(label)
-        .min_size(Vec2::new(160.0, 0.0))
-        .frame(false)
-        .corner_radius(CornerRadius::same(5))
-}
-
-// ---- CPU rasterization -------------------------------------------------
-//
-// Rendering is delegated to `egui_software_backend`, which tessellates
-// egui's shapes into textured triangle meshes (using egui's real font
-// atlas/glyph cache) and rasterizes them with anti-aliasing. See
-// `xos_context_menu_run_frame` below.
-
-// ---- C FFI interface ---------------------------------------------------
-
-/// Opaque context menu state, shared between C shim and Rust.
 #[repr(C)]
 pub struct ContextMenuState {
-    /// The egui context
     ctx: *mut Context,
-    /// Last action selected
     action: u32,
-    /// Whether the menu was closed (item clicked)
     closed: u32,
-    /// Screen width
     screen_w: u32,
-    /// Screen height
     screen_h: u32,
-    /// Mouse x (relative to surface)
+    surf_w: u32,
+    surf_h: u32,
     mouse_x: i32,
-    /// Mouse y (relative to surface)
     mouse_y: i32,
-    /// Pending mouse button (0=none, 1=left, 2=right)
     mouse_button: u32,
-    /// Pending mouse action (0=move, 1=down, 2=up)
     mouse_action: u32,
-    /// Whether to trigger a right-click to open the menu
     trigger_open: u32,
-    /// The egui software CPU rasterizer (tessellates + rasterizes real egui
-    /// primitives, including the font atlas, instead of a hand-rolled renderer)
-    renderer: *mut EguiSoftwareRender,
+    menu_open: u32,
+    open_grace: u32,
+    /// bit0 = present OVERLAY; bit1 = refresh L1 under menu (fly-out change)
+    needs_present: u32,
+    last_submenu_id: u32,
+    last_hover_fp: u64,
+    first_frame_done: u32,
+    /// Milliseconds since boot (SYS_GET_TICKS).
+    time_ms: u64,
+    backend: *mut EguiVirglBackend,
 }
 
-/// Initialize a new egui context for the context menu service.
 #[unsafe(no_mangle)]
-pub extern "C" fn xos_context_menu_init(screen_w: u32, screen_h: u32) -> *mut ContextMenuState {
+pub extern "C" fn xos_context_menu_init(
+    screen_w: u32,
+    screen_h: u32,
+    surf_w: u32,
+    surf_h: u32,
+    ctx_id: u32,
+    vb_mem: *mut u8,
+    vb_mem_size: usize,
+    ib_mem: *mut u8,
+    ib_mem_size: usize,
+    tex_mem: *mut u8,
+    tex_mem_size: usize,
+) -> *mut ContextMenuState {
     let ctx = Context::default();
-    let renderer = EguiSoftwareRender::new(ColorFieldOrder::Bgra);
-    let state = Box::new(ContextMenuState {
+    let mut backend = Box::new(EguiVirglBackend::new(
+        ctx_id,
+        surf_w,
+        surf_h,
+        vb_mem,
+        vb_mem_size,
+        ib_mem,
+        ib_mem_size,
+        tex_mem,
+        tex_mem_size,
+    ));
+    if !backend.init() {
+        return core::ptr::null_mut();
+    }
+
+    Box::into_raw(Box::new(ContextMenuState {
         ctx: Box::into_raw(Box::new(ctx)),
         action: 0,
         closed: 0,
         screen_w,
         screen_h,
+        surf_w,
+        surf_h,
         mouse_x: 0,
         mouse_y: 0,
         mouse_button: 0,
         mouse_action: 0,
         trigger_open: 0,
-        renderer: Box::into_raw(Box::new(renderer)),
-    });
-    Box::into_raw(state)
+        menu_open: 0,
+        open_grace: 0,
+        needs_present: 0,
+        last_submenu_id: 0,
+        last_hover_fp: 0,
+        first_frame_done: 0,
+        time_ms: 0,
+        backend: Box::into_raw(backend),
+    }))
 }
 
-/// Destroy the context menu state.
 #[unsafe(no_mangle)]
 pub extern "C" fn xos_context_menu_destroy(state: *mut ContextMenuState) {
     if state.is_null() {
         return;
     }
     unsafe {
-        let state = Box::from_raw(state);
-        if !state.ctx.is_null() {
-            let _ = Box::from_raw(state.ctx);
+        let mut state = Box::from_raw(state);
+        if !state.backend.is_null() {
+            let mut backend = Box::from_raw(state.backend);
+            backend.destroy();
+            state.backend = core::ptr::null_mut();
         }
-        if !state.renderer.is_null() {
-            let _ = Box::from_raw(state.renderer);
+        if !state.ctx.is_null() {
+            drop(Box::from_raw(state.ctx));
+            state.ctx = core::ptr::null_mut();
         }
     }
 }
 
-/// Feed a mouse event to the context menu.
-/// button: 0=none, 1=left, 2=right
-/// action: 0=move, 1=down, 2=up
 #[unsafe(no_mangle)]
 pub extern "C" fn xos_context_menu_mouse_event(
     state: *mut ContextMenuState,
@@ -323,8 +306,18 @@ pub extern "C" fn xos_context_menu_mouse_event(
     }
 }
 
-/// Trigger the context menu to open (called when right-click is received via IPC).
-/// Sets trigger_open so run_frame feeds a secondary click to open the popup.
+/// Wall-clock for egui (ms since boot). Needed for submenu
+/// `is_moving_towards_rect` hover heuristics.
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_set_time_ms(state: *mut ContextMenuState, time_ms: u64) {
+    if state.is_null() {
+        return;
+    }
+    unsafe {
+        (*state).time_ms = time_ms;
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn xos_context_menu_trigger(state: *mut ContextMenuState) {
     if state.is_null() {
@@ -332,139 +325,179 @@ pub extern "C" fn xos_context_menu_trigger(state: *mut ContextMenuState) {
     }
     unsafe {
         let state = &mut *state;
-        state.trigger_open = 1;
-        state.mouse_x = 0;
-        state.mouse_y = 0;
+        state.mouse_x = 8;
+        state.mouse_y = 8;
         state.mouse_button = 0;
         state.mouse_action = 0;
+        state.trigger_open = 1;
+        state.menu_open = 1;
+        state.open_grace = 3;
+        state.closed = 0;
+        state.action = 0;
+        state.needs_present = 0;
+        state.last_submenu_id = 0;
+        state.last_hover_fp = 0;
+        state.first_frame_done = 0;
     }
 }
 
-/// Run one frame of the context menu. Returns 1 if an item was clicked
-/// (check `action` field for which one), 0 otherwise.
 #[unsafe(no_mangle)]
-pub extern "C" fn xos_context_menu_run_frame(
-    state: *mut ContextMenuState,
-    pixels: *mut u32,
-    width: u32,
-    height: u32,
-) -> u32 {
-    if state.is_null() || pixels.is_null() {
+pub extern "C" fn xos_context_menu_run_frame(state: *mut ContextMenuState) -> u32 {
+    if state.is_null() {
         return 0;
     }
     unsafe {
         let state = &mut *state;
-        if state.ctx.is_null() {
+        if state.ctx.is_null() || state.backend.is_null() {
             return 0;
         }
         let ctx = &*state.ctx;
+        let backend = &mut *state.backend;
 
-        // Reset per-frame state
         state.closed = 0;
         state.action = 0;
 
         let mut menu_result = MenuResult::default();
+        let was_triggering = state.trigger_open == 1;
 
-        // Build RawInput with mouse events
         let mut input = RawInput::default();
-        // Set screen_rect to the FULL screen size, not just the surface.
-        // egui uses screen_rect to decide if submenus fit to the right.
-        // If screen_rect is too small, egui repositions submenus below instead.
         input.screen_rect = Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
-            Vec2::new(state.screen_w as f32, state.screen_h as f32),
+            Vec2::new(state.surf_w as f32, state.surf_h as f32),
         ));
+        input.predicted_dt = 1.0 / 60.0;
+        input.time = Some(state.time_ms as f64 / 1000.0);
 
-        if state.trigger_open == 1 {
-            // Feed a full secondary click (press + release) at (0,0) to trigger
-            // Popup::context_menu's secondary_clicked() detection
-            let pos = egui::pos2(0.0, 0.0);
-            input.events.push(Event::PointerMoved(pos));
+        let mouse_pos = egui::pos2(state.mouse_x as f32, state.mouse_y as f32);
+        input.events.push(Event::PointerMoved(mouse_pos));
+
+        if !was_triggering && state.mouse_button != 0 {
+            let button = if state.mouse_button == 2 {
+                PointerButton::Secondary
+            } else {
+                PointerButton::Primary
+            };
+            /* action: 1=down, 2=up (composer), anything else treated as down. */
+            let pressed = state.mouse_action != 2;
             input.events.push(Event::PointerButton {
-                pos,
-                button: PointerButton::Secondary,
-                pressed: true,
+                pos: mouse_pos,
+                button,
+                pressed,
                 modifiers: Modifiers::default(),
             });
-            input.events.push(Event::PointerButton {
-                pos,
-                button: PointerButton::Secondary,
-                pressed: false,
-                modifiers: Modifiers::default(),
-            });
-        } else {
-            // Feed regular mouse events
-            let mouse_pos = egui::pos2(state.mouse_x as f32, state.mouse_y as f32);
-            input.events.push(Event::PointerMoved(mouse_pos));
-
-            if state.mouse_button != 0 {
-                let button = if state.mouse_button == 2 {
-                    PointerButton::Secondary
-                } else {
-                    PointerButton::Primary
-                };
-                let pressed = state.mouse_action == 1;
-                input.events.push(Event::PointerButton {
-                    pos: mouse_pos,
-                    button,
-                    pressed,
-                    modifiers: Modifiers::default(),
-                });
-            }
         }
 
-        // Capture whether this is a trigger frame before clearing
-        let trigger_was_set = state.trigger_open == 1;
-
-        // Clear pending events
         state.mouse_button = 0;
         state.mouse_action = 0;
         state.trigger_open = 0;
 
-        let was_triggering = trigger_was_set;
+        let mut menu_open = state.menu_open != 0;
+        if was_triggering {
+            menu_open = true;
+        }
 
-        // Run egui frame — pass the Ui directly to show_desktop_context_menu
+        let mut submenu_id: u32 = 0;
         let output = ctx.run_ui(input, |ui| {
-            show_desktop_context_menu(ui, &mut menu_result);
+            show_desktop_context_menu(ui, &mut menu_result, &mut menu_open, &mut submenu_id);
         });
 
-        // Check if an item was clicked
+        state.menu_open = if menu_open { 1 } else { 0 };
+
+        if state.open_grace > 0 {
+            state.open_grace -= 1;
+            if !menu_result.closed {
+                menu_open = true;
+                state.menu_open = 1;
+            }
+        }
+
         if menu_result.closed {
             state.closed = 1;
             state.action = menu_result.action as u32;
-        } else if was_triggering && !ctx.any_popup_open() {
-            // We tried to trigger the menu this frame but it didn't open
-            // This shouldn't normally happen, but if it does, don't close
-        } else if !was_triggering && !ctx.any_popup_open() {
-            // Popup was closed without selecting an item (clicked outside)
+            state.menu_open = 0;
+            state.open_grace = 0;
+        } else if state.open_grace == 0 && !was_triggering && !menu_open {
             state.closed = 1;
+            state.action = 0;
         }
 
-        // Tessellate egui's shapes into textured triangle primitives (this is
-        // what actually turns text into real glyphs sampled from egui's font
-        // atlas, rather than any hand-drawn substitute) and rasterize them
-        // with `egui_software_backend`.
         let pixels_per_point = output.pixels_per_point;
         let primitives = ctx.tessellate(output.shapes, pixels_per_point);
+        backend.render(&primitives, &output.textures_delta, pixels_per_point);
 
-        // Clear to transparent — only the popup's Frame is visible.
-        let pixel_slice: &mut [[u8; 4]] = core::slice::from_raw_parts_mut(
-            pixels as *mut [u8; 4],
-            (width * height) as usize,
-        );
-        for px in pixel_slice.iter_mut() {
-            *px = [0, 0, 0, 0];
+        let flyout_changed = submenu_id != state.last_submenu_id;
+        state.last_submenu_id = submenu_id;
+
+        let hover_fp = hover_fingerprint(ctx);
+        let hover_changed = hover_fp != state.last_hover_fp;
+        state.last_hover_fp = hover_fp;
+
+        if state.first_frame_done == 0 || was_triggering {
+            /* First frame: SURFACE_GPU_READY presents. */
+            state.first_frame_done = 1;
+            state.needs_present = 0;
+        } else if flyout_changed || hover_changed {
+            /* bit1 always set: overlay_fast alpha-blits leave old fly-out pixels
+             * in the scanout when the new frame is transparent there. Always
+             * restore L1 under the menu rect, then blit the fresh texture. */
+            state.needs_present = 1 | 2;
+        } else {
+            state.needs_present = 0;
         }
-        let mut buffer_ref = BufferMutRef::new(pixel_slice, width as usize, height as usize);
-
-        let renderer = &mut *state.renderer;
-        renderer.render(&mut buffer_ref, &primitives, &output.textures_delta, pixels_per_point);
 
         state.closed
     }
 }
 
-/// Get the last selected action.
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_needs_present(state: *mut ContextMenuState) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe { (*state).needs_present }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_ack_present(state: *mut ContextMenuState) {
+    if state.is_null() {
+        return;
+    }
+    unsafe { (*state).needs_present = 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_pending_close(_state: *mut ContextMenuState) -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_render_target_id(state: *mut ContextMenuState) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe {
+        let state = &*state;
+        if state.backend.is_null() {
+            return 0;
+        }
+        (*state.backend).render_target_id()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_context_id(state: *mut ContextMenuState) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe {
+        let state = &*state;
+        if state.backend.is_null() {
+            return 0;
+        }
+        (*state.backend).context_id()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn xos_context_menu_get_action(state: *mut ContextMenuState) -> u32 {
     if state.is_null() {
@@ -473,22 +506,10 @@ pub extern "C" fn xos_context_menu_get_action(state: *mut ContextMenuState) -> u
     unsafe { (*state).action }
 }
 
-/// Check if the menu is currently open.
 #[unsafe(no_mangle)]
 pub extern "C" fn xos_context_menu_is_open(state: *mut ContextMenuState) -> u32 {
     if state.is_null() {
         return 0;
     }
-    unsafe {
-        let state = &*state;
-        if state.ctx.is_null() {
-            return 0;
-        }
-        let ctx = &*state.ctx;
-        if ctx.any_popup_open() {
-            1
-        } else {
-            0
-        }
-    }
+    unsafe { (*state).menu_open }
 }

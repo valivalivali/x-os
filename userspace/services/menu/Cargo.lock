@@ -134,6 +134,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_virgl_backend"
+version = "0.1.0"
+dependencies = [
+ "ecolor",
+ "egui",
+ "egui_software_backend",
+ "emath",
+ "epaint",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -436,6 +447,7 @@ dependencies = [
  "ecolor",
  "egui",
  "egui_software_backend",
+ "egui_virgl_backend",
  "emath",
  "epaint",
 ]

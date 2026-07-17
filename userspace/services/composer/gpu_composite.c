@@ -27,6 +27,26 @@ static size_t local_strlen(const char *s) {
     return n;
 }
 
+/* Debug logging helpers */
+static void gc_log(const char *s) {
+    size_t n = local_strlen(s);
+    syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
+}
+static void gc_log_int(const char *prefix, int32_t val, const char *suffix) {
+    char buf[64];
+    int i = 0;
+    while (prefix[i]) { buf[i] = prefix[i]; i++; }
+    if (val < 0) { buf[i++] = '-'; val = -val; }
+    char tmp[16]; int t = 0;
+    if (val == 0) tmp[t++] = '0';
+    while (val > 0) { tmp[t++] = '0' + (val % 10); val /= 10; }
+    while (t > 0) buf[i++] = tmp[--t];
+    int j = 0;
+    while (suffix[j]) buf[i++] = suffix[j++];
+    buf[i] = 0;
+    gc_log(buf);
+}
+
 #define MAX_GPU_SURFACES 8
 #define PAGE_SIZE 4096
 #define GPU_CTX_ID    1
@@ -52,30 +72,41 @@ static size_t local_strlen(const char *s) {
 #define VCCMD_BIND_SAMPLER_STATES  18
 #define VCCMD_SET_SAMPLE_MASK      24
 #define VCCMD_BIND_SHADER          31
-#define VCCMD_LINK_SHADER          50
+#define VCCMD_LINK_SHADER          45
 
 /* Object types */
-#define VOBJ_BLEND       1
-#define VOBJ_RASTERIZER  2
-#define VOBJ_DSA         3
-#define VOBJ_SHADER      4
+#define VOBJ_BLEND           1
+#define VOBJ_RASTERIZER      2
+#define VOBJ_DSA             3
+#define VOBJ_SHADER          4
 #define VOBJ_VERTEX_ELEMENTS 5
-#define VOBJ_SURFACE     8
-#define VOBJ_SAMPLER_VIEW  6
-#define VOBJ_SAMPLER_STATE 7
+#define VOBJ_SURFACE         8
+#define VOBJ_SAMPLER_VIEW    6
+#define VOBJ_SAMPLER_STATE   7
 
 /* Pipe shader types */
 #define PIPE_SHADER_VERTEX   0
 #define PIPE_SHADER_FRAGMENT 1
 
 /* Pipe primitive types */
-#define PIPE_PRIM_TRIANGLE_STRIP 6
+/* Gallium/pipe: TRIANGLES=4, TRIANGLE_STRIP=5, TRIANGLE_FAN=6.
+ * Using FAN (6) here made GPU overlays look like a dark X / diamond. */
+#define PIPE_PRIM_TRIANGLES      4
+#define PIPE_PRIM_TRIANGLE_STRIP 5
 
-/* Pipe blend factors/functions */
+/* Pipe blend factors/functions — must match gallium pipe_blend_factor.
+ * INV_* values start at 0x11 (ZERO); do NOT use 4/5 (those are DST_ALPHA /
+ * DST_COLOR). Wrong INV_SRC_ALPHA made A=0 texels compute dst*dst and paint
+ * a darkened desktop square behind translucent menus. */
 #define PIPE_BLENDFACTOR_ONE             1
-#define PIPE_BLENDFACTOR_SRC_ALPHA       4
-#define PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA 5
-#define PIPE_BLEND_ADD                  0
+#define PIPE_BLENDFACTOR_SRC_COLOR       2
+#define PIPE_BLENDFACTOR_SRC_ALPHA       3
+#define PIPE_BLENDFACTOR_DST_ALPHA       4
+#define PIPE_BLENDFACTOR_DST_COLOR       5
+#define PIPE_BLENDFACTOR_ZERO            0x11
+#define PIPE_BLENDFACTOR_INV_SRC_COLOR   0x12
+#define PIPE_BLENDFACTOR_INV_SRC_ALPHA   0x13
+#define PIPE_BLEND_ADD                   0
 
 /* Pipe resource formats */
 #define PIPE_FORMAT_B8G8R8A8_UNORM 1
@@ -99,19 +130,22 @@ static size_t local_strlen(const char *s) {
 
 /* Object handles (fixed, for virgl command stream objects) */
 #define FB_SURFACE_H    10  /* surface handle for FB */
-#define BG_SV_HANDLE    11  /* sampler view handle for background */
+#define BG_SV_HANDLE    11  /* sampler view handle for background (legacy) */
 #define VS_HANDLE       20  /* vertex shader handle */
 #define FS_HANDLE       21  /* fragment shader handle */
 #define VE_HANDLE       30  /* vertex elements handle */
-#define BLEND_HANDLE    40  /* blend state handle */
+#define BLEND_HANDLE    40  /* blend state handle (alpha) */
 #define RAST_HANDLE     41  /* rasterizer state handle */
 #define DSA_HANDLE      42  /* depth-stencil-alpha state handle */
+#define OPAQUE_BLEND_H  43  /* blend disabled, colormask all */
 #define SAMPER_STATE_H  60  /* sampler state handle */
 
 /* Resource IDs allocated dynamically in gpu_comp_init */
 static uint32_t g_fb_res_id;   /* framebuffer/render target 2D resource */
 static uint32_t g_vb_res_id;   /* vertex buffer 3D resource */
-static uint32_t g_bg_res_id;   /* desktop background texture 2D resource */
+static uint32_t g_bg_res_id;   /* unused — kept for ABI; desktop uses FB transfer */
+static uint32_t *g_fb_pixels;  /* CPU backing shared with g_fb_res_id */
+static int32_t g_fb_stride;
 
 /* fui: float to uint32 bit representation */
 static uint32_t fui(float f) {
@@ -216,14 +250,27 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
         return 0;
     }
 
-    /* Create framebuffer render target as a 3D resource with RENDER_TARGET|SCANOUT bind flags.
-     * Using res_create_2d (virtio-gpu 2D) doesn't give virglrenderer the GL render target binding
-     * it needs — the surface object creation succeeds but glFramebufferTexture2D fails. */
+    /* Create framebuffer as a 3D texture with RENDER_TARGET|SCANOUT and the
+     * same guest backing the compositor paints into. Desktop pixels are
+     * uploaded with TRANSFER_TO_HOST each frame — this shows the desktop even
+     * if textured-quad draws fail under GLES. */
     g_fb_res_id = sys_gpu_alloc_res_id();
-    if (sys_gpu_res_create_3d(g_fb_res_id, PIPE_TEXTURE_2D, PIPE_FORMAT_R8G8B8A8_UNORM,
-                              VIRGL_BIND_RENDER_TARGET,
+    g_fb_pixels = bg_pixels;
+    g_fb_stride = bg_stride;
+    if (sys_gpu_res_create_3d(g_fb_res_id, PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8A8_UNORM,
+                              VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SCANOUT,
                               fb_w, fb_h, 1, 1, 0, 0, 0) != 0) {
         return 0;
+    }
+
+    if (bg_pixels && bg_stride > 0) {
+        uint32_t fb_size = (uint32_t)fb_w * (uint32_t)fb_h * 4;
+        uint32_t fb_npages = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (sys_gpu_res_attach_virt(g_fb_res_id, (uint64_t)bg_pixels,
+                                    fb_npages, fb_size) != 0) {
+            gc_log("[gpu_comp] FB attach_virt failed\n");
+            return 0;
+        }
     }
 
     /* Attach FB resource to the virgl context */
@@ -233,18 +280,25 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
     sys_gpu_set_scanout(0, g_fb_res_id, 0, 0, fb_w, fb_h);
 
     /* Create vertex shader */
+    gc_log("[gpu_comp] creating VS handle=");
+    gc_log_int("", VS_HANDLE, "");
+    gc_log_int(" obj_type=", VOBJ_SHADER, "\n");
     cmd_reset();
     emit_shader(VS_HANDLE, PIPE_SHADER_VERTEX, vs_source);
     cmd_submit();
 
     /* Create fragment shader */
+    gc_log("[gpu_comp] creating FS handle=");
+    gc_log_int("", FS_HANDLE, "\n");
     cmd_reset();
     emit_shader(FS_HANDLE, PIPE_SHADER_FRAGMENT, fs_source);
     cmd_submit();
 
-    /* Bind shaders */
+    /* Bind shaders. Do NOT send LINK_SHADER here: opcode 45 is
+     * COPY_TRANSFER3D on current virglrenderer; LINK_SHADER is 52+.
+     * Host auto-links bound VS/FS on draw. */
+    gc_log("[gpu_comp] binding shaders\n");
     cmd_reset();
-    /* BIND_SHADER: cmd + handle + type = 3 dwords */
     cmd_dword(VIRGL_CMD0(VCCMD_BIND_SHADER, 0, 2));
     cmd_dword(VS_HANDLE);
     cmd_dword(PIPE_SHADER_VERTEX);
@@ -253,26 +307,37 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
     cmd_dword(PIPE_SHADER_FRAGMENT);
     cmd_submit();
 
-    /* Create blend state: alpha blending (src_alpha, 1-src_alpha) */
+    /* Premultiplied alpha blend (egui / software backend output).
+     * rgb: ONE, INV_SRC_ALPHA — transparent A=0 texels leave dst alone. */
     cmd_reset();
     /* CREATE_OBJECT BLEND: cmd + handle + S0 + S1 + 8x RT */
     cmd_dword(VIRGL_CMD0(VCCMD_CREATE_OBJECT, VOBJ_BLEND, 11));
     cmd_dword(BLEND_HANDLE);
     cmd_dword(0);  /* S0: no independent blend, no logicop */
     cmd_dword(0);  /* S1: logicop func */
-    /* RT[0]: blend enabled, ADD, src_alpha, 1-src_alpha, colormask=0xF
+    /* RT[0]: blend enabled, ADD, ONE, INV_SRC_ALPHA, colormask=0xF
      * virglrenderer decode: blend_enable=bit0, rgb_func=bits1-3,
      * rgb_src=bits4-8, rgb_dst=bits9-13, alpha_func=bits14-16,
      * alpha_src=bits17-21, alpha_dst=bits22-26, colormask=bits27-30 */
     cmd_dword((1 << 0) |  /* blend_enable */
               (PIPE_BLEND_ADD << 1) |     /* rgb_func */
-              (PIPE_BLENDFACTOR_SRC_ALPHA << 4) |  /* rgb_src */
-              (PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA << 9) | /* rgb_dst */
+              (PIPE_BLENDFACTOR_ONE << 4) |  /* rgb_src (premultiplied) */
+              (PIPE_BLENDFACTOR_INV_SRC_ALPHA << 9) | /* rgb_dst */
               (PIPE_BLEND_ADD << 14) |    /* alpha_func */
-              (PIPE_BLENDFACTOR_SRC_ALPHA << 17) | /* alpha_src */
-              (PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA << 22) | /* alpha_dst */
+              (PIPE_BLENDFACTOR_ONE << 17) | /* alpha_src */
+              (PIPE_BLENDFACTOR_INV_SRC_ALPHA << 22) | /* alpha_dst */
               (0xF << 27));  /* colormask */
     /* RT[1..7]: all zeros */
+    for (int i = 1; i < 8; i++) cmd_dword(0);
+    cmd_submit();
+
+    /* Opaque blend: blending off, full colormask — never bind handle 0 */
+    cmd_reset();
+    cmd_dword(VIRGL_CMD0(VCCMD_CREATE_OBJECT, VOBJ_BLEND, 11));
+    cmd_dword(OPAQUE_BLEND_H);
+    cmd_dword(0);
+    cmd_dword(0);
+    cmd_dword((0xF << 27));  /* blend_enable=0, colormask=RGBA */
     for (int i = 1; i < 8; i++) cmd_dword(0);
     cmd_submit();
 
@@ -364,7 +429,7 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
 
     /* Bind sampler state to fragment shader, slot 0 */
     cmd_reset();
-    /* BIND_SAMPLER_STATES: len = shader_type + start_slot + handle = 3 */
+    /* BIND_SAMPLER_STATES: len = 2 + num_samplers = 3 (shader_type + start_slot + handle) */
     cmd_dword(VIRGL_CMD0(VCCMD_BIND_SAMPLER_STATES, 0, 3));
     cmd_dword(PIPE_SHADER_FRAGMENT);  /* shader_type */
     cmd_dword(0);                     /* start_slot */
@@ -383,7 +448,7 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
     cmd_dword(VIRGL_CMD0(VCCMD_CREATE_OBJECT, VOBJ_SURFACE, 5));
     cmd_dword(FB_SURFACE_H);
     cmd_dword(g_fb_res_id);
-    cmd_dword(PIPE_FORMAT_R8G8B8A8_UNORM);
+    cmd_dword(PIPE_FORMAT_B8G8R8A8_UNORM);
     cmd_dword(0);  /* first_layer=0 | last_layer=0<<16 */
     cmd_dword(0);  /* level=0 */
     cmd_submit();
@@ -396,36 +461,18 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
     }
     sys_gpu_ctx_attach(GPU_CTX_ID, g_vb_res_id);
 
-    /* Create desktop background texture from the backing buffer.
-     * The backing buffer already has the gradient painted by main.c. */
-    if (bg_pixels && bg_stride > 0) {
-        g_bg_res_id = sys_gpu_alloc_res_id();
-        if (sys_gpu_res_create_3d(g_bg_res_id, PIPE_TEXTURE_2D, PIPE_FORMAT_R8G8B8A8_UNORM,
-                                  VIRGL_BIND_SAMPLER_VIEW,
-                                  fb_w, fb_h, 1, 1, 0, 0, 0) == 0) {
-            uint32_t bg_size = (uint32_t)fb_w * (uint32_t)fb_h * 4;
-            uint32_t bg_npages = (bg_size + PAGE_SIZE - 1) / PAGE_SIZE;
-            if (sys_gpu_res_attach_virt(g_bg_res_id, (uint64_t)bg_pixels,
-                                        bg_npages, bg_size) == 0) {
-                sys_gpu_ctx_attach(GPU_CTX_ID, g_bg_res_id);
-                sys_gpu_transfer_3d(g_bg_res_id, 0, 0, 0, fb_w, fb_h, 1, 0, 0, 0, 0);
+    /* No separate background texture — desktop pixels live in g_fb_res_id's
+     * guest backing and are uploaded via transfer each present. */
+    g_bg_res_id = 0;
 
-                /* Create sampler view for background texture.
-                 * Pixel data is BGRA in memory, stored as RGBA on GPU.
-                 * Swizzle (Z,Y,X,W) swaps R<->B so shader sees correct colors. */
-                cmd_reset();
-                cmd_dword(VIRGL_CMD0(VCCMD_CREATE_OBJECT, VOBJ_SAMPLER_VIEW, 6));
-                cmd_dword(BG_SV_HANDLE);
-                cmd_dword(g_bg_res_id);
-                cmd_dword(PIPE_FORMAT_R8G8B8A8_UNORM);
-                cmd_dword(0);  /* first_element */
-                cmd_dword(0);  /* last_element */
-                cmd_dword(BGRA_SWIZZLE);  /* swizzle: R<->B swap */
-                cmd_submit();
-            }
-        }
+    /* Upload initial desktop and flush so the screen is not blank. */
+    if (g_fb_pixels) {
+        sys_gpu_transfer_3d(g_fb_res_id, 0, 0, 0, fb_w, fb_h, 1, 0, 0, 0, 0);
+        sys_gpu_flush_res(g_fb_res_id, 0, 0, fb_w, fb_h);
     }
 
+    gc_log("[gpu_comp] init complete, fb_res=");
+    gc_log_int("", g_fb_res_id, "\n");
     g_initialized = 1;
     g_active = 1;
     return 1;
@@ -534,7 +581,7 @@ void gpu_comp_composite(int32_t fb_w, int32_t fb_h,
     if (g_bg_res_id) {
         /* Disable blending for background — it's opaque */
         cmd_dword(VIRGL_CMD0(VCCMD_BIND_OBJECT, VOBJ_BLEND, 1));
-        cmd_dword(0);  /* handle 0 = no blend */
+        cmd_dword(OPAQUE_BLEND_H);  /* opaque — never bind handle 0 */
 
         /* Full-screen quad: NDC coords, UV (0,0)=top-left to (1,1)=bottom-right
          * Viewport maps NDC [-1,1] to [0,fb_w]/[0,fb_h]. No Y flip —
@@ -570,10 +617,22 @@ void gpu_comp_composite(int32_t fb_w, int32_t fb_h,
         cmd_dword(16); cmd_dword(0); cmd_dword(g_vb_res_id);
         cmd_dword(VIRGL_CMD0(VCCMD_SET_SAMPLER_VIEWS, 0, 3));
         cmd_dword(PIPE_SHADER_FRAGMENT); cmd_dword(0); cmd_dword(BG_SV_HANDLE);
+        /* DRAW_VBO payload must be exactly 12 dwords (VIRGL_DRAW_VBO_SIZE).
+         * Emitting 11 leaves the stream misaligned; the next dword (often
+         * BLEND_HANDLE=40) is then decoded as SET_ATOMIC_BUFFERS. */
         cmd_dword(VIRGL_CMD0(VCCMD_DRAW_VBO, 0, 12));
-        cmd_dword(0); cmd_dword(4); cmd_dword(PIPE_PRIM_TRIANGLE_STRIP);
-        cmd_dword(0); cmd_dword(1); cmd_dword(0); cmd_dword(0);
-        cmd_dword(0); cmd_dword(0); cmd_dword(0xFFFFFFFF); cmd_dword(0);
+        cmd_dword(0);                    /* start */
+        cmd_dword(4);                    /* count */
+        cmd_dword(PIPE_PRIM_TRIANGLE_STRIP); /* mode */
+        cmd_dword(0);                    /* indexed */
+        cmd_dword(1);                    /* instance_count */
+        cmd_dword(0);                    /* index_bias */
+        cmd_dword(0);                    /* start_instance */
+        cmd_dword(0);                    /* primitive_restart */
+        cmd_dword(0);                    /* restart_index */
+        cmd_dword(0);                    /* min_index */
+        cmd_dword(0xFFFFFFFF);           /* max_index */
+        cmd_dword(0);                    /* count_from_so */
 
         /* Re-enable blending for surfaces */
         cmd_dword(VIRGL_CMD0(VCCMD_BIND_OBJECT, VOBJ_BLEND, 1));
@@ -632,7 +691,7 @@ void gpu_comp_composite(int32_t fb_w, int32_t fb_h,
             cmd_float(verts[v][3]);
         }
 
-        /* SET_VERTEX_BUFFERS: cmd + stride + offset + handle (1 buffer) */
+        /* SET_VERTEX_BUFFERS: len = num_buffers * 3 = 3 (stride + offset + handle) */
         cmd_dword(VIRGL_CMD0(VCCMD_SET_VERTEX_BUFFERS, 0, 3));
         cmd_dword(16);         /* stride */
         cmd_dword(0);          /* offset */
@@ -640,7 +699,7 @@ void gpu_comp_composite(int32_t fb_w, int32_t fb_h,
 
         /* Set sampler view: bind surface texture to fragment shader slot 0.
          * We create a sampler view object per surface that references the texture resource. */
-        /* SET_SAMPLER_VIEWS: len = shader_type + start_slot + handle = 3 */
+        /* SET_SAMPLER_VIEWS: len = 2 + num_views = 3 (shader_type + start_slot + handle) */
         uint32_t sv_handle = 100 + i;  /* sampler view handle for surface i */
         cmd_dword(VIRGL_CMD0(VCCMD_SET_SAMPLER_VIEWS, 0, 3));
         cmd_dword(PIPE_SHADER_FRAGMENT);  /* shader_type */
@@ -664,10 +723,10 @@ void gpu_comp_composite(int32_t fb_w, int32_t fb_h,
         cmd_dword(0);  /* count_from_so */
     }
 
-    /* Flush the framebuffer resource to scanout */
-    sys_gpu_flush_res(g_fb_res_id, 0, 0, fb_w, fb_h);
-
+    /* Submit 3D commands first, then flush the framebuffer to scanout */
     cmd_submit();
+
+    sys_gpu_flush_res(g_fb_res_id, 0, 0, fb_w, fb_h);
 }
 
 void gpu_comp_destroy_surface(int surf_idx) {
@@ -681,6 +740,254 @@ void gpu_comp_destroy_surface(int surf_idx) {
     gs->npages = 0;
 }
 
+/* Create a sampler view for a GPU-backed surface.
+ * The app has already created the render target resource in its own virgl
+ * context. The compositor attaches it to its context and creates a sampler
+ * view so it can composite the surface as a textured quad. */
+void gpu_comp_create_gpu_surface_sv(int surf_idx, uint32_t res_id,
+                                     uint32_t sv_handle) {
+    if (!g_active || surf_idx < 0 || surf_idx >= MAX_GPU_SURFACES) return;
+
+    /* Replace any previous sampler view at this handle (surface reuse). */
+    cmd_reset();
+    cmd_dword(VIRGL_CMD0(VCCMD_DESTROY_OBJECT, 0, 1));
+    cmd_dword(sv_handle);
+    /* CREATE_OBJECT: SAMPLER_VIEW, len = handle + res_id + format + start + last + swizzle = 6 */
+    cmd_dword(VIRGL_CMD0(VCCMD_CREATE_OBJECT, VOBJ_SAMPLER_VIEW, 6));
+    cmd_dword(sv_handle);
+    cmd_dword(res_id);
+    cmd_dword(PIPE_FORMAT_R8G8B8A8_UNORM);  /* format */
+    cmd_dword(0);   /* first_level */
+    cmd_dword(0);   /* last_level */
+    cmd_dword(0x688);  /* swizzle: R=0, G=1, B=2, A=3 (default) */
+    cmd_submit();
+}
+
+/* Composite a GPU-backed surface: draw a textured quad sampling from the
+ * app's render target. This is called from the main composite loop for
+ * surfaces where is_gpu == 1. */
+void gpu_comp_composite_gpu_surface(int surf_idx, uint32_t sv_handle,
+                                     int32_t x, int32_t y,
+                                     uint32_t w, uint32_t h) {
+    if (!g_active || surf_idx < 0 || surf_idx >= MAX_GPU_SURFACES) return;
+    (void)surf_idx;
+
+    /* Convert pixel coords to NDC using the viewport set in gpu_comp_composite.
+     * viewport: scale = (fb_w/2, fb_h/2, 0.5), translate = (fb_w/2, fb_h/2, 0.5)
+     * NDC = (pixel - translate) / scale = 2*pixel/fb - 1 */
+    float sx = (float)x;
+    float sy = (float)y;
+    float sw = (float)w;
+    float sh = (float)h;
+    float ndc_lo_x = 2.0f * sx / (float)g_fb_w - 1.0f;
+    float ndc_hi_x = 2.0f * (sx + sw) / (float)g_fb_w - 1.0f;
+    float ndc_lo_y = 2.0f * sy / (float)g_fb_h - 1.0f;
+    float ndc_hi_y = 2.0f * (sy + sh) / (float)g_fb_h - 1.0f;
+
+    /* Vertex data: 4 vertices, each (pos.xy, uv.xy) = 4 floats = 16 bytes
+     * Triangle strip: v0=top-left, v1=bottom-left, v2=top-right, v3=bottom-right */
+    float verts[4][4] = {
+        { ndc_lo_x, ndc_lo_y,  0.0f, 0.0f },  /* top-left */
+        { ndc_lo_x, ndc_hi_y,  0.0f, 1.0f },  /* bottom-left */
+        { ndc_hi_x, ndc_lo_y,  1.0f, 0.0f },  /* top-right */
+        { ndc_hi_x, ndc_hi_y,  1.0f, 1.0f },  /* bottom-right */
+    };
+
+    /* Inline-write vertex data */
+    uint32_t vb_size = 4 * 4 * 4;  /* 4 vertices * 4 floats * 4 bytes */
+    uint32_t iw_hdr = 11;
+    uint32_t iw_len = iw_hdr + vb_size / 4;
+    cmd_dword(VIRGL_CMD0(VCCMD_RESOURCE_INLINE_WRITE, 0, iw_len));
+    cmd_dword(g_vb_res_id);
+    cmd_dword(0);            /* level */
+    cmd_dword(0);            /* usage */
+    cmd_dword(vb_size);      /* stride */
+    cmd_dword(vb_size);      /* layer_stride */
+    cmd_dword(0);            /* x */
+    cmd_dword(0);            /* y */
+    cmd_dword(0);            /* z */
+    cmd_dword(vb_size);      /* w */
+    cmd_dword(1);            /* h */
+    cmd_dword(1);            /* d */
+    for (int v = 0; v < 4; v++) {
+        cmd_float(verts[v][0]);
+        cmd_float(verts[v][1]);
+        cmd_float(verts[v][2]);
+        cmd_float(verts[v][3]);
+    }
+
+    /* Set vertex buffers */
+    cmd_dword(VIRGL_CMD0(VCCMD_SET_VERTEX_BUFFERS, 0, 3));
+    cmd_dword(16);           /* stride */
+    cmd_dword(0);            /* offset */
+    cmd_dword(g_vb_res_id);  /* handle */
+
+    /* Bind the app's sampler view */
+    cmd_dword(VIRGL_CMD0(VCCMD_SET_SAMPLER_VIEWS, 0, 3));
+    cmd_dword(PIPE_SHADER_FRAGMENT);
+    cmd_dword(0);            /* start_slot */
+    cmd_dword(sv_handle);
+
+    /* Draw textured quad */
+    cmd_dword(VIRGL_CMD0(VCCMD_DRAW_VBO, 0, 12));
+    cmd_dword(0);            /* start */
+    cmd_dword(4);            /* count */
+    cmd_dword(PIPE_PRIM_TRIANGLE_STRIP);  /* mode */
+    cmd_dword(0);            /* indexed */
+    cmd_dword(1);            /* instance_count */
+    cmd_dword(0);            /* index_bias */
+    cmd_dword(0);            /* start_instance */
+    cmd_dword(0);            /* primitive_restart */
+    cmd_dword(0);            /* restart_index */
+    cmd_dword(0);            /* min_index */
+    cmd_dword(0xFFFFFFFF);   /* max_index */
+    cmd_dword(0);            /* count_from_so */
+}
+
 int gpu_comp_active(void) {
     return g_active;
 }
+
+/* Re-transfer the backing buffer into the scanout render target. */
+void gpu_comp_update_bg(uint32_t *bg_pixels, int32_t fb_w, int32_t fb_h) {
+    if (!g_active || !g_fb_res_id) return;
+    (void)bg_pixels;
+    sys_gpu_transfer_3d(g_fb_res_id, 0, 0, 0, fb_w, fb_h, 1, 0, 0, 0, 0);
+}
+
+/* Present layers onto scanout:
+ *   L1–L3 — transfer dirty rect from CPU backing (unless overlay_fast)
+ *   L3 OVERLAY — draw GPU quads with alpha blend
+ *   L4 cursor — hardware plane (not here)
+ *
+ * overlay_fast=1: menu-only update — skip L1 transfer; blit quads onto the
+ * already-composited scanout (desktop/panels stay cached). */
+void gpu_comp_present(int32_t fb_w, int32_t fb_h,
+                      gpu_comp_gpu_surf_t *gpu_surfs, int ngpu,
+                      int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                      int overlay_fast) {
+    if (!g_active || !g_initialized) return;
+
+    int32_t tx0 = dx, ty0 = dy, tx1 = dx + dw, ty1 = dy + dh;
+    if (dw <= 0 || dh <= 0) {
+        tx0 = 0; ty0 = 0; tx1 = fb_w; ty1 = fb_h;
+        overlay_fast = 0;
+    }
+    for (int i = 0; i < ngpu; i++) {
+        int32_t x0 = gpu_surfs[i].x;
+        int32_t y0 = gpu_surfs[i].y;
+        int32_t x1 = x0 + (int32_t)gpu_surfs[i].w;
+        int32_t y1 = y0 + (int32_t)gpu_surfs[i].h;
+        if (x0 < tx0) tx0 = x0;
+        if (y0 < ty0) ty0 = y0;
+        if (x1 > tx1) tx1 = x1;
+        if (y1 > ty1) ty1 = y1;
+    }
+    if (tx0 < 0) tx0 = 0;
+    if (ty0 < 0) ty0 = 0;
+    if (tx1 > fb_w) tx1 = fb_w;
+    if (ty1 > fb_h) ty1 = fb_h;
+    int32_t tw = tx1 - tx0;
+    int32_t th = ty1 - ty0;
+    if (tw < 1) { tw = fb_w; tx0 = 0; overlay_fast = 0; }
+    if (th < 1) { th = fb_h; ty0 = 0; overlay_fast = 0; }
+
+    if (!overlay_fast)
+        sys_gpu_transfer_3d(g_fb_res_id, tx0, ty0, 0, tw, th, 1, 0, 0, 0, 0);
+
+    if (ngpu <= 0) {
+        sys_gpu_flush_res(g_fb_res_id, tx0, ty0, tw, th);
+        return;
+    }
+
+    cmd_reset();
+
+    cmd_dword(VIRGL_CMD0(VCCMD_SET_FRAMEBUFFER_STATE, 0, 3));
+    cmd_dword(1);
+    cmd_dword(0);
+    cmd_dword(FB_SURFACE_H);
+
+    cmd_dword(VIRGL_CMD0(VCCMD_SET_VIEWPORT_STATE, 0, 7));
+    cmd_dword(0);
+    cmd_float((float)fb_w / 2.0f);
+    cmd_float((float)fb_h / 2.0f);
+    cmd_float(0.5f);
+    cmd_float((float)fb_w / 2.0f);
+    cmd_float((float)fb_h / 2.0f);
+    cmd_float(0.5f);
+
+    cmd_dword(VIRGL_CMD0(VCCMD_BIND_OBJECT, VOBJ_RASTERIZER, 1));
+    cmd_dword(RAST_HANDLE);
+
+    cmd_dword(VIRGL_CMD0(VCCMD_BIND_OBJECT, VOBJ_BLEND, 1));
+    cmd_dword(BLEND_HANDLE);
+
+    for (int i = 0; i < ngpu; i++) {
+        float sx = (float)gpu_surfs[i].x;
+        float sy = (float)gpu_surfs[i].y;
+        float sw = (float)gpu_surfs[i].w;
+        float sh = (float)gpu_surfs[i].h;
+        float ndc_lo_x = 2.0f * sx / (float)fb_w - 1.0f;
+        float ndc_hi_x = 2.0f * (sx + sw) / (float)fb_w - 1.0f;
+        float ndc_lo_y = 2.0f * sy / (float)fb_h - 1.0f;
+        float ndc_hi_y = 2.0f * (sy + sh) / (float)fb_h - 1.0f;
+
+        /* Two triangles (6 verts) — avoids strip/fan mode mismatches. */
+        float verts[6][4] = {
+            { ndc_lo_x, ndc_lo_y,  0.0f, 0.0f },
+            { ndc_lo_x, ndc_hi_y,  0.0f, 1.0f },
+            { ndc_hi_x, ndc_lo_y,  1.0f, 0.0f },
+            { ndc_hi_x, ndc_lo_y,  1.0f, 0.0f },
+            { ndc_lo_x, ndc_hi_y,  0.0f, 1.0f },
+            { ndc_hi_x, ndc_hi_y,  1.0f, 1.0f },
+        };
+
+        uint32_t vb_size = 6 * 4 * 4;
+        uint32_t iw_hdr = 11;
+        uint32_t iw_len = iw_hdr + vb_size / 4;
+        cmd_dword(VIRGL_CMD0(VCCMD_RESOURCE_INLINE_WRITE, 0, iw_len));
+        cmd_dword(g_vb_res_id);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(vb_size);
+        cmd_dword(vb_size);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(vb_size);
+        cmd_dword(1);
+        cmd_dword(1);
+        for (int v = 0; v < 6; v++) {
+            cmd_float(verts[v][0]);
+            cmd_float(verts[v][1]);
+            cmd_float(verts[v][2]);
+            cmd_float(verts[v][3]);
+        }
+
+        cmd_dword(VIRGL_CMD0(VCCMD_SET_VERTEX_BUFFERS, 0, 3));
+        cmd_dword(16); cmd_dword(0); cmd_dword(g_vb_res_id);
+
+        cmd_dword(VIRGL_CMD0(VCCMD_SET_SAMPLER_VIEWS, 0, 3));
+        cmd_dword(PIPE_SHADER_FRAGMENT);
+        cmd_dword(0);
+        cmd_dword(gpu_surfs[i].sv_handle);
+
+        cmd_dword(VIRGL_CMD0(VCCMD_DRAW_VBO, 0, 12));
+        cmd_dword(0);
+        cmd_dword(6);
+        cmd_dword(PIPE_PRIM_TRIANGLES);
+        cmd_dword(0);
+        cmd_dword(1);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(0);
+        cmd_dword(0xFFFFFFFF);
+        cmd_dword(0);
+    }
+
+    cmd_submit();
+    sys_gpu_flush_res(g_fb_res_id, tx0, ty0, tw, th);
+}
+

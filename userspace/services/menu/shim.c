@@ -41,18 +41,49 @@ static void log_int(const char *prefix, int val, const char *suffix) {
 
 static uint64_t g_ns_port = 0;
 static uint64_t g_surf_port = 0;
-static uint32_t *g_px = NULL;
 static uint32_t g_si = 0;
 static uint32_t g_surf_w = 0;
 static uint32_t g_surf_h = 0;
 static int g_surface_active = 0;
 
-/* Menu dimensions — will be set dynamically */
-static int g_menu_w = 450;
-static int g_menu_h = 400;
+/* Surface sized for root popup (~200) + one fly-out (~200) + padding.
+ * Padding is transparent so it does not show as a dark plate. */
+static int g_menu_w = 420;
+static int g_menu_h = 360;
 
 /* Rust context menu state */
 static void *g_menu_state = NULL;
+
+/* GPU context ID for menu — must not conflict with compositor's ctx 1 */
+#define MENU_GPU_CTX_ID  2
+
+/* Shared memory for GPU data uploads (vertex/index/texture buffers) */
+#define GPU_VB_BASE   0x0000700000000000ULL
+#define GPU_VB_SIZE   (256 * 1024)       /* 256 KB for vertex data */
+#define GPU_IB_BASE   (GPU_VB_BASE + GPU_VB_SIZE)
+#define GPU_IB_SIZE   (128 * 1024)       /* 128 KB for index data */
+#define GPU_TEX_BASE  (GPU_IB_BASE + GPU_IB_SIZE)
+#define GPU_TEX_SIZE  (1024 * 1024)      /* 1 MB for texture uploads */
+
+static int alloc_gpu_buffers(void) {
+    /* Allocate pages for vertex buffer */
+    uint32_t npages;
+    npages = (GPU_VB_SIZE + 4095) / 4096;
+    for (uint32_t i = 0; i < npages; i++) {
+        if (sys_mem_alloc(GPU_VB_BASE + i * 4096, VMM_RW | VMM_U) < 0) return -1;
+    }
+    /* Allocate pages for index buffer */
+    npages = (GPU_IB_SIZE + 4095) / 4096;
+    for (uint32_t i = 0; i < npages; i++) {
+        if (sys_mem_alloc(GPU_IB_BASE + i * 4096, VMM_RW | VMM_U) < 0) return -1;
+    }
+    /* Allocate pages for texture upload buffer */
+    npages = (GPU_TEX_SIZE + 4095) / 4096;
+    for (uint32_t i = 0; i < npages; i++) {
+        if (sys_mem_alloc(GPU_TEX_BASE + i * 4096, VMM_RW | VMM_U) < 0) return -1;
+    }
+    return 0;
+}
 
 static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_surf_port = sys_port_create();
@@ -65,7 +96,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     cm.y = y;
     cm.w = w;
     cm.h = h;
-    cm.flags = WM_FLAG_OVERLAY;
+    cm.flags = WM_FLAG_OVERLAY | WM_FLAG_GPU;
     cm.owner_pid = (uint32_t)syscall0(SYS_PROC_PID);
     cm.reply_port = g_surf_port;
 
@@ -98,11 +129,12 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     if (!got) return -1;
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
-    g_px = (uint32_t *)srm->buf_vaddr;
+    /* GPU surface: buf_vaddr is 0, we only need surface_idx */
     g_si = srm->surface_idx;
     g_surf_w = w;
     g_surf_h = h;
     g_surface_active = 1;
+
     return 0;
 }
 
@@ -125,28 +157,31 @@ static void destroy_surface(void) {
     if (cp) sys_port_send(cp, &msg);
 
     g_surface_active = 0;
-    g_px = NULL;
     g_si = 0;
     g_surf_port = 0;
 }
 
-static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+/* GPU surfaces still need dirty notifications so the compositor presents
+ * them after each GPU render (present only runs on has_dirty). */
+static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t flags) {
     if (!g_surface_active) return;
-    wm_dirty_msg_t d;
-    memset(&d, 0, sizeof(d));
-    d.type = WM_SURFACE_DIRTY;
-    d.surface_idx = g_si;
-    d.x = x;
-    d.y = y;
-    d.w = w;
-    d.h = h;
+
+    wm_dirty_msg_t dm;
+    memset(&dm, 0, sizeof(dm));
+    dm.type = WM_SURFACE_DIRTY;
+    dm.surface_idx = g_si;
+    dm.x = x;
+    dm.y = y;
+    dm.w = w;
+    dm.h = h;
+    dm.flags = flags;
 
     ipc_msg_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.type = IPC_MSG_EVENT;
+    msg.type = IPC_MSG_REQUEST;
     msg.sender_pid = syscall0(SYS_PROC_PID);
-    msg.payload_len = sizeof(d);
-    memcpy(msg.payload, &d, sizeof(d));
+    msg.payload_len = sizeof(dm);
+    memcpy(msg.payload, &dm, sizeof(dm));
 
     uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &msg);
@@ -179,6 +214,20 @@ static uint32_t get_screen_height(void) {
 static int32_t g_menu_x = 0;
 static int32_t g_menu_y = 0;
 
+static wm_mouse_event_msg_t g_pending_move;
+static int g_have_pending_move = 0;
+static int32_t g_last_mx = 0;
+static int32_t g_last_my = 0;
+/* Cap scanout flushes — QEMU copies full 2560×1600 each time. */
+static uint64_t g_last_present_tick = 0;
+static uint64_t g_last_frame_tick = 0;
+#define MENU_PRESENT_MIN_MS  32u  /* ~30 Hz max present */
+#define MENU_IDLE_FRAME_MS   16u  /* keep egui pointer velocity alive */
+
+static uint64_t menu_ticks(void) {
+    return (uint64_t)syscall0(SYS_GET_TICKS);
+}
+
 static void show_menu(int32_t x, int32_t y) {
     uint32_t screen_w = get_screen_width();
     uint32_t screen_h = get_screen_height();
@@ -203,36 +252,92 @@ static void show_menu(int32_t x, int32_t y) {
 
     /* Trigger the egui context menu to open */
     xos_context_menu_trigger(g_menu_state);
+    g_last_mx = 8;
+    g_last_my = 8;
 
-    /* Run first frame to render the menu */
-    xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
-    send_dirty(0, 0, g_surf_w, g_surf_h);
+    /* Run first frame to render the menu on GPU before notifying compositor */
+    xos_context_menu_set_time_ms(g_menu_state, menu_ticks());
+    xos_context_menu_run_frame(g_menu_state);
+    g_last_frame_tick = menu_ticks();
 
+    /* Tell compositor our render target is ready (after first GPU frame) */
+    uint32_t rt_id = xos_context_menu_render_target_id(g_menu_state);
+    uint32_t ctx_id = xos_context_menu_context_id(g_menu_state);
+
+    wm_surface_gpu_ready_msg_t gr;
+    memset(&gr, 0, sizeof(gr));
+    gr.type = WM_SURFACE_GPU_READY;
+    gr.surface_idx = g_si;
+    gr.gpu_res_id = rt_id;
+    gr.gpu_ctx_id = ctx_id;
+
+    ipc_msg_t gmsg;
+    memset(&gmsg, 0, sizeof(gmsg));
+    gmsg.type = IPC_MSG_REQUEST;
+    gmsg.sender_pid = syscall0(SYS_PROC_PID);
+    gmsg.payload_len = sizeof(gr);
+    memcpy(gmsg.payload, &gr, sizeof(gr));
+
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+    if (cp) sys_port_send(cp, &gmsg);
+
+    /* GPU_READY marks the surface dirty once — do not send_dirty here. */
     log("[menu] menu surface created\n");
 }
 
 static void hide_menu(void) {
     destroy_surface();
+    g_have_pending_move = 0;
+    g_last_present_tick = 0;
+    g_last_frame_tick = 0;
     log("[menu] menu hidden\n");
 }
 
-static void handle_mouse_event(wm_mouse_event_msg_t *mev) {
-    if (!g_surface_active || !g_menu_state) return;
+static void maybe_send_present(void) {
+    uint32_t np = xos_context_menu_needs_present(g_menu_state);
+    if (!(np & 1u)) return;
 
-    xos_context_menu_mouse_event(g_menu_state, mev->x, mev->y, mev->button, mev->action);
+    uint64_t now = menu_ticks();
+    /* Always restore L1 under the menu before blit — otherwise transparent
+     * padding cannot erase a previous fly-out left in the scanout. */
+    if (g_last_present_tick != 0 &&
+        now - g_last_present_tick < (uint64_t)MENU_PRESENT_MIN_MS) {
+        return; /* texture already updated; flush later */
+    }
 
-    /* Run a frame with the mouse event */
-    uint32_t clicked = xos_context_menu_run_frame(g_menu_state, g_px, g_surf_w, g_surf_h);
-    send_dirty(0, 0, g_surf_w, g_surf_h);
+    send_dirty(0, 0, g_surf_w, g_surf_h, WM_DIRTY_RESTORE_DESKTOP);
+    xos_context_menu_ack_present(g_menu_state);
+    g_last_present_tick = now;
+}
+
+static int run_menu_frame(void) {
+    if (!g_surface_active || !g_menu_state) return 0;
+
+    xos_context_menu_set_time_ms(g_menu_state, menu_ticks());
+    uint32_t clicked = xos_context_menu_run_frame(g_menu_state);
+    g_last_frame_tick = menu_ticks();
 
     if (clicked) {
         uint32_t action = xos_context_menu_get_action(g_menu_state);
         log_int("[menu] action: ", (int)action, "\n");
         hide_menu();
-        return;
+        return 1;
     }
 
-    /* If left-click outside menu, close it */
+    maybe_send_present();
+    return 0;
+}
+
+static void handle_mouse_event(wm_mouse_event_msg_t *mev) {
+    if (!g_surface_active || !g_menu_state) return;
+
+    g_last_mx = mev->x;
+    g_last_my = mev->y;
+    xos_context_menu_mouse_event(g_menu_state, mev->x, mev->y, mev->button, mev->action);
+
+    if (run_menu_frame())
+        return;
+
     if (mev->action == 1 && mev->button == 1) {
         uint32_t is_open = xos_context_menu_is_open(g_menu_state);
         if (!is_open) {
@@ -241,40 +346,38 @@ static void handle_mouse_event(wm_mouse_event_msg_t *mev) {
     }
 }
 
-/* Process only the last mouse event from a batch, skipping intermediate moves.
- * This prevents the menu service from blocking the compositor with redundant renders. */
-static void drain_and_process_mouse_events(void) {
+/* Coalesce moves to the latest position; clicks flush any pending move first.
+ * Returns 1 if at least one mouse event was handled. */
+static int drain_and_process_mouse_events(void) {
     ipc_msg_t msg;
-    wm_mouse_event_msg_t last_mev;
-    int have_mev = 0;
-    int have_click = 0;
+    int handled = 0;
 
     while (sys_port_recv(g_surf_port, &msg, 0)) {
         if (msg.payload_len >= sizeof(wm_mouse_event_msg_t)) {
             wm_mouse_event_msg_t *mev = (wm_mouse_event_msg_t *)msg.payload;
             if (mev->type == WM_MOUSE_EVENT) {
-                /* Always process clicks immediately, batch moves */
                 if (mev->action != 0) {
-                    /* Click/release — process this one and any preceding */
-                    if (have_mev) {
-                        handle_mouse_event(&last_mev);
-                        have_mev = 0;
+                    if (g_have_pending_move) {
+                        handle_mouse_event(&g_pending_move);
+                        g_have_pending_move = 0;
+                        handled = 1;
                     }
                     handle_mouse_event(mev);
-                    have_click = 1;
+                    handled = 1;
                 } else {
-                    /* Move — just remember the latest position */
-                    last_mev = *mev;
-                    have_mev = 1;
+                    g_pending_move = *mev;
+                    g_have_pending_move = 1;
                 }
             }
         }
     }
 
-    /* Process the last buffered move event */
-    if (!have_click && have_mev) {
-        handle_mouse_event(&last_mev);
+    if (g_have_pending_move) {
+        handle_mouse_event(&g_pending_move);
+        g_have_pending_move = 0;
+        handled = 1;
     }
+    return handled;
 }
 
 /* ---- Main ---------------------------------------------------------------- */
@@ -285,12 +388,23 @@ void menu_main(void) {
     uint32_t screen_w = get_screen_width();
     uint32_t screen_h = get_screen_height();
 
-    g_menu_state = xos_context_menu_init(screen_w, screen_h);
-    if (!g_menu_state) {
-        log("[menu] failed to init egui context menu\n");
+    /* Allocate GPU upload buffers */
+    if (alloc_gpu_buffers() < 0) {
+        log("[menu] failed to alloc GPU buffers\n");
         return;
     }
-    log("[menu] egui context menu initialized\n");
+
+    g_menu_state = xos_context_menu_init(screen_w, screen_h,
+                                         g_menu_w, g_menu_h,
+                                         MENU_GPU_CTX_ID,
+                                         (void *)GPU_VB_BASE, GPU_VB_SIZE,
+                                         (void *)GPU_IB_BASE, GPU_IB_SIZE,
+                                         (void *)GPU_TEX_BASE, GPU_TEX_SIZE);
+    if (!g_menu_state) {
+        log("[menu] failed to init egui GPU context menu\n");
+        return;
+    }
+    log("[menu] egui GPU context menu initialized\n");
 
     g_ns_port = sys_port_create();
     if (!g_ns_port) {
@@ -332,9 +446,20 @@ void menu_main(void) {
             }
         }
 
-        /* Drain all surface port messages (mouse events) — batched */
-        if (!just_showed && g_surf_port) {
-            drain_and_process_mouse_events();
+        /* Drain mouse; idle-tick egui so submenu hover velocity works. */
+        if (!just_showed && g_surface_active && g_surf_port) {
+            int got_mouse = drain_and_process_mouse_events();
+            if (!got_mouse && g_menu_state && xos_context_menu_is_open(g_menu_state)) {
+                uint64_t now = menu_ticks();
+                if (g_last_frame_tick == 0 ||
+                    now - g_last_frame_tick >= (uint64_t)MENU_IDLE_FRAME_MS) {
+                    /* Re-feed last pointer pos with fresh time (no new button). */
+                    xos_context_menu_mouse_event(g_menu_state, g_last_mx, g_last_my, 0, 0);
+                    run_menu_frame();
+                }
+            }
+            if (g_menu_state && (xos_context_menu_needs_present(g_menu_state) & 1u))
+                maybe_send_present();
         }
 
         syscall0(SYS_YIELD);
