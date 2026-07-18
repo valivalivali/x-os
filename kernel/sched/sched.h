@@ -33,6 +33,9 @@ typedef struct proc {
     uint64_t parent_pid;    /* PID of parent (0 = init/kernel) */
     int exit_code;          /* exit code when state == PROC_DEAD but not reaped */
     bool reaped;            /* true after wait() has collected exit_code */
+    /* Callee-saved GPRs to restore for fork children (SysV AMD64). */
+    uint64_t fork_rbx, fork_rbp, fork_r12, fork_r13, fork_r14, fork_r15;
+    uint64_t fork_rflags;
 } proc_t;
 
 void sched_init(void);

@@ -83,3 +83,49 @@ enter_userspace:
     pushq %rsi              /* RIP = entry point */
     movq %rcx, %rax         /* set return value for user (0 for fork child) */
     iretq
+
+/* void enter_userspace_fork(uint64_t pml4_phys, uint64_t rip, uint64_t rsp,
+ *                           uint64_t ret_val, proc_t *child);
+ * Args: rdi, rsi, rdx, rcx, r8
+ * Restores fork_* callee-saved from child before iretq. */
+.globl enter_userspace_fork
+enter_userspace_fork:
+    movq %rdi, %cr3         /* pml4_phys */
+
+    /* Load callee-saved from proc_t (offsets after reaped bool).
+     * Layout (see sched.h): fork_rbx at offset 88 if packed as:
+     * pid(8)+state(4)+pad(4)+rsp(8)+rip(8)+pml4_phys(8)+pml4_virt(8)+
+     * kstack(8)+sleep_until(8)+next(8)+ring3(1)+pad(7)+parent_pid(8)+
+     * exit_code(4)+reaped(1)+pad(3)+fork_rbx...
+     * Use a stable approach: pass child in r8 and read via known offsets
+     * computed to match the C struct. */
+    /* Offsets relative to proc_t* in r8 — keep in sync with sched.h */
+    .equ PROC_FORK_RBX, 96
+    .equ PROC_FORK_RBP, 104
+    .equ PROC_FORK_R12, 112
+    .equ PROC_FORK_R13, 120
+    .equ PROC_FORK_R14, 128
+    .equ PROC_FORK_R15, 136
+    .equ PROC_FORK_RFLAGS, 144
+
+    movq PROC_FORK_RBX(%r8), %rbx
+    movq PROC_FORK_RBP(%r8), %rbp
+    movq PROC_FORK_R12(%r8), %r12
+    movq PROC_FORK_R13(%r8), %r13
+    movq PROC_FORK_R14(%r8), %r14
+    movq PROC_FORK_R15(%r8), %r15
+
+    pushq $0x23             /* SS */
+    pushq %rdx              /* RSP */
+    movq PROC_FORK_RFLAGS(%r8), %rax
+    testq %rax, %rax
+    jne 1f
+    pushfq
+    popq %rax
+    orq $0x200, %rax
+1:
+    pushq %rax              /* RFLAGS */
+    pushq $0x1B             /* CS */
+    pushq %rsi              /* RIP */
+    movq %rcx, %rax         /* return value (0) */
+    iretq

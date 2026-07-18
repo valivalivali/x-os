@@ -109,6 +109,8 @@ static int split_main(int argc, char **argv);
 static int csplit_main(int argc, char **argv);
 static int less_main(int argc, char **argv);
 static int vi_main(int argc, char **argv);
+static int sudo_main(int argc, char **argv);
+static int su_main(int argc, char **argv);
 
 struct cmd_entry {
     const char *name;
@@ -180,6 +182,8 @@ static const struct cmd_entry cmd_table[] = {
     { "more",      less_main },
     { "vi",        vi_main },
     { "vim",       vi_main },
+    { "sudo",      sudo_main },
+    { "su",        su_main },
     { NULL, NULL }
 };
 
@@ -215,7 +219,7 @@ int cmds_main(int argc, char **argv) {
     }
 
     fprintf(stderr, "cmds: unknown command '%s'\n", cmd);
-    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim\n");
+    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim sudo su\n");
     return 1;
 }
 
@@ -3232,4 +3236,28 @@ static int vi_main(int argc, char **argv) {
     free(line_lens);
 
     return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* sudo / su — stubs until Apple sudo-114 / PAM is ported.
+ * Already uid 0: never nested-fork (that crashed the kernel on sudo su).
+ * Replace this process image with the target command via exec. */
+
+static int su_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    /* `su -` would start a login shell; we already are root in the shell. */
+    printf("su: already root\n");
+    return 0;
+}
+
+static int sudo_main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: sudo command [args...]\n");
+        return 1;
+    }
+
+    /* Already root: run the target applet in-process. A second exec was
+     * hitting a kernel argv-stack alignment bug and corrupting argv[0]. */
+    return cmds_main(argc - 1, &argv[1]);
 }

@@ -263,7 +263,7 @@ $(TEST_LIBC_ELF): userspace/libc/test_libc.c userspace/libc/syscalls.c userspace
 
 test-libc: $(TEST_LIBC_ELF)
 
-# ---- zsh shell (interactive shell via newlib) -----------------------------
+# ---- zsh shell (Apple OSS zsh-118 / zsh 5.9 + X OS bridge) -----------------
 ZSH_SRC := $(CURDIR)/userspace/shell/zsh-src
 ZSH_STUBS := $(BUILD_DIR)/userspace/shell/stubs
 ZSH_CURSES_A := $(ZSH_STUBS)/libcurses.a
@@ -277,15 +277,11 @@ $(ZSH_CURSES_A): userspace/shell/curses_stubs.c
 
 $(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_entry.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld $(ZSH_CURSES_A)
 	@mkdir -p $(dir $@)
-	@echo ">> Building zsh (using local zsh-src)..."
-	@# Compile our _start entry point (assembly for stack alignment)
+	@echo ">> Building zsh (Apple zsh-118 lineage → zsh_main)..."
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/shell/zsh_start.S -o $(BUILD_DIR)/userspace/shell/zsh_start.o
-	@# Compile our zsh entry (IPC bridge setup + echo shell)
 	$(CC) $(LIBC_CFLAGS) -c userspace/shell/zsh_entry.c -o $(BUILD_DIR)/userspace/shell/zsh_entry.o
-	@# Compile our syscall stubs
 	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/shell/zsh_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o
-	@# Link zsh with our entry point and syscall stubs
 	cd $(ZSH_SRC)/Src && \
 	  $(LD) -nostdlib -static -m elf_x86_64 -T $(CURDIR)/userspace/libc/xos-libc.ld \
 	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_start.o \
@@ -296,7 +292,6 @@ $(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_entry.c userspace/li
 	    $(CURDIR)/$(BUILD_DIR)/userspace/shell/zsh_xos_syscall.o \
 	    $(NEWLIB_LIBS) \
 	    -o $(CURDIR)/$(ZSH_ELF)
-	@# Strip debug info to reduce embedded size
 	/opt/homebrew/opt/llvm/bin/llvm-strip $(ZSH_ELF)
 	@echo ">> linked $@"
 

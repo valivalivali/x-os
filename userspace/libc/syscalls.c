@@ -237,6 +237,11 @@ off_t _lseek(int fd, off_t offset, int whence) {
 }
 
 int _isatty(int fd) {
+    /* IPC shell bridge presents stdin/stdout as a terminal to zsh. */
+    if (g_bridge_input_port || g_bridge_output_port) {
+        if (fd == 0 || fd == 1 || fd == 2)
+            return 1;
+    }
     struct termios t;
     return tcgetattr(fd, &t) == 0 ? 1 : 0;
 }
@@ -255,9 +260,34 @@ int _fstat(int fd, struct stat *st) {
 }
 
 int _stat(const char *file, struct stat *st) {
-    if (!st) return -1;
+    /* Kernel fills xfs_dirent_t via SYS_STAT — map into POSIX struct stat. */
+    typedef struct {
+        char     name[64];
+        uint32_t inode_block;
+        uint32_t size;
+        uint16_t flags;
+        uint16_t reserved;
+    } xos_dirent_t;
+    xos_dirent_t dent;
+    int ret;
+
+    if (!st || !file) {
+        errno = EINVAL;
+        return -1;
+    }
     memset(st, 0, sizeof(*st));
-    st->st_mode = S_IFREG;
+    memset(&dent, 0, sizeof(dent));
+    ret = sys_stat(file, &dent);
+    if (ret < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    st->st_size = dent.size;
+    if (dent.flags & 1)
+        st->st_mode = S_IFDIR | 0755;
+    else
+        st->st_mode = S_IFREG | 0755;
+    st->st_nlink = 1;
     return 0;
 }
 
@@ -516,6 +546,10 @@ void cfmakeraw(struct termios *t) {
 }
 
 int isatty(int fd) {
+    if (g_bridge_input_port || g_bridge_output_port) {
+        if (fd == 0 || fd == 1 || fd == 2)
+            return 1;
+    }
     struct termios t;
     return tcgetattr(fd, &t) == 0 ? 1 : 0;
 }
@@ -544,14 +578,140 @@ int mkfifo(const char *path, mode_t mode) { (void)path; (void)mode; errno = ENOS
 int chown(const char *path, uid_t owner, gid_t group) { (void)path; (void)owner; (void)group; return 0; }
 int chmod(const char *path, mode_t mode) { (void)path; (void)mode; return 0; }
 unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
-int access(const char *path, int mode) { (void)path; (void)mode; return 0; }
-unsigned int sleep(unsigned int seconds) { (void)seconds; return 0; }
+int access(const char *path, int mode) {
+    (void)mode;
+    struct stat st;
+    if (!path || _stat(path, &st) < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    return 0;
+}
+
+int nanosleep(const struct timespec *rqtp, struct timespec *rmtp);
+
+unsigned int sleep(unsigned int seconds) {
+    struct timespec ts;
+    ts.tv_sec = seconds;
+    ts.tv_nsec = 0;
+    nanosleep(&ts, NULL);
+    return 0;
+}
+
 char *getlogin(void) { return "root"; }
 char *ttyname(int fd) { (void)fd; return "/dev/tty"; }
-char *getenv(const char *name) { (void)name; return NULL; }
-int setenv(const char *name, const char *value, int overwrite) { (void)name; (void)value; (void)overwrite; return 0; }
-int unsetenv(const char *name) { (void)name; return 0; }
-int putenv(char *string) { (void)string; return 0; }
+
+/* Minimal environ for zsh PATH / HOME (newlib environ starts empty). */
+extern char **environ;
+#define XOS_ENV_MAX 64
+static char *xos_env_storage[XOS_ENV_MAX + 1];
+static int xos_env_ready;
+
+static void xos_env_init(void) {
+    if (xos_env_ready)
+        return;
+    xos_env_storage[0] = NULL;
+    environ = xos_env_storage;
+    xos_env_ready = 1;
+}
+
+static char *xos_env_get(const char *name) {
+    size_t nlen;
+    if (!name || !*name)
+        return NULL;
+    xos_env_init();
+    nlen = strlen(name);
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, name, nlen) == 0 && (*e)[nlen] == '=')
+            return *e + nlen + 1;
+    }
+    return NULL;
+}
+
+char *getenv(const char *name) {
+    return xos_env_get(name);
+}
+
+int setenv(const char *name, const char *value, int overwrite) {
+    size_t nlen, vlen, i;
+    char *entry;
+    if (!name || !*name || strchr(name, '=') || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    xos_env_init();
+    nlen = strlen(name);
+    vlen = strlen(value);
+    for (i = 0; environ[i]; i++) {
+        if (strncmp(environ[i], name, nlen) == 0 && environ[i][nlen] == '=') {
+            if (!overwrite)
+                return 0;
+            entry = malloc(nlen + vlen + 2);
+            if (!entry) {
+                errno = ENOMEM;
+                return -1;
+            }
+            memcpy(entry, name, nlen);
+            entry[nlen] = '=';
+            memcpy(entry + nlen + 1, value, vlen + 1);
+            free(environ[i]);
+            environ[i] = entry;
+            return 0;
+        }
+    }
+    if (i >= XOS_ENV_MAX) {
+        errno = ENOMEM;
+        return -1;
+    }
+    entry = malloc(nlen + vlen + 2);
+    if (!entry) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(entry, name, nlen);
+    entry[nlen] = '=';
+    memcpy(entry + nlen + 1, value, vlen + 1);
+    environ[i] = entry;
+    environ[i + 1] = NULL;
+    return 0;
+}
+
+int unsetenv(const char *name) {
+    size_t nlen, i, j;
+    if (!name || !*name || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
+    }
+    xos_env_init();
+    nlen = strlen(name);
+    for (i = 0; environ[i]; i++) {
+        if (strncmp(environ[i], name, nlen) == 0 && environ[i][nlen] == '=') {
+            free(environ[i]);
+            for (j = i; environ[j]; j++)
+                environ[j] = environ[j + 1];
+            return 0;
+        }
+    }
+    return 0;
+}
+
+int putenv(char *string) {
+    char *eq;
+    char namebuf[128];
+    size_t nlen;
+    if (!string || !(eq = strchr(string, '='))) {
+        errno = EINVAL;
+        return -1;
+    }
+    nlen = (size_t)(eq - string);
+    if (nlen == 0 || nlen >= sizeof(namebuf)) {
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(namebuf, string, nlen);
+    namebuf[nlen] = '\0';
+    return setenv(namebuf, eq + 1, 1);
+}
 
 /* Group/password stubs */
 struct group { char *gr_name; char *gr_passwd; gid_t gr_gid; char **gr_mem; };

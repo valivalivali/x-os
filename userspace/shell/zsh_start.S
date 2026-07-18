@@ -1,13 +1,12 @@
 /* Entry point for zsh on x-os.
- * The kernel sets rsp to a 16-byte aligned address.
- * x86_64 ABI requires rsp%16==8 at function entry (as if a call pushed
- * a return address). We adjust rsp to match.
- */
+ * Kernel leaves rsp 16-byte aligned. SysV AMD64 ABI requires
+ * rsp % 16 == 0 immediately before CALL so that after the return
+ * address is pushed, the callee sees rsp % 16 == 8 (needed for
+ * movaps / SSE in the Apple zsh 5.9 objects). */
     .text
     .globl _start
 _start:
-    andq $-16, %rsp       /* align to 16 bytes */
-    subq $8, %rsp         /* simulate return address push (rsp%16==8) */
+    andq $-16, %rsp       /* rsp % 16 == 0 before call */
     call zsh_entry
 
     /* zsh_entry returned — exit with code 0 */

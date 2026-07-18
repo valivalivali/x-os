@@ -36,3 +36,7 @@ int proc_waitpid(int pid, int *status);
  *   ret_val   : value to return in RAX to userspace (0 for fork children) */
 void enter_userspace(uint64_t pml4_phys, uint64_t rip, uint64_t rsp,
                      uint64_t ret_val);
+
+/* Fork-child resume: like enter_userspace but restores callee-saved GPRs. */
+void enter_userspace_fork(uint64_t pml4_phys, uint64_t rip, uint64_t rsp,
+                          uint64_t ret_val, proc_t *child);

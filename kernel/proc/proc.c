@@ -18,7 +18,11 @@ extern uint64_t g_kernel_rsp0;
 static void ring3_trampoline(void) {
     proc_t *p = proc_current();
     g_kernel_rsp0 = (uint64_t)(p->kstack + SCHED_STACK_SIZE);
-    enter_userspace(p->pml4_phys, p->rip, p->sleep_until, 0);
+    if (p->fork_rflags) {
+        enter_userspace_fork(p->pml4_phys, p->rip, p->sleep_until, 0, p);
+    } else {
+        enter_userspace(p->pml4_phys, p->rip, p->sleep_until, 0);
+    }
 }
 
 proc_t *proc_spawn_ring3(const uint8_t *elf_data, size_t elf_len) {
@@ -182,12 +186,34 @@ uint64_t proc_fork(void) {
 
     /* syscall_entry pushes %r15 onto the user stack before saving rsp, and
      * the normal sysret path pops it. enter_userspace does not — so advance
-     * past that slot or the child's first `ret` jumps to the saved r15. */
+     * past that slot or the child's first `ret` jumps to the saved r15.
+     * Capture the saved user r15 before skipping the slot. */
+    uint64_t user_r15 = 0;
+    {
+        /* user_rsp currently points at the pushed r15 in the child's
+         * address space (clone of parent's user stack). */
+        uint64_t pa = vmm_virt_to_phys(child_pml4_virt, user_rsp);
+        if (pa)
+            user_r15 = *(uint64_t *)phys_to_virt(pa);
+    }
     user_rsp += 8;
 
-    /* Set up child's kernel stack for ring3_trampoline.
-     * The trampoline will call enter_userspace(child_pml4, user_rip, user_rsp).
-     * We stash user_rip and user_rsp in sleep_until and rip fields. */
+    /* Callee-saved GPRs are still the user's values here: syscall_entry only
+     * scratch-used r15 (saved on the user stack), and C preserves the rest. */
+    uint64_t ubx, ubp, ur12, ur13, ur14;
+    __asm__ volatile("mov %%rbx, %0" : "=r"(ubx));
+    __asm__ volatile("mov %%rbp, %0" : "=r"(ubp));
+    __asm__ volatile("mov %%r12, %0" : "=r"(ur12));
+    __asm__ volatile("mov %%r13, %0" : "=r"(ur13));
+    __asm__ volatile("mov %%r14, %0" : "=r"(ur14));
+    child->fork_rbx = ubx;
+    child->fork_rbp = ubp;
+    child->fork_r12 = ur12;
+    child->fork_r13 = ur13;
+    child->fork_r14 = ur14;
+    child->fork_r15 = user_r15;
+    child->fork_rflags = user_rflags | 0x200; /* IF */
+
     child->rip = user_rip;
     child->sleep_until = user_rsp;
 
@@ -209,13 +235,6 @@ uint64_t proc_fork(void) {
     *ksp = 0;           /* r15 */
     child->rsp = (uint64_t)ksp;
 
-    /* Also save user rflags for the child — we need to modify the trampoline
-     * or use a different approach. For now, the trampoline calls
-     * enter_userspace which does sysretq with r11=rflags. We need to pass
-     * rflags somehow. We'll stash it in the child's exit_code field
-     * temporarily (hacky but works). */
-    child->exit_code = (int)user_rflags;
-
     kprintf("[proc] fork: parent=%lu child=%lu rip=%p rsp=%p\n",
             parent->pid, child->pid, (void *)user_rip, (void *)user_rsp);
 
@@ -231,8 +250,17 @@ int proc_exec(const char *path, char *const argv[]) {
     proc_t *p = proc_current();
     if (!p || !p->ring3) return -1;
 
-    /* Open the file */
+    /* Open the file. /bin/<applet> names are not seeded (boot speed);
+     * fall back to the multicall binary and keep argv[0] as the applet. */
     int fd = xfs_open(path, 0);
+    if (fd < 0 && path[0] == '/' && path[1] == 'b' && path[2] == 'i' &&
+        path[3] == 'n' && path[4] == '/' &&
+        !(path[5] == 'c' && path[6] == 'm' && path[7] == 'd' &&
+          path[8] == 's' && path[9] == '\0')) {
+        fd = xfs_open("/bin/cmds", 0);
+        if (fd >= 0)
+            path = "/bin/cmds";
+    }
     if (fd < 0) {
         kprintf("[proc] exec: open(%s) failed\n", path);
         return -1;
@@ -341,27 +369,50 @@ int proc_exec(const char *path, char *const argv[]) {
     if (argc > 64) argc = 64;  /* safety limit */
 
     /* Helper: write bytes to user stack via kernel HHDM.
-     * sp is a user VA in the new address space; we translate it to
-     * physical via the new pml4, then use phys_to_virt. */
+     * Handles writes that cross page boundaries. */
     #define USTACK_WRITE(off, src, n) do { \
         uint64_t _va = sp + (off); \
-        uint64_t _pa = vmm_virt_to_phys(new_pml4_virt, _va); \
-        if (_pa) memcpy(phys_to_virt(_pa), (src), (n)); \
+        const uint8_t *_src = (const uint8_t *)(src); \
+        size_t _n = (size_t)(n); \
+        while (_n > 0) { \
+            uint64_t _pa = vmm_virt_to_phys(new_pml4_virt, _va); \
+            if (!_pa) break; \
+            size_t _chunk = PAGE_SIZE - (_va & (PAGE_SIZE - 1)); \
+            if (_chunk > _n) _chunk = _n; \
+            memcpy(phys_to_virt(_pa), _src, _chunk); \
+            _va += _chunk; \
+            _src += _chunk; \
+            _n -= _chunk; \
+        } \
     } while (0)
 
     /* Copy string data to stack (high addresses, growing down). */
     uint64_t str_addrs[64];
 
     for (int i = argc - 1; i >= 0; i--) {
-        const char *s = argv[i];
+        const char *s = argv[i] ? argv[i] : "";
         size_t slen = strlen(s) + 1;  /* include NUL */
         sp -= slen;
         USTACK_WRITE(0, s, slen);
         str_addrs[i] = sp;
     }
 
-    /* Align sp to 16 bytes before building the argv array. */
+    /* Align before the pointer block. Layout must be contiguous:
+     *   [argc][argv[0]…argv[n]][NULL][envp NULL][auxv 0,0][strings…]
+     * Never insert padding between argc and argv[0] — _start does
+     * `argv = rsp+8`, so a gap makes argv[0] garbage (e.g. lsHANAVARTANA)
+     * or page-faults on the next deref. */
     sp &= ~0xFULL;
+
+    /* Pointer block size: auxv(16) + env NULL(8) + argv NULL(8) +
+     * argv pointers(argc*8) + argc(8) = 40 + argc*8.
+     * Final rsp (= sp - that) must be 16-byte aligned. Pad above the
+     * pointer block (toward the strings), not between argc and argv. */
+    {
+        uint64_t ptr_bytes = 40ull + (uint64_t)argc * 8ull;
+        if ((sp - ptr_bytes) & 0xFull)
+            sp -= 8;
+    }
 
     /* Push auxiliary vector terminator (2 zeros: key=0, val=0) */
     sp -= 16;
@@ -388,15 +439,7 @@ int proc_exec(const char *path, char *const argv[]) {
         USTACK_WRITE(0, &str_addrs[i], 8);
     }
 
-    /* Now sp points to argv[0]. Save this as argv_ptr. */
-    uint64_t argv_ptr = sp;
-
-    /* Ensure (sp - 8) is 16-byte aligned so argc lands at an aligned rsp.
-     * Padding below argc would hide it from _start. */
-    if ((sp - 8) & 0xF)
-        sp -= 8;
-
-    /* Push argc */
+    /* Push argc — must sit immediately below argv[0]. */
     sp -= 8;
     {
         uint64_t v = (uint64_t)argc;
@@ -404,7 +447,6 @@ int proc_exec(const char *path, char *const argv[]) {
     }
 
     uint64_t user_rsp = sp;
-    (void)argv_ptr;  /* argv_ptr is available for future use */
 
     /* Switch CR3 to the new address space BEFORE freeing the old PML4.
      * Freeing while CR3 still points at it corrupts the live page tables. */
@@ -449,21 +491,42 @@ int proc_exec(const char *path, char *const argv[]) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Waitpid — wait for child to exit */
+/* Waitpid — wait for child to exit. pid == -1 means any child. */
 
 int proc_waitpid(int pid, int *status) {
     proc_t *parent = proc_current();
     if (!parent) return -1;
 
     for (;;) {
-        proc_t *child = proc_by_pid((uint64_t)pid);
-        if (!child || child->parent_pid != parent->pid)
-            return -1;
+        proc_t *child = NULL;
+        int has_live = 0;
 
-        if (child->state == PROC_DEAD && !child->reaped) {
-            if (status) *status = child->exit_code;
-            child->reaped = true;
-            return (int)child->pid;
+        if (pid > 0) {
+            child = proc_by_pid((uint64_t)pid);
+            if (!child || child->parent_pid != parent->pid)
+                return -1;
+            if (child->state == PROC_DEAD && !child->reaped) {
+                if (status) *status = child->exit_code;
+                child->reaped = true;
+                return (int)child->pid;
+            }
+            has_live = 1;
+        } else {
+            /* Wait for any child of this parent. */
+            for (uint64_t i = 1; i < SCHED_MAX_PROCS; i++) {
+                proc_t *c = proc_by_pid(i);
+                if (!c || c->parent_pid != parent->pid)
+                    continue;
+                if (c->state == PROC_DEAD && !c->reaped) {
+                    if (status) *status = c->exit_code;
+                    c->reaped = true;
+                    return (int)c->pid;
+                }
+                if (c->state != PROC_DEAD)
+                    has_live = 1;
+            }
+            if (!has_live)
+                return -1; /* ECHILD */
         }
 
         /* Still running — let the child (and terminal) schedule. */

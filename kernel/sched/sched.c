@@ -95,6 +95,10 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].parent_pid = 0;
             procs[i].exit_code = 0;
             procs[i].reaped = true;
+            procs[i].fork_rbx = procs[i].fork_rbp = 0;
+            procs[i].fork_r12 = procs[i].fork_r13 = 0;
+            procs[i].fork_r14 = procs[i].fork_r15 = 0;
+            procs[i].fork_rflags = 0;
             ready_enqueue(&procs[i]);
             return &procs[i];
         }
