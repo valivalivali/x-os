@@ -103,12 +103,18 @@ MENU_BLOB_O    := $(OBJ_DIR)/kernel/proc/menu_elf_blob.o
 # Menu is now built with Rust + egui (no SVG)
 MENU_RUST_LIB  := $(BUILD_DIR)/userspace/services/menu/libxos_context_menu.a
 
+# Terminal app (egui on xos_egui_platform)
+TERMINAL_ELF      := $(BUILD_DIR)/userspace/apps/terminal/terminal.elf
+TERMINAL_BLOB_C   := kernel/proc/terminal_elf_blob.c
+TERMINAL_BLOB_O   := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
+TERMINAL_RUST_LIB := $(BUILD_DIR)/userspace/apps/terminal/libxos_terminal.a
+
 # GPU rendering backend + platform layer for egui apps
 EGUI_VIRGL_LIB   := $(BUILD_DIR)/third_party/egui_virgl_backend/libegui_virgl_backend.a
-EGUI_PLATFORM_LIB := $(BUILD_DIR)/userspace/lib/egui_platform/libxos_egui_platform.a
+EGUI_PLATFORM_LIB := $(BUILD_DIR)/userspace/lib/egui_platform/libxos_egui_platform.rlib
 
 # Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O)
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O) $(TERMINAL_BLOB_O)
 
 # ---- newlib paths --------------------------------------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -452,8 +458,8 @@ $(MENU_BLOB_O): $(MENU_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ---- egui GPU backend + platform layer (Rust staticlibs) -----------------
-egui-gpu: $(EGUI_VIRGL_LIB) $(EGUI_PLATFORM_LIB)
+# ---- egui GPU backend + platform layer (Rust) ----------------------------
+egui-gpu: $(EGUI_VIRGL_LIB)
 
 $(EGUI_VIRGL_LIB): third_party/egui_virgl_backend/Cargo.toml third_party/egui_virgl_backend/src/lib.rs third_party/egui_virgl_backend/src/runtime.rs third_party/egui_software_backend/src/lib.rs
 	@mkdir -p $(dir $@)
@@ -463,11 +469,39 @@ $(EGUI_VIRGL_LIB): third_party/egui_virgl_backend/Cargo.toml third_party/egui_vi
 	cp third_party/egui_virgl_backend/target/x86_64-unknown-none/release/libegui_virgl_backend.a $@
 	@echo ">> built $@"
 
-$(EGUI_PLATFORM_LIB): userspace/lib/egui_platform/Cargo.toml userspace/lib/egui_platform/src/lib.rs $(EGUI_VIRGL_LIB)
+# ---- terminal app (Rust + egui_platform) ---------------------------------
+terminal: $(TERMINAL_ELF)
+
+$(TERMINAL_RUST_LIB): userspace/apps/terminal/Cargo.toml userspace/apps/terminal/src/lib.rs userspace/lib/egui_platform/src/lib.rs $(EGUI_VIRGL_LIB)
 	@mkdir -p $(dir $@)
-	cd userspace/lib/egui_platform && cargo build --release --target x86_64-unknown-none
-	cp userspace/lib/egui_platform/target/x86_64-unknown-none/release/libxos_egui_platform.a $@
+	cd userspace/apps/terminal && CARGO_TARGET_DIR="$(CURDIR)/userspace/apps/terminal/target" cargo build --release --target x86_64-unknown-none
+	cp userspace/apps/terminal/target/x86_64-unknown-none/release/libxos_terminal.a $@
 	@echo ">> built $@"
+
+$(TERMINAL_ELF): userspace/apps/terminal/shim.c userspace/apps/terminal/start.S $(TERMINAL_RUST_LIB) $(EGUI_VIRGL_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/apps/terminal/terminal.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/apps/terminal/start.S -o $(BUILD_DIR)/userspace/apps/terminal/start.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -Iuserspace/apps/terminal -c userspace/apps/terminal/shim.c -o $(BUILD_DIR)/userspace/apps/terminal/shim.o
+	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/apps/terminal/term_syscalls.o
+	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/apps/terminal/term_xos_syscall.o
+	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/apps/terminal/terminal.ld \
+	  $(BUILD_DIR)/userspace/apps/terminal/start.o \
+	  $(BUILD_DIR)/userspace/apps/terminal/shim.o \
+	  $(BUILD_DIR)/userspace/apps/terminal/term_syscalls.o \
+	  $(BUILD_DIR)/userspace/apps/terminal/term_xos_syscall.o \
+	  $(TERMINAL_RUST_LIB) $(EGUI_VIRGL_LIB) $(NEWLIB_LIBS) \
+	  -o $@
+	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
+	@echo ">> linked $@"
+
+$(TERMINAL_BLOB_C): $(TERMINAL_ELF)
+	@mkdir -p $(dir $@)
+	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t terminal_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *terminal_elf_data = terminal_elf_bytes;', 'size_t terminal_elf_len = sizeof(terminal_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
+	@echo ">> generated $@"
+
+$(TERMINAL_BLOB_O): $(TERMINAL_BLOB_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- link ----------------------------------------------------------------
 $(KERNEL): $(OBJS) kernel/linker.ld

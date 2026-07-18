@@ -133,6 +133,7 @@ uint64_t proc_fork(void) {
 
     child->ring3 = true;
     child->parent_pid = parent->pid;
+    child->reaped = false; /* waitpid must see this child */
 
     /* The child needs to resume where the parent was — i.e., returning
      * from the syscall instruction. We copy the parent's kernel stack
@@ -178,6 +179,11 @@ uint64_t proc_fork(void) {
     uint64_t user_rflags = parent_kstack_top[-3];  /* -24 bytes = -3 qwords */
     uint64_t user_rip    = parent_kstack_top[-2];  /* -16 bytes = -2 qwords */
     uint64_t user_rsp    = parent_kstack_top[-1];  /*  -8 bytes = -1 qword  */
+
+    /* syscall_entry pushes %r15 onto the user stack before saving rsp, and
+     * the normal sysret path pops it. enter_userspace does not — so advance
+     * past that slot or the child's first `ret` jumps to the saved r15. */
+    user_rsp += 8;
 
     /* Set up child's kernel stack for ring3_trampoline.
      * The trampoline will call enter_userspace(child_pml4, user_rip, user_rsp).
@@ -385,6 +391,11 @@ int proc_exec(const char *path, char *const argv[]) {
     /* Now sp points to argv[0]. Save this as argv_ptr. */
     uint64_t argv_ptr = sp;
 
+    /* Ensure (sp - 8) is 16-byte aligned so argc lands at an aligned rsp.
+     * Padding below argc would hide it from _start. */
+    if ((sp - 8) & 0xF)
+        sp -= 8;
+
     /* Push argc */
     sp -= 8;
     {
@@ -392,30 +403,21 @@ int proc_exec(const char *path, char *const argv[]) {
         USTACK_WRITE(0, &v, 8);
     }
 
-    /* The x86_64 ABI requires rsp to be 16-byte aligned at _start entry.
-     * After pushing argc (8 bytes), rsp should be 16-byte aligned.
-     * Adjust if needed. */
-    if (sp & 0xF) {
-        sp -= 8;  /* pad to align */
-    }
-
     uint64_t user_rsp = sp;
     (void)argv_ptr;  /* argv_ptr is available for future use */
 
-    /* Switch to new address space */
+    /* Switch CR3 to the new address space BEFORE freeing the old PML4.
+     * Freeing while CR3 still points at it corrupts the live page tables. */
     p->pml4_phys = new_pml4_phys;
     p->pml4_virt = new_pml4_virt;
     p->rip = entry;
     p->sleep_until = user_rsp;
 
-    /* Destroy old address space */
+    __asm__ volatile("mov %0, %%cr3" : : "r"(new_pml4_phys) : "memory");
+
     vmm_destroy_user(old_pml4_virt);
     pmm_free_frame(old_pml4_phys);
-
     kfree(elf_buf);
-
-    kprintf("[proc] exec: pid=%lu entry=%p rsp=%p\n",
-            p->pid, (void *)entry, (void *)user_rsp);
 
     /* Set up kernel stack for ring3_trampoline re-entry */
     uint8_t *kstack = p->kstack;
@@ -453,29 +455,18 @@ int proc_waitpid(int pid, int *status) {
     proc_t *parent = proc_current();
     if (!parent) return -1;
 
-    /* Find the child */
-    proc_t *child = proc_by_pid(pid);
-    if (!child || child->parent_pid != parent->pid) {
-        /* Check if any child has already exited and been reaped */
-        return -1;
-    }
+    for (;;) {
+        proc_t *child = proc_by_pid((uint64_t)pid);
+        if (!child || child->parent_pid != parent->pid)
+            return -1;
 
-    /* Spin until child exits (cooperative scheduler — yield while waiting) */
-    while (child->state != PROC_DEAD || !child->reaped) {
         if (child->state == PROC_DEAD && !child->reaped) {
-            /* Child has exited — collect status */
             if (status) *status = child->exit_code;
             child->reaped = true;
             return (int)child->pid;
         }
-        /* Child still running — yield and check again */
-        sched_yield();
-        /* After yield, re-fetch child in case it was killed */
-        child = proc_by_pid(pid);
-        if (!child) return -1;
-    }
 
-    if (status) *status = child->exit_code;
-    child->reaped = true;
-    return (int)child->pid;
+        /* Still running — let the child (and terminal) schedule. */
+        sched_yield();
+    }
 }

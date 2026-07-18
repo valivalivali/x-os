@@ -45,9 +45,11 @@ static uint32_t g_si = 0;
 static uint32_t g_surf_w = 0;
 static uint32_t g_surf_h = 0;
 static int g_surface_active = 0;
+static int32_t g_menu_x = 0;
+static int32_t g_menu_y = 0;
 
 /* Surface sized for root popup (~200) + one fly-out (~200) + padding.
- * Padding is transparent so it does not show as a dark plate. */
+ * On-screen quad is cropped to the painted bbox so padding is not visible. */
 static int g_menu_w = 420;
 static int g_menu_h = 360;
 
@@ -187,6 +189,43 @@ static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t 
     if (cp) sys_port_send(cp, &msg);
 }
 
+/* Crop the WM overlay quad to the painted menu bbox. The GPU RT stays at
+ * g_menu_w×g_menu_h for fly-outs; compositor samples only the content UVs. */
+static int sync_content_bounds(void) {
+    if (!g_surface_active || !g_menu_state) return 0;
+
+    uint32_t cw = 0, ch = 0;
+    xos_context_menu_content_size(g_menu_state, &cw, &ch);
+    if (cw < 8) cw = 8;
+    if (ch < 8) ch = 8;
+    if (cw > (uint32_t)g_menu_w) cw = (uint32_t)g_menu_w;
+    if (ch > (uint32_t)g_menu_h) ch = (uint32_t)g_menu_h;
+    if (cw == g_surf_w && ch == g_surf_h) return 0;
+
+    wm_set_bounds_msg_t bm;
+    memset(&bm, 0, sizeof(bm));
+    bm.type = WM_SET_BOUNDS;
+    bm.surface_idx = g_si;
+    bm.x = g_menu_x;
+    bm.y = g_menu_y;
+    bm.w = cw;
+    bm.h = ch;
+
+    ipc_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = IPC_MSG_REQUEST;
+    msg.sender_pid = syscall0(SYS_PROC_PID);
+    msg.payload_len = sizeof(bm);
+    memcpy(msg.payload, &bm, sizeof(bm));
+
+    uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+    if (cp) sys_port_send(cp, &msg);
+
+    g_surf_w = cw;
+    g_surf_h = ch;
+    return 1;
+}
+
 /* ---- Screen info --------------------------------------------------------- */
 
 static uint32_t get_screen_width(void) {
@@ -211,17 +250,15 @@ static uint32_t get_screen_height(void) {
 
 /* ---- Menu logic ---------------------------------------------------------- */
 
-static int32_t g_menu_x = 0;
-static int32_t g_menu_y = 0;
-
 static wm_mouse_event_msg_t g_pending_move;
 static int g_have_pending_move = 0;
 static int32_t g_last_mx = 0;
 static int32_t g_last_my = 0;
-/* Cap scanout flushes — QEMU copies full 2560×1600 each time. */
+/* Cap scanout flushes — QEMU virgl GL path recopies the FULL 2560×1600
+ * scanout on every RESOURCE_FLUSH (dirty rect size is ignored on host). */
 static uint64_t g_last_present_tick = 0;
 static uint64_t g_last_frame_tick = 0;
-#define MENU_PRESENT_MIN_MS  32u  /* ~30 Hz max present */
+#define MENU_PRESENT_MIN_MS  16u  /* ~60 Hz cap; texture always latest */
 #define MENU_IDLE_FRAME_MS   16u  /* keep egui pointer velocity alive */
 
 static uint64_t menu_ticks(void) {
@@ -237,6 +274,7 @@ static void show_menu(int32_t x, int32_t y) {
     x += 2;
     y += 2;
 
+    /* Keep room for a fly-out within the RT; clamp against full pad size. */
     if (x + MW > (int32_t)screen_w) x = (int32_t)screen_w - MW;
     if (y + MH > (int32_t)screen_h) y = (int32_t)screen_h - MH;
     if (x < 0) x = 0;
@@ -245,22 +283,27 @@ static void show_menu(int32_t x, int32_t y) {
     g_menu_x = x;
     g_menu_y = y;
 
-    if (create_surface(x, y, MW, MH) < 0) {
-        log("[menu] surface creation failed\n");
-        return;
-    }
-
-    /* Trigger the egui context menu to open */
+    /* Paint into the RT first, then create a WM surface sized to the painted
+     * menu only — avoids a one-frame full-RT dark plate on first open. */
     xos_context_menu_trigger(g_menu_state);
     g_last_mx = 8;
     g_last_my = 8;
-
-    /* Run first frame to render the menu on GPU before notifying compositor */
     xos_context_menu_set_time_ms(g_menu_state, menu_ticks());
     xos_context_menu_run_frame(g_menu_state);
     g_last_frame_tick = menu_ticks();
 
-    /* Tell compositor our render target is ready (after first GPU frame) */
+    uint32_t cw = 0, ch = 0;
+    xos_context_menu_content_size(g_menu_state, &cw, &ch);
+    if (cw < 32) cw = 32;
+    if (ch < 32) ch = 32;
+    if (cw > (uint32_t)MW) cw = (uint32_t)MW;
+    if (ch > (uint32_t)MH) ch = (uint32_t)MH;
+
+    if (create_surface(x, y, cw, ch) < 0) {
+        log("[menu] surface creation failed\n");
+        return;
+    }
+
     uint32_t rt_id = xos_context_menu_render_target_id(g_menu_state);
     uint32_t ctx_id = xos_context_menu_context_id(g_menu_state);
 
@@ -270,6 +313,9 @@ static void show_menu(int32_t x, int32_t y) {
     gr.surface_idx = g_si;
     gr.gpu_res_id = rt_id;
     gr.gpu_ctx_id = ctx_id;
+    /* RT is larger than the on-screen quad (room for fly-outs). */
+    gr.tex_w = (uint32_t)MW;
+    gr.tex_h = (uint32_t)MH;
 
     ipc_msg_t gmsg;
     memset(&gmsg, 0, sizeof(gmsg));
@@ -281,7 +327,6 @@ static void show_menu(int32_t x, int32_t y) {
     uint64_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
     if (cp) sys_port_send(cp, &gmsg);
 
-    /* GPU_READY marks the surface dirty once — do not send_dirty here. */
     log("[menu] menu surface created\n");
 }
 
@@ -298,18 +343,25 @@ static void maybe_send_present(void) {
     if (!(np & 1u)) return;
 
     uint64_t now = menu_ticks();
-    /* Always restore L1 under the menu before blit — otherwise transparent
-     * padding cannot erase a previous fly-out left in the scanout. */
-    if (g_last_present_tick != 0 &&
+    int restore = (np & 2u) != 0; /* fly-out topology / content crop */
+    /* Fly-out restore is urgent; hover can wait a frame to avoid QEMU
+     * full-FB borrow storms while scrubbing. Texture is already current. */
+    if (!restore && g_last_present_tick != 0 &&
         now - g_last_present_tick < (uint64_t)MENU_PRESENT_MIN_MS) {
-        return; /* texture already updated; flush later */
+        return;
     }
 
-    send_dirty(0, 0, g_surf_w, g_surf_h, WM_DIRTY_RESTORE_DESKTOP);
+    if (sync_content_bounds())
+        restore = 1;
+
+    send_dirty(0, 0, g_surf_w, g_surf_h,
+               restore ? WM_DIRTY_RESTORE_DESKTOP : 0);
     xos_context_menu_ack_present(g_menu_state);
     g_last_present_tick = now;
 }
 
+/* Run egui (updates GPU texture). Present is deferred to the main loop
+ * so one mouse-drain = at most one scanout flush. */
 static int run_menu_frame(void) {
     if (!g_surface_active || !g_menu_state) return 0;
 
@@ -323,8 +375,6 @@ static int run_menu_frame(void) {
         hide_menu();
         return 1;
     }
-
-    maybe_send_present();
     return 0;
 }
 

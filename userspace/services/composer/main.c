@@ -108,10 +108,12 @@ typedef struct {
     uint32_t gpu_res_id;        /* virtio-gpu resource ID of app's render target */
     uint32_t gpu_ctx_id;        /* virgl context ID the resource belongs to */
     uint32_t gpu_sv_handle;     /* compositor-side sampler view handle */
+    uint32_t gpu_tex_w;         /* RT width (fixed); w/h may shrink to content */
+    uint32_t gpu_tex_h;         /* RT height (fixed) */
 } surface_info_t;
 
 static int surface_decorated(const surface_info_t *s) {
-    return !(s->flags & (WM_FLAG_PANEL | WM_FLAG_OVERLAY));
+    return !(s->flags & (WM_FLAG_PANEL | WM_FLAG_OVERLAY | WM_FLAG_CLIENT_CHROME));
 }
 
 static int surface_total_h(const surface_info_t *s) {
@@ -123,6 +125,9 @@ static int         surface_count = 0;
 static int         drag_idx = -1;
 static int         focused_idx = -1;
 static int         drag_off_x, drag_off_y;
+/* While LMB is down on a surface, keep forwarding moves/ups to it even if
+ * the cursor leaves its bounds — required for egui::Window drag. */
+static int         pointer_grab_idx = -1;
 static int         z_changed = 0;
 /* Localized damage — NEVER promote OVERLAY create/destroy to full-screen.
  * QEMU recopies the entire scanout on every flush, so full-FB damage is
@@ -130,6 +135,32 @@ static int         z_changed = 0;
 static int         damage_pending = 0;
 static int         dmg_x0, dmg_y0, dmg_x1, dmg_y1;
 static int         dmg_restore = 0; /* 1 = must re-xfer DESKTOP under damage */
+/* Throttle presents during interactive moves (ticks == ms at 1000 Hz PIT). */
+static uint64_t    last_move_present_tick = 0;
+#define MOVE_PRESENT_MIN_MS  33u
+/* Ignore desktop right-clicks briefly after a drag (trackpad noise). */
+static uint64_t    drag_end_tick = 0;
+#define DRAG_MENU_SUPPRESS_MS  250u
+
+static int find_overlay_idx(void) {
+    for (int i = 0; i < surface_count; i++) {
+        if (surfaces[i].valid && !surfaces[i].hidden &&
+            surfaces[i].level == SURF_LEVEL_OVERLAY)
+            return i;
+    }
+    return -1;
+}
+
+static void dismiss_context_menu(void) {
+    uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
+    if (!menu_port) return;
+    ipc_msg_t dmsg;
+    __builtin_memset(&dmsg, 0, sizeof(dmsg));
+    dmsg.type = IPC_MSG_REQUEST;
+    dmsg.sender_pid = 0;
+    dmsg.payload_len = 0;
+    sys_port_send(menu_port, &dmsg);
+}
 
 static void damage_add(int x0, int y0, int x1, int y1, int need_restore) {
     if (x0 < 0) x0 = 0;
@@ -477,9 +508,22 @@ static void draw_region(int x0, int y0, int x1, int y1) {
     for (int level = SURF_LEVEL_NORMAL; level <= SURF_LEVEL_OVERLAY; level++) {
         for (int i = 0; i < surface_count; i++) {
             const surface_info_t *s = &surfaces[i];
-            if (!s->valid || s->hidden || s->level != level || !s->pixels) continue;
+            if (!s->valid || s->hidden || s->level != level) continue;
             /* Safety: don't read from a dead app's buffer. */
             if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
+
+            /* GPU surfaces have no CPU pixels — content is composited in
+             * gpu_comp_present. Still draw the OS title bar into backing so
+             * decorated GPU windows are movable/closable like CPU ones. */
+            if (s->is_gpu) {
+                if (surface_decorated(s)) {
+                    draw_decoration(s);
+                    int total_h = surface_total_h(s);
+                    dec_mask_corners(s->x, s->y, (int)s->w, total_h, WIN_RADIUS);
+                }
+                continue;
+            }
+            if (!s->pixels) continue;
 
             if (surface_decorated(s)) {
                 /* Draw decoration (title bar) into backing */
@@ -557,6 +601,8 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     sp->gpu_res_id = 0;
     sp->gpu_ctx_id = 0;
     sp->gpu_sv_handle = 0;
+    sp->gpu_tex_w = w;
+    sp->gpu_tex_h = h;
     /* Copy title */
     for (int i = 0; i < 31; i++) {
         sp->title[i] = title ? title[i] : '\0';
@@ -934,7 +980,7 @@ void display_main(void) {
                 if (ev.type == EV_KEY_DOWN && ev.ch == 27) {
                     log("[composer] ESC\n");
                 }
-                /* Forward keyboard events to focused window */
+                /* Forward keyboard events to focused window. */
                 if (focused_idx >= 0 && focused_idx < surface_count &&
                     surfaces[focused_idx].valid &&
                     surfaces[focused_idx].reply_port) {
@@ -954,7 +1000,13 @@ void display_main(void) {
                     kmsg.payload_len = sizeof(ke);
                     uint8_t *pd = (uint8_t *)&ke;
                     for (size_t i = 0; i < sizeof(ke); i++) kmsg.payload[i] = pd[i];
-                    sys_port_send(surfaces[focused_idx].reply_port, &kmsg);
+                    /* Brief retry only — never block forever (deadlocks with
+                     * apps that send DIRTY back to the composer port). */
+                    for (int t = 0; t < 16; t++) {
+                        if (sys_port_send(surfaces[focused_idx].reply_port, &kmsg))
+                            break;
+                        syscall0(SYS_YIELD);
+                    }
                 }
             }
 
@@ -968,6 +1020,7 @@ void display_main(void) {
                     /* Track focus for keyboard forwarding */
                     if (surfaces[new_idx].level == SURF_LEVEL_NORMAL)
                         focused_idx = new_idx;
+                    pointer_grab_idx = new_idx;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
 
@@ -1008,6 +1061,7 @@ void display_main(void) {
                             drag_idx = new_idx;
                             drag_off_x = wx;
                             drag_off_y = wy;
+                            pointer_grab_idx = -1; /* OS owns this drag */
                             log_int("[composer]  drag start idx=", drag_idx, "\n");
                             goto click_done;
                         }
@@ -1059,23 +1113,30 @@ void display_main(void) {
                 click_done:;
                 }
                 if (ev.button == MOUSE_RIGHT && hit < 0) {
-                    /* Notify the context menu service about the right-click */
-                    uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
-                    if (menu_port) {
-                        int32_t coords[2] = { ev.x, ev.y };
-                        ipc_msg_t mmsg;
-                        __builtin_memset(&mmsg, 0, sizeof(mmsg));
-                        mmsg.type = IPC_MSG_REQUEST;
-                        mmsg.sender_pid = 0;
-                        mmsg.payload_len = sizeof(coords);
-                        for (size_t i = 0; i < sizeof(coords); i++)
-                            mmsg.payload[i] = ((uint8_t*)coords)[i];
-                        sys_port_send(menu_port, &mmsg);
-                    } else {
-                        spawn_surface(ev.x, ev.y);
+                    /* Don't spawn a menu mid-drag or right after (trackpad). */
+                    uint64_t now = (uint64_t)syscall0(SYS_GET_TICKS);
+                    int suppress = (drag_idx >= 0) ||
+                        (ev.buttons & MOUSE_LEFT) ||
+                        (drag_end_tick != 0 &&
+                         now - drag_end_tick < DRAG_MENU_SUPPRESS_MS);
+                    if (!suppress) {
+                        uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
+                        if (menu_port) {
+                            int32_t coords[2] = { ev.x, ev.y };
+                            ipc_msg_t mmsg;
+                            __builtin_memset(&mmsg, 0, sizeof(mmsg));
+                            mmsg.type = IPC_MSG_REQUEST;
+                            mmsg.sender_pid = 0;
+                            mmsg.payload_len = sizeof(coords);
+                            for (size_t i = 0; i < sizeof(coords); i++)
+                                mmsg.payload[i] = ((uint8_t*)coords)[i];
+                            sys_port_send(menu_port, &mmsg);
+                        } else {
+                            spawn_surface(ev.x, ev.y);
+                        }
                     }
                 }
-                if (ev.button == MOUSE_RIGHT && hit >= 0) {
+                if (ev.button == MOUSE_RIGHT && hit >= 0 && drag_idx < 0) {
                     int new_idx = hit;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
@@ -1102,28 +1163,29 @@ void display_main(void) {
                         sys_port_send(surfaces[new_idx].reply_port, &mmsg);
                     }
                 }
-                /* Left-click outside any surface: dismiss context menu if open */
-                if (ev.button == MOUSE_LEFT && hit < 0) {
-                    uint64_t menu_port = sys_ns_lookup(WM_MENU_PORT_NS);
-                    if (menu_port) {
-                        ipc_msg_t dmsg;
-                        __builtin_memset(&dmsg, 0, sizeof(dmsg));
-                        dmsg.type = IPC_MSG_REQUEST;
-                        dmsg.sender_pid = 0;
-                        dmsg.payload_len = 0;
-                        sys_port_send(menu_port, &dmsg);
-                    }
+                /* Dismiss context menu on left-click anywhere except the
+                 * overlay itself (padding used to swallow dismiss). */
+                if (ev.button == MOUSE_LEFT) {
+                    int ovr = find_overlay_idx();
+                    if (ovr >= 0 && hit != ovr)
+                        dismiss_context_menu();
+                    else if (hit < 0)
+                        dismiss_context_menu();
                 }
             }
             if (ev.type == EV_MOUSE_UP) {
                 if (ev.button == MOUSE_LEFT) {
                     log("[composer] mouse up (left), drag end\n");
+                    if (drag_idx >= 0)
+                        drag_end_tick = (uint64_t)syscall0(SYS_GET_TICKS);
                     drag_idx = -1;
                 }
                 /* Forward button-up so egui can complete clicks (hovered widgets). */
                 int hit = surface_at(ev.x, ev.y);
                 int up_idx = hit;
-                if (up_idx < 0 && focused_idx >= 0 && surfaces[focused_idx].valid)
+                if (pointer_grab_idx >= 0 && surfaces[pointer_grab_idx].valid)
+                    up_idx = pointer_grab_idx;
+                else if (up_idx < 0 && focused_idx >= 0 && surfaces[focused_idx].valid)
                     up_idx = focused_idx;
                 if (up_idx >= 0 && surfaces[up_idx].reply_port) {
                     int32_t wx = ev.x - surfaces[up_idx].x;
@@ -1149,10 +1211,14 @@ void display_main(void) {
                     for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
                     sys_port_send(surfaces[up_idx].reply_port, &mmsg);
                 }
+                if (ev.button == MOUSE_LEFT)
+                    pointer_grab_idx = -1;
             }
             /* Forward mouse move to app for hover/resize tracking */
             if (ev.type == EV_MOUSE_MOVE) {
                 int hit = surface_at(ev.x, ev.y);
+                if (pointer_grab_idx >= 0 && surfaces[pointer_grab_idx].valid)
+                    hit = pointer_grab_idx;
                 if (hit >= 0 && surfaces[hit].reply_port) {
                     int32_t wx = ev.x - surfaces[hit].x;
                     int32_t wy = ev.y - surfaces[hit].y;
@@ -1175,7 +1241,8 @@ void display_main(void) {
                     mmsg.payload_len = sizeof(mev);
                     uint8_t *pd = (uint8_t *)&mev;
                     for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
-                    sys_port_send(surfaces[hit].reply_port, &mmsg);
+                    /* Best-effort: dropping moves is fine; keys retry above. */
+                    (void)sys_port_send(surfaces[hit].reply_port, &mmsg);
                 }
             }
         }
@@ -1194,8 +1261,60 @@ void display_main(void) {
                                              cm->flags, cm->owner_pid,
                                              cm->reply_port, cm->title);
                         /* Do NOT flush on CREATE. OVERLAY waits for GPU_READY;
-                         * PANEL/NORMAL wait for SURFACE_DIRTY. A full-screen
-                         * flush here was copying 2560×1600 for every panel. */
+                         * PANEL/NORMAL wait for SURFACE_DIRTY. */
+                    }
+                }
+                if (msg_type == WM_SET_BOUNDS) {
+                    if (msg.payload_len >= sizeof(wm_set_bounds_msg_t)) {
+                        wm_set_bounds_msg_t *bm =
+                            (wm_set_bounds_msg_t *)msg.payload;
+                        if (bm->surface_idx < (uint32_t)surface_count) {
+                            surface_info_t *s = &surfaces[bm->surface_idx];
+                            if (s->valid) {
+                                int32_t ox = s->x, oy = s->y;
+                                uint32_t ow = s->w, oh = s->h;
+                                int32_t nx = bm->x;
+                                int32_t ny = bm->y;
+                                uint32_t nw = bm->w ? bm->w : s->w;
+                                uint32_t nh = bm->h ? bm->h : s->h;
+                                if (nx < 0) nx = 0;
+                                if (ny < 0) ny = 0;
+                                if (nx + (int32_t)nw > fb_w)
+                                    nx = fb_w - (int32_t)nw;
+                                int th = (int)nh +
+                                    (surface_decorated(s) ? WM_TITLE_BAR_H : 0);
+                                if (ny + th > fb_h) ny = fb_h - th;
+                                if (nx < 0) nx = 0;
+                                if (ny < 0) ny = 0;
+                                /* Overlay shrink must restore DESKTOP under the
+                                 * old rect or the padding plate sticks around. */
+                                if (nx != ox || ny != oy || nw != ow || nh != oh) {
+                                    int ovr = (s->level == SURF_LEVEL_OVERLAY);
+                                    damage_add(ox, oy, ox + (int)ow, oy + (int)oh,
+                                               ovr ? 1 : 0);
+                                    damage_add(nx, ny, nx + (int)nw, ny + (int)nh,
+                                               0);
+                                }
+                                s->x = nx;
+                                s->y = ny;
+                                s->w = nw;
+                                s->h = nh;
+                            }
+                        }
+                    }
+                }
+                if (msg_type == WM_BEGIN_MOVE) {
+                    if (msg.payload_len >= sizeof(wm_begin_move_msg_t)) {
+                        wm_begin_move_msg_t *bm =
+                            (wm_begin_move_msg_t *)msg.payload;
+                        if (bm->surface_idx < (uint32_t)surface_count &&
+                            surfaces[bm->surface_idx].valid) {
+                            drag_idx = (int)bm->surface_idx;
+                            drag_off_x = bm->grab_off_x;
+                            drag_off_y = bm->grab_off_y;
+                            pointer_grab_idx = -1; /* composer owns the drag */
+                            focused_idx = drag_idx;
+                        }
                     }
                 }
                 if (msg_type == COMPOSER_DESTROY_SURFACE) {
@@ -1205,21 +1324,31 @@ void display_main(void) {
                         if (idx < (uint32_t)surface_count) {
                             surface_info_t *ds = &surfaces[idx];
                             int was_overlay = (ds->level == SURF_LEVEL_OVERLAY);
+                            int was_gpu = ds->is_gpu;
                             int ex0 = ds->x, ey0 = ds->y;
                             int ex1 = ds->x + (int)ds->w;
                             int ey1 = ds->y + surface_total_h(ds);
-                            gpu_comp_destroy_surface(idx);
+                            /* Drop sampler view before the app frees its RT —
+                             * dangling VirGL views freeze QEMU on the next present. */
+                            if (ds->gpu_sv_handle)
+                                gpu_comp_destroy_gpu_surface_sv(ds->gpu_sv_handle);
+                            gpu_comp_destroy_surface((int)idx);
+                            if (focused_idx == (int)idx) focused_idx = -1;
+                            if (drag_idx == (int)idx) drag_idx = -1;
+                            if (pointer_grab_idx == (int)idx) pointer_grab_idx = -1;
                             ds->valid = 0;
                             ds->pixels = NULL;
                             ds->is_gpu = 0;
                             ds->gpu_res_id = 0;
                             ds->gpu_ctx_id = 0;
                             ds->gpu_sv_handle = 0;
-                            /* Overlay: erase only its rect (restore DESKTOP).
-                             * Other surfaces: localized damage, not full FB. */
-                            damage_add(ex0, ey0, ex1, ey1, was_overlay ? 1 : 0);
+                            ds->gpu_tex_w = 0;
+                            ds->gpu_tex_h = 0;
+                            /* GPU/overlay pixels live only in scanout — restore L1. */
+                            damage_add(ex0, ey0, ex1, ey1,
+                                       (was_overlay || was_gpu) ? 1 : 0);
                             if (!was_overlay)
-                                z_changed = 1; /* stacking may matter for windows */
+                                z_changed = 1;
                             log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
                         }
                     }
@@ -1326,6 +1455,11 @@ void display_main(void) {
                             if (s->valid && s->is_gpu) {
                                 s->gpu_res_id = gr->gpu_res_id;
                                 s->gpu_ctx_id = gr->gpu_ctx_id;
+                                if (msg.payload_len >= sizeof(wm_surface_gpu_ready_msg_t) &&
+                                    gr->tex_w > 0 && gr->tex_h > 0) {
+                                    s->gpu_tex_w = gr->tex_w;
+                                    s->gpu_tex_h = gr->tex_h;
+                                }
                                 /* Attach the app's render target resource to
                                  * the compositor's virgl context so we can
                                  * sample from it. */
@@ -1339,16 +1473,20 @@ void display_main(void) {
                                     gr->gpu_res_id,
                                     sv_handle);
                                 s->gpu_sv_handle = sv_handle;
-                                /* First paint: overlay_fast blit on top of the
-                                 * already-correct DESKTOP FB (no full restore). */
+                                /* One dirty + full stack present (not a burst). */
                                 s->dirty = 1;
                                 s->dirty_restore = 0;
                                 s->dirty_x = 0;
                                 s->dirty_y = 0;
                                 s->dirty_w = s->w;
                                 s->dirty_h = s->h;
+                                z_changed = 1;
                                 log_int("[composer]  GPU surface ready: res=",
                                         (int32_t)gr->gpu_res_id, "\n");
+                                /* App windows (e.g. Terminal) take keyboard focus
+                                 * so the shell bridge works without a prior click. */
+                                if (s->level == SURF_LEVEL_NORMAL)
+                                    focused_idx = (int)gr->surface_idx;
                             }
                         }
                     }
@@ -1511,8 +1649,26 @@ void display_main(void) {
         /* Per-frame logs removed to avoid serial spam. */
         (void)cursor_moved;
 
+        /* During interactive drag, coalesce presents (~30 Hz). Keep old_sx/old_sy
+         * so the next present's dirty rect is the full path union. Always present
+         * when drag ends (drag_idx cleared on mouse-up). */
+        int do_present = has_dirty;
+        if (do_present && surface_moved && !first && !z_changed && drag_idx >= 0) {
+            int other_dirty = damage_pending;
+            for (int i = 0; i < surface_count && !other_dirty; i++) {
+                if (surfaces[i].valid && surfaces[i].dirty)
+                    other_dirty = 1;
+            }
+            if (!other_dirty) {
+                uint64_t now = (uint64_t)syscall0(SYS_GET_TICKS);
+                if (last_move_present_tick != 0 &&
+                    now - last_move_present_tick < MOVE_PRESENT_MIN_MS)
+                    do_present = 0;
+            }
+        }
+
         /* Redraw affected region into backing, then present. */
-        if (has_dirty) {
+        if (do_present) {
             if (dirty_x0 < 0) dirty_x0 = 0;
             if (dirty_y0 < 0) dirty_y0 = 0;
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
@@ -1562,41 +1718,57 @@ void display_main(void) {
             if (gpu_comp_active()) {
                 gpu_comp_gpu_surf_t gpu_surfs[MAX_SURFACES];
                 int ngpu = 0;
-                if (!overlay_erase) {
-                    for (int i = 0; i < surface_count; i++) {
-                        surface_info_t *s = &surfaces[i];
-                        if (!s->valid || s->hidden) continue;
-                        if (!s->is_gpu || !s->gpu_sv_handle) continue;
-                        if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
-                            continue;
-                        int draw_y = s->y;
-                        if (surface_decorated(s))
-                            draw_y += WM_TITLE_BAR_H;
-                        gpu_surfs[ngpu].sv_handle = s->gpu_sv_handle;
-                        gpu_surfs[ngpu].x = s->x;
-                        gpu_surfs[ngpu].y = draw_y;
-                        gpu_surfs[ngpu].w = s->w;
-                        gpu_surfs[ngpu].h = s->h;
-                        ngpu++;
-                    }
+                /* Always re-blit remaining GPU windows. overlay_erase used to
+                 * skip this and only re-xfer L1 — that punched a desktop-colored
+                 * (or stale) hole through any window under the menu. */
+                for (int i = 0; i < surface_count; i++) {
+                    surface_info_t *s = &surfaces[i];
+                    if (!s->valid || s->hidden) continue;
+                    if (!s->is_gpu || !s->gpu_sv_handle) continue;
+                    if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
+                        continue;
+                    int draw_y = s->y;
+                    if (surface_decorated(s))
+                        draw_y += WM_TITLE_BAR_H;
+                    gpu_surfs[ngpu].sv_handle = s->gpu_sv_handle;
+                    gpu_surfs[ngpu].x = s->x;
+                    gpu_surfs[ngpu].y = draw_y;
+                    gpu_surfs[ngpu].w = s->w;
+                    gpu_surfs[ngpu].h = s->h;
+                    gpu_surfs[ngpu].tex_w = s->gpu_tex_w ? s->gpu_tex_w : s->w;
+                    gpu_surfs[ngpu].tex_h = s->gpu_tex_h ? s->gpu_tex_h : s->h;
+                    ngpu++;
                 }
 
-                /* Never overlay_fast for menus: alpha blit onto a prior overlay
-                 * leaves ghost fly-outs where the new texture is transparent.
-                 * Always re-xfer L1 under the dirty rect, then draw the quad. */
-                (void)overlay_l1_xfer;
-                int overlay_fast = 0;
+                /* Hover-only: overlay_fast (skip L1 xfer). Fly-out topology
+                 * change sets dirty_restore → l1_xfer so old fly-out clears.
+                 * overlay_erase must NOT be fast — L1 xfer clears menu pixels. */
+                int overlay_fast = overlay_only && !overlay_l1_xfer && !overlay_erase;
                 gpu_comp_present(fb_w, fb_h, gpu_surfs, ngpu,
                                  dirty_x0, dirty_y0,
                                  dirty_x1 - dirty_x0, dirty_y1 - dirty_y0,
                                  overlay_fast);
             }
+
+            if (surface_moved)
+                last_move_present_tick = (uint64_t)syscall0(SYS_GET_TICKS);
+
+            /* Clear per-surface dirty flags only after a real present. */
+            for (int i = 0; i < surface_count; i++) {
+                surfaces[i].dirty = 0;
+                surfaces[i].dirty_restore = 0;
+                old_sx[i] = surfaces[i].x;
+                old_sy[i] = surfaces[i].y;
+            }
+            damage_pending = 0;
+            dmg_restore = 0;
+            z_changed = 0;
         }
 
         if (gpu_mode) {
             /* Hardware cursor: QEMU composites cursor on top during scanout.
              * Just move it; no erase/redraw needed. */
-            if (has_dirty && !gpu_comp_active())
+            if (do_present && has_dirty && !gpu_comp_active())
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),
                               (uint32_t)(dirty_y1 - dirty_y0));
@@ -1604,23 +1776,13 @@ void display_main(void) {
                 sys_gpu_cursor_move(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y);
         } else {
             /* Software cursor: erase old position, draw new one. */
-            if (has_dirty && cursor_moved)
+            if (do_present && has_dirty && cursor_moved)
                 blit_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
             else if (cursor_moved)
                 blit_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
             cursor_draw(draw_x, draw_y);
         }
 
-        /* Clear per-surface dirty flags. */
-        for (int i = 0; i < surface_count; i++) {
-            surfaces[i].dirty = 0;
-            surfaces[i].dirty_restore = 0;
-            old_sx[i] = surfaces[i].x;
-            old_sy[i] = surfaces[i].y;
-        }
-        damage_pending = 0;
-        dmg_restore = 0;
-        z_changed = 0;
         old_cx = draw_x; old_cy = draw_y;
         first = 0;
     }

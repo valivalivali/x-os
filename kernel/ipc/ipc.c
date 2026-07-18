@@ -31,11 +31,11 @@ port_handle_t port_create(uint64_t owner_pid) {
 bool port_send(port_handle_t h, const ipc_msg_t *msg) {
     port_t *p = port_get(h);
     if (!p || !msg) return false;
-    if (p->count >= 8) return false; /* Port full */
+    if (p->count >= IPC_PORT_DEPTH) return false; /* Port full — caller may retry */
 
     uint32_t idx = p->tail;
     p->buf[idx] = *msg;
-    p->tail = (idx + 1) % 8;
+    p->tail = (idx + 1) % IPC_PORT_DEPTH;
     p->count++;
     return true;
 }
@@ -48,7 +48,7 @@ bool port_recv(port_handle_t h, ipc_msg_t *out, bool block) {
 
     uint32_t idx = p->head;
     *out = p->buf[idx];
-    p->head = (idx + 1) % 8;
+    p->head = (idx + 1) % IPC_PORT_DEPTH;
     p->count--;
     return true;
 }

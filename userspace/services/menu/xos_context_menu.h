@@ -59,6 +59,9 @@ uint32_t xos_context_menu_get_action(void *state);
 /* Check if the menu is currently open. Returns 1 or 0. */
 uint32_t xos_context_menu_is_open(void *state);
 
+/* Opaque painted bbox — crop the WM overlay to this (RT may be larger). */
+void xos_context_menu_content_size(void *state, uint32_t *out_w, uint32_t *out_h);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,24 +16,106 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::cell::Cell;
 
-use egui::menu::menu_style;
+use egui::menu::{SubMenuButton, menu_style};
 use egui::{
-    Align, Color32, Context, Event, Id, Layout, Modifiers, PointerButton, Popup,
-    PopupCloseBehavior, PopupKind, RawInput, Sense, Shadow, Vec2, pos2,
+    Align, Atom, Button, Color32, Context, CornerRadius, Event, FontId, Id, Layout, Margin,
+    Modifiers, PointerButton, Popup, PopupCloseBehavior, PopupKind, RawInput, Sense, Shadow,
+    Stroke, TextStyle, Vec2, pos2, vec2,
 };
 use egui_virgl_backend::EguiVirglBackend;
 
+/* Compact professional menu — natural dark slate + red highlight.
+ * No soft shadows (too expensive on the CPU raster path under QEMU). */
 fn apply_menu_style(style: &mut egui::Style) {
     menu_style(style);
-    let menu_bg = Color32::from_rgb(36, 36, 36);
-    style.visuals.window_fill = menu_bg;
-    style.visuals.panel_fill = menu_bg;
-    style.visuals.extreme_bg_color = menu_bg;
-    style.visuals.faint_bg_color = menu_bg;
+
+    let panel = Color32::from_rgb(30, 32, 40); /* natural cool slate */
+    let rim = Color32::from_rgb(110, 118, 138);
+    let hover = Color32::from_rgb(180, 45, 45); /* red on dark */
+    let active = Color32::from_rgb(160, 35, 35);
+    let open = Color32::from_rgb(150, 40, 40);
+    let text = Color32::from_rgb(242, 244, 248);
+    let sep = Color32::from_rgb(52, 56, 68);
+    let radius = CornerRadius::same(10);
+    let row = CornerRadius::same(5);
+
+    /* Thin & dense — kill the bulky default interact height. */
+    style.spacing.button_padding = vec2(8.0, 3.0);
+    style.spacing.item_spacing = vec2(0.0, 1.0);
+    style.spacing.menu_margin = Margin::symmetric(5, 5);
+    style.spacing.interact_size = vec2(40.0, 18.0);
+    style.text_styles.insert(TextStyle::Button, FontId::proportional(13.0));
+    style.text_styles.insert(TextStyle::Body, FontId::proportional(13.0));
+
+    style.visuals.dark_mode = true;
+    style.visuals.override_text_color = Some(text);
+    style.visuals.window_fill = panel;
+    /* Root ui must stay clear — opaque panel_fill painted the whole 420×360
+     * RT and showed up as a dark plate under the popup. */
+    style.visuals.panel_fill = Color32::TRANSPARENT;
+    style.visuals.extreme_bg_color = Color32::TRANSPARENT;
+    style.visuals.faint_bg_color = Color32::from_rgb(38, 40, 50);
+    style.visuals.window_corner_radius = radius;
+    style.visuals.menu_corner_radius = radius;
     style.visuals.popup_shadow = Shadow::NONE;
     style.visuals.window_shadow = Shadow::NONE;
-    /* Submenus use Area fade-in; keep it instant for overlay compositing. */
+
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, sep);
+    style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, text);
+    style.visuals.widgets.noninteractive.corner_radius = radius;
+
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    style.visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    style.visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, text);
+    style.visuals.widgets.inactive.corner_radius = row;
+
+    style.visuals.widgets.hovered.weak_bg_fill = hover;
+    style.visuals.widgets.hovered.bg_fill = hover;
+    style.visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+    style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    style.visuals.widgets.hovered.corner_radius = row;
+
+    style.visuals.widgets.active.weak_bg_fill = active;
+    style.visuals.widgets.active.bg_fill = active;
+    style.visuals.widgets.active.bg_stroke = Stroke::NONE;
+    style.visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    style.visuals.widgets.active.corner_radius = row;
+
+    style.visuals.widgets.open.weak_bg_fill = open;
+    style.visuals.widgets.open.bg_fill = open;
+    style.visuals.widgets.open.bg_stroke = Stroke::NONE;
+    style.visuals.widgets.open.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    style.visuals.widgets.open.corner_radius = row;
+
+    style.visuals.selection.bg_fill = hover;
+    style.visuals.selection.stroke = Stroke::NONE;
+
     style.animation_time = 0.0;
+}
+
+/* macOS-style columns: same width on the left (icons) and right (shortcuts / ›). */
+const MENU_GUTTER: f32 = 14.0;
+
+fn leading_gutter() -> Atom<'static> {
+    Atom::custom(Id::new("xos_menu_icon"), vec2(MENU_GUTTER, MENU_GUTTER))
+}
+
+fn trailing_gutter() -> Atom<'static> {
+    Atom::custom(Id::new("xos_menu_trail"), vec2(MENU_GUTTER, MENU_GUTTER))
+}
+
+fn menu_row(label: &'static str) -> Button<'static> {
+    /* [gutter] label ………… [trail] — gutters kept for icons/shortcuts later */
+    Button::new((leading_gutter(), label))
+        .gap(8.0)
+        .right_text(trailing_gutter())
+}
+
+fn submenu_row(label: &'static str) -> Button<'static> {
+    Button::new((leading_gutter(), label))
+        .gap(8.0)
+        .right_text(SubMenuButton::RIGHT_ARROW)
 }
 
 #[repr(u32)]
@@ -108,62 +190,62 @@ fn show_desktop_context_menu(
         .at_position(pos2(8.0, 8.0))
         .open_bool(menu_open)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-        .width(200.0)
+        .width(220.0)
         .show(|ui| {
-            if ui.button("New Folder").clicked() {
+            if ui.add(menu_row("New Folder")).clicked() {
                 take_action(result, MenuAction::NewFolder, ui);
             }
-            if ui.button("Get Info").clicked() {
+            if ui.add(menu_row("Get Info")).clicked() {
                 take_action(result, MenuAction::GetInfo, ui);
             }
-            if ui.button("Change Wallpaper").clicked() {
+            if ui.add(menu_row("Change Wallpaper")).clicked() {
                 take_action(result, MenuAction::ChangeWallpaper, ui);
             }
 
             ui.separator();
 
-            if ui.button("Use Stacks").clicked() {
+            if ui.add(menu_row("Use Stacks")).clicked() {
                 take_action(result, MenuAction::UseStacks, ui);
             }
 
-            ui.menu_button("Clean Up By", |ui| {
+            SubMenuButton::from_button(submenu_row("Clean Up By")).ui(ui, |ui| {
                 open_sub.set(1);
-                if ui.button("Name").clicked() {
+                if ui.add(menu_row("Name")).clicked() {
                     take_action(result, MenuAction::CleanUpByName, ui);
                 }
-                if ui.button("Date Modified").clicked() {
+                if ui.add(menu_row("Date Modified")).clicked() {
                     take_action(result, MenuAction::CleanUpByDateModified, ui);
                 }
-                if ui.button("Kind").clicked() {
+                if ui.add(menu_row("Kind")).clicked() {
                     take_action(result, MenuAction::CleanUpByKind, ui);
                 }
-                if ui.button("Size").clicked() {
+                if ui.add(menu_row("Size")).clicked() {
                     take_action(result, MenuAction::CleanUpBySize, ui);
                 }
             });
 
-            ui.menu_button("Sort By", |ui| {
+            SubMenuButton::from_button(submenu_row("Sort By")).ui(ui, |ui| {
                 open_sub.set(2);
-                if ui.button("Name").clicked() {
+                if ui.add(menu_row("Name")).clicked() {
                     take_action(result, MenuAction::SortByName, ui);
                 }
-                if ui.button("Date Modified").clicked() {
+                if ui.add(menu_row("Date Modified")).clicked() {
                     take_action(result, MenuAction::SortByDate, ui);
                 }
-                if ui.button("Size").clicked() {
+                if ui.add(menu_row("Size")).clicked() {
                     take_action(result, MenuAction::SortBySize, ui);
                 }
-                if ui.button("Kind").clicked() {
+                if ui.add(menu_row("Kind")).clicked() {
                     take_action(result, MenuAction::SortByKind, ui);
                 }
             });
 
             ui.separator();
 
-            if ui.button("Import from iPhone").clicked() {
+            if ui.add(menu_row("Import from iPhone")).clicked() {
                 take_action(result, MenuAction::ImportFromIPhone, ui);
             }
-            if ui.button("Show View Options").clicked() {
+            if ui.add(menu_row("Show View Options")).clicked() {
                 take_action(result, MenuAction::ShowViewOptions, ui);
             }
         });
@@ -210,6 +292,9 @@ pub struct ContextMenuState {
     first_frame_done: u32,
     /// Milliseconds since boot (SYS_GET_TICKS).
     time_ms: u64,
+    /// Painted opaque bbox (for cropping the WM overlay quad).
+    content_w: u32,
+    content_h: u32,
     backend: *mut EguiVirglBackend,
 }
 
@@ -263,6 +348,8 @@ pub extern "C" fn xos_context_menu_init(
         last_hover_fp: 0,
         first_frame_done: 0,
         time_ms: 0,
+        content_w: surf_w,
+        content_h: surf_h,
         backend: Box::into_raw(backend),
     }))
 }
@@ -421,10 +508,6 @@ pub extern "C" fn xos_context_menu_run_frame(state: *mut ContextMenuState) -> u3
             state.action = 0;
         }
 
-        let pixels_per_point = output.pixels_per_point;
-        let primitives = ctx.tessellate(output.shapes, pixels_per_point);
-        backend.render(&primitives, &output.textures_delta, pixels_per_point);
-
         let flyout_changed = submenu_id != state.last_submenu_id;
         state.last_submenu_id = submenu_id;
 
@@ -432,20 +515,58 @@ pub extern "C" fn xos_context_menu_run_frame(state: *mut ContextMenuState) -> u3
         let hover_changed = hover_fp != state.last_hover_fp;
         state.last_hover_fp = hover_fp;
 
+        let need_paint = state.first_frame_done == 0
+            || was_triggering
+            || flyout_changed
+            || hover_changed;
+        if need_paint {
+            let pixels_per_point = output.pixels_per_point;
+            let primitives = ctx.tessellate(output.shapes, pixels_per_point);
+            backend.render(&primitives, &output.textures_delta, pixels_per_point);
+            let (cw, ch) = backend.measure_content_size();
+            let size_changed = cw != state.content_w || ch != state.content_h;
+            state.content_w = cw;
+            state.content_h = ch;
+            if size_changed && state.first_frame_done != 0 {
+                /* Grow/shrink overlay quad — restore L1 under old bounds. */
+                state.needs_present = 1 | 2;
+            }
+        }
+
         if state.first_frame_done == 0 || was_triggering {
             /* First frame: SURFACE_GPU_READY presents. */
             state.first_frame_done = 1;
             state.needs_present = 0;
-        } else if flyout_changed || hover_changed {
-            /* bit1 always set: overlay_fast alpha-blits leave old fly-out pixels
-             * in the scanout when the new frame is transparent there. Always
-             * restore L1 under the menu rect, then blit the fresh texture. */
+            let (cw, ch) = backend.measure_content_size();
+            state.content_w = cw;
+            state.content_h = ch;
+        } else if flyout_changed {
+            /* Fly-out open/close/switch: must restore L1 (transparent tex
+             * cannot erase old opaque fly-out pixels in the scanout). */
             state.needs_present = 1 | 2;
-        } else {
-            state.needs_present = 0;
+        } else if hover_changed {
+            /* Row highlight only — overlay_fast blit (opaque rows replace).
+             * Do not clear bit1 if a prior present is still pending. */
+            state.needs_present |= 1;
         }
+        /* else: leave needs_present alone so a throttled present is not lost */
 
         state.closed
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_context_menu_content_size(
+    state: *mut ContextMenuState,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) {
+    if state.is_null() || out_w.is_null() || out_h.is_null() {
+        return;
+    }
+    unsafe {
+        *out_w = (*state).content_w;
+        *out_h = (*state).content_h;
     }
 }
 

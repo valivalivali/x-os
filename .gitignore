@@ -6,6 +6,7 @@
 *.elf
 a.out
 disk.img
+**/target/
 
 # fetched third-party
 boot/uefi/limine/

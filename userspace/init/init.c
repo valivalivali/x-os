@@ -77,8 +77,10 @@ void init_main(void) {
     spawn_blob(0, "composer");
     spawn_blob(1, "menubar");
     spawn_blob(2, "dock");
-    spawn_blob(4, "zsh");
+    /* Terminal before zsh so SHELL_BRIDGE is registered when the shell looks it up. */
     spawn_blob(6, "menu");
+    spawn_blob(7, "terminal");
+    spawn_blob(4, "zsh");
 
     for (;;) syscall0(SYS_YIELD);
 }

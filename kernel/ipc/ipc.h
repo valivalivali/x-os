@@ -7,12 +7,13 @@
  */
 
 #define IPC_MAX_PORTS 64
+#define IPC_PORT_DEPTH 64
 
 typedef struct {
     bool used;
     uint64_t owner_pid;
     /* Simple circular buffer per port. */
-    ipc_msg_t buf[8];
+    ipc_msg_t buf[IPC_PORT_DEPTH];
     uint32_t head;
     uint32_t tail;
     uint32_t count;

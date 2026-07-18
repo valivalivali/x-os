@@ -321,6 +321,42 @@ impl EguiVirglBackend {
         self.ctx_id
     }
 
+    /// Bounding box of opaque pixels (alpha > 8), padded for AA / radii.
+    /// Used so the compositor can crop the overlay quad to menu content.
+    pub fn measure_content_size(&self) -> (u32, u32) {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let nbytes = self.pixel_bytes();
+        if self.pix_mem.is_null() || nbytes == 0 || w == 0 || h == 0 {
+            return (1, 1);
+        }
+        let pixels =
+            unsafe { core::slice::from_raw_parts(self.pix_mem as *const [u8; 4], w * h) };
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        let mut any = false;
+        for y in 0..h {
+            let row = y * w;
+            for x in 0..w {
+                if pixels[row + x][3] > 8 {
+                    any = true;
+                    if x + 1 > max_x {
+                        max_x = x + 1;
+                    }
+                    if y + 1 > max_y {
+                        max_y = y + 1;
+                    }
+                }
+            }
+        }
+        if !any {
+            return (1, 1);
+        }
+        let cw = (max_x + 6).min(w) as u32;
+        let ch = (max_y + 6).min(h) as u32;
+        (cw.max(1), ch.max(1))
+    }
+
     /// Rasterize egui into the guest buffer and upload to the GPU texture.
     pub fn render(
         &mut self,

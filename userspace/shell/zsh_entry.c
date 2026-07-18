@@ -97,6 +97,30 @@ static void run_command(int argc, char **argv) {
         return;
     }
 
+    /* fork's enter_userspace only sets RAX — other registers are undefined in
+     * the child. Copy argv strings into a stable buffer before fork. */
+    char argbuf[MAX_LINE];
+    char *saved_argv[MAX_ARGS];
+    volatile int saved_argc = argc;
+    if (saved_argc > MAX_ARGS)
+        saved_argc = MAX_ARGS;
+    {
+        int off = 0;
+        int n = saved_argc;
+        for (int i = 0; i < n; i++) {
+            const char *s = argv[i] ? argv[i] : "";
+            int len = my_strlen(s);
+            if (off + len + 1 >= MAX_LINE) {
+                saved_argc = i;
+                break;
+            }
+            saved_argv[i] = &argbuf[off];
+            for (int j = 0; j <= len; j++)
+                argbuf[off + j] = s[j];
+            off += len + 1;
+        }
+    }
+
     int pid = sys_fork();
     if (pid < 0) {
         shell_write("fork failed\n");
@@ -104,11 +128,11 @@ static void run_command(int argc, char **argv) {
     }
 
     if (pid == 0) {
+        int ac = saved_argc; /* reload from memory — regs undefined after fork */
         char *new_argv[MAX_ARGS + 1];
-        new_argv[0] = argv[0];
-        for (int i = 1; i < argc; i++)
-            new_argv[i] = argv[i];
-        new_argv[argc] = NULL;
+        for (int i = 0; i < ac; i++)
+            new_argv[i] = saved_argv[i];
+        new_argv[ac] = NULL;
 
         int ret = sys_exec(CMDS_PATH, new_argv);
         if (ret < 0) {
@@ -119,7 +143,8 @@ static void run_command(int argc, char **argv) {
     }
 
     int status = 0;
-    sys_waitpid(pid, &status, 0);
+    if (sys_waitpid(pid, &status, 0) < 0)
+        log("[shell] waitpid failed\n");
 }
 
 void zsh_entry(void) {
@@ -131,14 +156,12 @@ void zsh_entry(void) {
         for (;;) syscall0(SYS_YIELD);
     }
 
+    /* Wait until the terminal registers SHELL_BRIDGE (may be after GPU init). */
     port_handle_t bridge = 0;
-    for (int i = 0; i < 200 && !bridge; i++) {
+    for (;;) {
         bridge = sys_ns_lookup(PORT_NS_SHELL_BRIDGE);
-        if (!bridge) syscall0(SYS_YIELD);
-    }
-    if (!bridge) {
-        log("[shell] bridge port not found, idling\n");
-        for (;;) syscall0(SYS_YIELD);
+        if (bridge) break;
+        syscall0(SYS_YIELD);
     }
 
     ipc_msg_t hello;
@@ -159,6 +182,9 @@ void zsh_entry(void) {
     set_shell_bridge(my_input, bridge);
 
     log("[shell] bridge active, starting shell\n");
+
+    /* Seeded FS lives at /; ensure relative paths (ls .) resolve. */
+    sys_chdir("/");
 
     shell_write("x-os shell ready\n");
     shell_write("Commands: echo pwd true false basename dirname yes sleep uname cat ls printenv hostname logname id cd exit\n");
@@ -184,6 +210,7 @@ void zsh_entry(void) {
 
             if (c == '\n' || c == '\r') {
                 line[pos] = '\0';
+                _write(1, "\n", 1);
                 break;
             }
 
@@ -195,7 +222,11 @@ void zsh_entry(void) {
                 continue;
             }
 
-            line[pos++] = c;
+            /* Echo printable input so the terminal stream shows typing. */
+            if (c >= 0x20 && c < 0x7f) {
+                line[pos++] = c;
+                _write(1, &c, 1);
+            }
         }
 
         line[pos] = '\0';

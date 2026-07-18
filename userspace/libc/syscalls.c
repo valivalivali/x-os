@@ -140,7 +140,9 @@ _ssize_t _read(int fd, void *buf, size_t cnt) {
 
 _ssize_t _write(int fd, const void *buf, size_t cnt) {
     if ((fd == 1 || fd == 2) && g_bridge_output_port) {
-        /* IPC bridge mode: send output text to terminal via IPC */
+        /* IPC bridge mode: send output text to terminal via IPC.
+         * Retry when the 8-slot port is full so echo/prompts are not dropped
+         * while the terminal is still draining. */
         const char *p = (const char *)buf;
         size_t remaining = cnt;
         while (remaining > 0) {
@@ -154,7 +156,8 @@ _ssize_t _write(int fd, const void *buf, size_t cnt) {
             msg.payload_len = (uint32_t)chunk;
             /* Manual copy — avoid newlib memcpy which may use SSE */
             for (size_t i = 0; i < chunk; i++) msg.payload[i] = ((const uint8_t *)p)[i];
-            sys_port_send(g_bridge_output_port, &msg);
+            while (!sys_port_send(g_bridge_output_port, &msg))
+                syscall0(SYS_YIELD);
             p += chunk;
             remaining -= chunk;
         }
@@ -191,7 +194,27 @@ int _open(const char *file, int flags, int mode) {
     if (flags & O_CREAT) xfs_flags |= 4;
     if (flags & O_TRUNC) xfs_flags |= 8;
 
-    int ret = sys_open(file, xfs_flags);
+    /* xfs resolve_path only accepts absolute paths — prepend cwd. */
+    char abspath[512];
+    const char *path = file;
+    if (file && file[0] != '/') {
+        /* Kernel cwd defaults to "/"; avoid getcwd pointer-truncation issues. */
+        const char *cwdp = "/";
+        if (file[0] == '\0' || (file[0] == '.' && file[1] == '\0')) {
+            path = cwdp;
+        } else {
+            const char *rel = (file[0] == '.' && file[1] == '/') ? file + 2 : file;
+            size_t fl = 0; while (rel[fl]) fl++;
+            if (1 + fl < sizeof(abspath)) {
+                abspath[0] = '/';
+                for (size_t i = 0; i < fl; i++) abspath[1 + i] = rel[i];
+                abspath[1 + fl] = '\0';
+                path = abspath;
+            }
+        }
+    }
+
+    int ret = sys_open(path, xfs_flags);
     if (ret < 0) {
         errno = ENOENT;
         return -1;

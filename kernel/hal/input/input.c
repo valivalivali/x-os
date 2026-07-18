@@ -17,8 +17,28 @@ void input_init(int screen_w, int screen_h) {
 }
 
 void input_push(const input_event_t *e) {
+    if (!e) return;
+
+    /* Coalesce consecutive mouse moves — a noisy PS/2/QEMU stream otherwise
+     * fills the queue and drops keyboard events (shell looks "stuck"). */
+    if (e->type == EV_MOUSE_MOVE && qhead != qtail) {
+        uint32_t last = (qhead + QSIZE - 1) % QSIZE;
+        if (queue[last].type == EV_MOUSE_MOVE) {
+            queue[last] = *e;
+            return;
+        }
+    }
+
     uint32_t n = (qhead + 1) % QSIZE;
-    if (n == qtail) return;           /* full: drop oldest-preserving */
+    if (n == qtail) {
+        /* Full: never drop keys; drop this mouse event instead. */
+        if (e->type == EV_MOUSE_MOVE || e->type == EV_MOUSE_DOWN ||
+            e->type == EV_MOUSE_UP)
+            return;
+        /* Make room for a key by discarding the oldest event. */
+        qtail = (qtail + 1) % QSIZE;
+        n = (qhead + 1) % QSIZE;
+    }
     queue[qhead] = *e;
     qhead = n;
 }

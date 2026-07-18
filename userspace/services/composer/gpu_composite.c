@@ -763,6 +763,14 @@ void gpu_comp_create_gpu_surface_sv(int surf_idx, uint32_t res_id,
     cmd_submit();
 }
 
+void gpu_comp_destroy_gpu_surface_sv(uint32_t sv_handle) {
+    if (!g_active || !sv_handle) return;
+    cmd_reset();
+    cmd_dword(VIRGL_CMD0(VCCMD_DESTROY_OBJECT, 0, 1));
+    cmd_dword(sv_handle);
+    cmd_submit();
+}
+
 /* Composite a GPU-backed surface: draw a textured quad sampling from the
  * app's render target. This is called from the main composite loop for
  * surfaces where is_gpu == 1. */
@@ -868,20 +876,12 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
                       int overlay_fast) {
     if (!g_active || !g_initialized) return;
 
+    /* Keep the caller's dirty rect — do NOT expand to every GPU window.
+     * Expanding forced a near-fullscreen present on every move. */
     int32_t tx0 = dx, ty0 = dy, tx1 = dx + dw, ty1 = dy + dh;
     if (dw <= 0 || dh <= 0) {
         tx0 = 0; ty0 = 0; tx1 = fb_w; ty1 = fb_h;
         overlay_fast = 0;
-    }
-    for (int i = 0; i < ngpu; i++) {
-        int32_t x0 = gpu_surfs[i].x;
-        int32_t y0 = gpu_surfs[i].y;
-        int32_t x1 = x0 + (int32_t)gpu_surfs[i].w;
-        int32_t y1 = y0 + (int32_t)gpu_surfs[i].h;
-        if (x0 < tx0) tx0 = x0;
-        if (y0 < ty0) ty0 = y0;
-        if (x1 > tx1) tx1 = x1;
-        if (y1 > ty1) ty1 = y1;
     }
     if (tx0 < 0) tx0 = 0;
     if (ty0 < 0) ty0 = 0;
@@ -889,11 +889,26 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
     if (ty1 > fb_h) ty1 = fb_h;
     int32_t tw = tx1 - tx0;
     int32_t th = ty1 - ty0;
-    if (tw < 1) { tw = fb_w; tx0 = 0; overlay_fast = 0; }
-    if (th < 1) { th = fb_h; ty0 = 0; overlay_fast = 0; }
+    if (tw < 1) { tw = fb_w; tx0 = 0; tx1 = fb_w; overlay_fast = 0; }
+    if (th < 1) { th = fb_h; ty0 = 0; ty1 = fb_h; overlay_fast = 0; }
 
     if (!overlay_fast)
         sys_gpu_transfer_3d(g_fb_res_id, tx0, ty0, 0, tw, th, 1, 0, 0, 0, 0);
+
+    /* Only quads that intersect the dirty rect need redrawing. */
+    int draw_n = 0;
+    for (int i = 0; i < ngpu; i++) {
+        int32_t x0 = gpu_surfs[i].x;
+        int32_t y0 = gpu_surfs[i].y;
+        int32_t x1 = x0 + (int32_t)gpu_surfs[i].w;
+        int32_t y1 = y0 + (int32_t)gpu_surfs[i].h;
+        if (x1 <= tx0 || y1 <= ty0 || x0 >= tx1 || y0 >= ty1)
+            continue;
+        if (draw_n != i)
+            gpu_surfs[draw_n] = gpu_surfs[i];
+        draw_n++;
+    }
+    ngpu = draw_n;
 
     if (ngpu <= 0) {
         sys_gpu_flush_res(g_fb_res_id, tx0, ty0, tw, th);
@@ -927,6 +942,18 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
         float sy = (float)gpu_surfs[i].y;
         float sw = (float)gpu_surfs[i].w;
         float sh = (float)gpu_surfs[i].h;
+        /* Overlay menus keep a large RT for fly-outs but shrink the on-screen
+         * quad to the painted content — UV samples only that top-left region. */
+        float u1 = 1.0f, v1 = 1.0f;
+        if (gpu_surfs[i].tex_w > 0 && gpu_surfs[i].tex_h > 0 &&
+            gpu_surfs[i].w > 0 && gpu_surfs[i].h > 0 &&
+            (gpu_surfs[i].tex_w != gpu_surfs[i].w ||
+             gpu_surfs[i].tex_h != gpu_surfs[i].h)) {
+            u1 = (float)gpu_surfs[i].w / (float)gpu_surfs[i].tex_w;
+            v1 = (float)gpu_surfs[i].h / (float)gpu_surfs[i].tex_h;
+            if (u1 > 1.0f) u1 = 1.0f;
+            if (v1 > 1.0f) v1 = 1.0f;
+        }
         float ndc_lo_x = 2.0f * sx / (float)fb_w - 1.0f;
         float ndc_hi_x = 2.0f * (sx + sw) / (float)fb_w - 1.0f;
         float ndc_lo_y = 2.0f * sy / (float)fb_h - 1.0f;
@@ -935,11 +962,11 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
         /* Two triangles (6 verts) — avoids strip/fan mode mismatches. */
         float verts[6][4] = {
             { ndc_lo_x, ndc_lo_y,  0.0f, 0.0f },
-            { ndc_lo_x, ndc_hi_y,  0.0f, 1.0f },
-            { ndc_hi_x, ndc_lo_y,  1.0f, 0.0f },
-            { ndc_hi_x, ndc_lo_y,  1.0f, 0.0f },
-            { ndc_lo_x, ndc_hi_y,  0.0f, 1.0f },
-            { ndc_hi_x, ndc_hi_y,  1.0f, 1.0f },
+            { ndc_lo_x, ndc_hi_y,  0.0f, v1   },
+            { ndc_hi_x, ndc_lo_y,  u1,   0.0f },
+            { ndc_hi_x, ndc_lo_y,  u1,   0.0f },
+            { ndc_lo_x, ndc_hi_y,  0.0f, v1   },
+            { ndc_hi_x, ndc_hi_y,  u1,   v1   },
         };
 
         uint32_t vb_size = 6 * 4 * 4;

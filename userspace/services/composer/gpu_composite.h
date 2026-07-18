@@ -128,6 +128,9 @@ void gpu_comp_destroy_surface(int surf_idx);
 void gpu_comp_create_gpu_surface_sv(int surf_idx, uint32_t res_id,
                                      uint32_t sv_handle);
 
+/* Destroy a compositor-side sampler view (call before the app frees its RT). */
+void gpu_comp_destroy_gpu_surface_sv(uint32_t sv_handle);
+
 /* Composite a GPU-backed surface directly (no CPU pixel upload needed).
  * Uses the sampler view created by gpu_comp_create_gpu_surface_sv. */
 void gpu_comp_composite_gpu_surface(int surf_idx, uint32_t sv_handle,
@@ -142,7 +145,8 @@ void gpu_comp_update_bg(uint32_t *bg_pixels, int32_t fb_w, int32_t fb_h);
 typedef struct {
     uint32_t sv_handle;
     int32_t  x, y;
-    uint32_t w, h;
+    uint32_t w, h;       /* on-screen quad (may be smaller than texture) */
+    uint32_t tex_w, tex_h; /* GPU texture size; 0 = same as w/h */
 } gpu_comp_gpu_surf_t;
 
 /* Composite layers onto scanout.

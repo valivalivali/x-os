@@ -34,6 +34,8 @@
 #define WM_SET_TITLE        19   /* app -> composer: update title         */
 #define WM_KEY_EVENT        20   /* composer -> app: keyboard event       */
 #define WM_SURFACE_GPU_READY 21  /* app -> composer: GPU resource ready   */
+#define WM_SET_BOUNDS        22  /* app -> composer: move/resize surface  */
+#define WM_BEGIN_MOVE        23  /* app -> composer: start title-bar drag */
 
 /* ---- Window flags ----------------------------------------------------- */
 
@@ -43,7 +45,8 @@
 #define WM_FLAG_CLOSABLE   0x08   /* window has close button              */
 #define WM_FLAG_MINIMIZABLE 0x10  /* window has minimize button           */
 #define WM_FLAG_NORMAL     0x00   /* standard decorated window            */
-#define WM_FLAG_GPU       0x20   /* GPU-backed surface (app renders on GPU) */
+#define WM_FLAG_GPU        0x20   /* GPU-backed surface (app renders on GPU) */
+#define WM_FLAG_CLIENT_CHROME 0x40 /* app draws chrome (egui::Window); no OS title bar */
 
 /* Default flags for a normal window */
 #define WM_FLAG_DEFAULT    (WM_FLAG_RESIZABLE | WM_FLAG_CLOSABLE | WM_FLAG_MINIMIZABLE)
@@ -104,6 +107,9 @@ typedef struct {
     uint32_t surface_idx;
     uint32_t gpu_res_id;    /* virtio-gpu resource ID of the render target */
     uint32_t gpu_ctx_id;    /* virgl context ID the resource belongs to */
+    /* Optional: GPU RT size when on-screen quad is cropped (0 = use w/h). */
+    uint32_t tex_w;
+    uint32_t tex_h;
 } wm_surface_gpu_ready_msg_t;
 
 /* App -> Composer: destroy surface */
@@ -153,6 +159,24 @@ typedef struct {
     uint32_t surface_idx;
     char     title[32];     /* new title */
 } wm_set_title_msg_t;
+
+/* App -> Composer: move/resize surface (client-chrome / egui drag) */
+typedef struct {
+    uint32_t type;          /* WM_SET_BOUNDS */
+    uint32_t surface_idx;
+    int32_t  x, y;          /* new origin */
+    uint32_t w, h;          /* 0 = keep current size */
+} wm_set_bounds_msg_t;
+
+/* App -> Composer: begin interactive move (composer owns drag until mouse-up).
+ * grab_off_* is the pointer offset within the surface at press time
+ * (content-local for CLIENT_CHROME; decoration-local for OS chrome). */
+typedef struct {
+    uint32_t type;          /* WM_BEGIN_MOVE */
+    uint32_t surface_idx;
+    int32_t  grab_off_x;
+    int32_t  grab_off_y;
+} wm_begin_move_msg_t;
 
 /* Composer -> App: keyboard event */
 typedef struct {

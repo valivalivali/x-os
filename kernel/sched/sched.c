@@ -11,8 +11,37 @@ static proc_t procs[SCHED_MAX_PROCS];
 static proc_t *current = NULL;
 static proc_t *ready_head = NULL;
 
+static void ready_dequeue(proc_t *p) {
+    proc_t **pp = &ready_head;
+    while (*pp) {
+        if (*pp == p) {
+            *pp = p->next;
+            p->next = NULL;
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+}
+
+static void ready_enqueue(proc_t *p) {
+    /* Avoid duplicate links (ready-list cycles freeze the scheduler). */
+    for (proc_t *q = ready_head; q; q = q->next) {
+        if (q == p)
+            return;
+    }
+    p->next = NULL;
+    proc_t **tail = &ready_head;
+    while (*tail)
+        tail = &(*tail)->next;
+    *tail = p;
+}
+
 void sched_init(void) {
     memset(procs, 0, sizeof(procs));
+    /* Free slots are DEAD+reaped so proc_create can claim them. Zombies are
+     * DEAD+!reaped until waitpid collects them. */
+    for (int i = 0; i < SCHED_MAX_PROCS; i++)
+        procs[i].reaped = true;
     /* PID 0 is the idle/kernel task. It already has a stack (the boot stack). */
     procs[0].pid = 0;
     procs[0].state = PROC_RUNNING;
@@ -28,7 +57,9 @@ proc_t *proc_current(void) {
 
 proc_t *proc_by_pid(uint64_t pid) {
     for (int i = 0; i < SCHED_MAX_PROCS; i++) {
-        if (procs[i].state != PROC_DEAD && procs[i].pid == pid)
+        /* Include unreaped zombies so waitpid can collect them. */
+        if (procs[i].pid == pid &&
+            (procs[i].state != PROC_DEAD || !procs[i].reaped))
             return &procs[i];
     }
     return NULL;
@@ -41,22 +72,15 @@ void proc_set_current(proc_t *p) {
 void sched_adopt_current(proc_t *p) {
     p->state = PROC_RUNNING;
     current = p;
-    /* Remove p from ready_head if present */
-    proc_t **pp = &ready_head;
-    while (*pp) {
-        if (*pp == p) {
-            *pp = p->next;
-            p->next = NULL;
-            break;
-        }
-        pp = &(*pp)->next;
-    }
+    ready_dequeue(p);
 }
 
 proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
                     uint8_t *kstack) {
     for (int i = 1; i < SCHED_MAX_PROCS; i++) {
-        if (procs[i].state == PROC_DEAD) {
+        /* Only reuse slots that waitpid (or an explicit reap) has collected.
+         * Stealing an unreaped zombie would make the parent's waitpid hang. */
+        if (procs[i].state == PROC_DEAD && procs[i].reaped) {
             procs[i].pid = (uint64_t)(i);
             procs[i].state = PROC_READY;
             procs[i].rip = entry;
@@ -70,9 +94,8 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].ring3 = false;
             procs[i].parent_pid = 0;
             procs[i].exit_code = 0;
-            procs[i].reaped = true;  /* mark as reaped so dead procs can be reused */
-            procs[i].next = ready_head;
-            ready_head = &procs[i];
+            procs[i].reaped = true;
+            ready_enqueue(&procs[i]);
             return &procs[i];
         }
     }
@@ -98,13 +121,14 @@ void proc_exit(proc_t *p) {
         p->kstack = NULL;
     }
 
+    ready_dequeue(p);
     p->state = PROC_DEAD;
     p->reaped = false;
-    if (p == current && p->pid != 0) {
-        /* Switch back to idle task */
-        current = &procs[0];
-        current->state = PROC_RUNNING;
-    }
+    p->next = NULL;
+    /* Leave `current` as the dead process. sched_yield must not re-queue
+     * DEAD tasks; it will pick another READY process. Avoid parking on
+     * idle while idle is still linked READY — that duplicated idle on the
+     * ready list and froze the system on the second exit. */
 }
 
 /* Kill a process by PID. Removes it from the ready queue and frees resources.
@@ -117,15 +141,7 @@ void proc_kill(uint64_t pid) {
         sched_yield();
         for (;;) __asm__ volatile("cli; hlt");
     }
-    /* Remove from ready queue if present. */
-    proc_t **pp = &ready_head;
-    while (*pp) {
-        if (*pp == p) {
-            *pp = p->next;
-            break;
-        }
-        pp = &(*pp)->next;
-    }
+    ready_dequeue(p);
     proc_exit(p);
 }
 
@@ -136,54 +152,56 @@ void proc_sleep(uint64_t ms) {
     }
     current->sleep_until = timer_ticks() + ms;
     current->state = PROC_BLOCKED;
-    /* Add to ready queue so the scheduler can find and wake us up later. */
-    current->next = NULL;
-    proc_t **tail = &ready_head;
-    while (*tail) tail = &(*tail)->next;
-    *tail = current;
+    /* Blocked tasks stay on the ready list so yield can wake them. */
+    ready_enqueue(current);
     sched_yield();
 }
 
-void sched_yield(void) {
-    if (!current) return;
-
+static proc_t *pick_next_ready(void) {
     /* Wake up expired sleepers but keep them in the queue. */
-    proc_t *p = ready_head;
-    while (p) {
+    for (proc_t *p = ready_head; p; p = p->next) {
         if (p->state == PROC_BLOCKED && p->sleep_until &&
             timer_ticks() >= p->sleep_until) {
             p->state = PROC_READY;
             p->sleep_until = 0;
         }
-        p = p->next;
     }
 
-    /* Find first PROC_READY process in the queue. */
-    proc_t *next = NULL;
     proc_t **npp = &ready_head;
     while (*npp) {
         if ((*npp)->state == PROC_READY) {
-            next = *npp;
+            proc_t *next = *npp;
             *npp = next->next;
             next->next = NULL;
-            break;
+            return next;
         }
         npp = &(*npp)->next;
     }
 
-    if (!next) next = &procs[0]; /* idle task */
+    /* Recovery: READY but not linked (should not happen). */
+    for (int i = 1; i < SCHED_MAX_PROCS; i++) {
+        if (procs[i].state == PROC_READY)
+            return &procs[i];
+    }
+    return &procs[0]; /* idle */
+}
+
+void sched_yield(void) {
+    if (!current) return;
+
+    proc_t *next = pick_next_ready();
 
     if (next == current) return;
 
     proc_t *prev = current;
+    /* Only runnable tasks go back on the ready list. */
     if (current->state == PROC_RUNNING) {
         current->state = PROC_READY;
-        current->next = NULL;
-        proc_t **tail = &ready_head;
-        while (*tail) tail = &(*tail)->next;
-        *tail = current;
+        ready_enqueue(current);
     }
+
     next->state = PROC_RUNNING;
+    next->next = NULL;
     current = next;
 
     if (next->ring3) {

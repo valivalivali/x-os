@@ -25,7 +25,11 @@
 #include <sys/ioctl.h>
 
 #include "kernel/include/syscall.h"
+#include "kernel/include/ipc.h"
 #include "kernel/fs/xfs.h"
+
+/* When launched from the terminal shell, attach stdout/stderr to the bridge. */
+extern void set_shell_bridge(port_handle_t input_port, port_handle_t output_port);
 
 /* memmem is a GNU extension not available in newlib */
 static void *memmem(const void *haystack, size_t haystacklen,
@@ -190,6 +194,13 @@ static const char *base_name(const char *path) {
 }
 
 int cmds_main(int argc, char **argv) {
+    /* Exec clears the parent's bridge state — reattach so printf reaches the terminal. */
+    {
+        port_handle_t bridge = sys_ns_lookup(PORT_NS_SHELL_BRIDGE);
+        if (bridge)
+            set_shell_bridge(0, bridge);
+    }
+
     if (argc < 1 || !argv || !argv[0]) {
         fprintf(stderr, "cmds: no command name\n");
         return 1;

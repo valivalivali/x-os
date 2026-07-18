@@ -21,6 +21,8 @@
 /* Assembly entry point, defined in syscall_entry.S */
 extern void syscall_entry(void);
 
+static void proc_brk_reset(uint64_t pid);
+
 /* MSR definitions */
 #define MSR_EFER        0xC0000080
 #define MSR_STAR        0xC0000081
@@ -58,11 +60,11 @@ static uint64_t sys_yield_impl(void) {
 static uint64_t sys_exit_impl(uint64_t code) {
     proc_t *p = proc_current();
     if (p && p->pid != 0) {
+        proc_brk_reset(p->pid);
         p->exit_code = (int)code;
         proc_exit(p);
-        sched_yield();  /* should never return */
-        /* If sched_yield returns (no other process ready), halt forever.
-         * We must NOT return to syscall_entry — our page tables are gone. */
+        sched_yield();  /* switches to another READY task; never returns here */
+        /* If nothing else is runnable, park. Page tables are already gone. */
         for (;;) __asm__ volatile("cli; hlt");
     }
     return 0;
@@ -177,6 +179,8 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t cmds_elf_len;
     extern const uint8_t *menu_elf_data;
     extern size_t menu_elf_len;
+    extern const uint8_t *terminal_elf_data;
+    extern size_t terminal_elf_len;
     const uint8_t *data = NULL;
     size_t len = 0;
     if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
@@ -185,6 +189,7 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
     else if (index == 5) { data = cmds_elf_data; len = cmds_elf_len; }
     else if (index == 6) { data = menu_elf_data; len = menu_elf_len; }
+    else if (index == 7) { data = terminal_elf_data; len = terminal_elf_len; }
     else return 0;
     if (!ubuf) return len;
     size_t n = maxlen < len ? maxlen : len;
@@ -578,6 +583,11 @@ static uint64_t sys_exec_impl(uint64_t path, uint64_t argv, uint64_t a3,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path) return (uint64_t)-1;
+    /* New image → new heap. Stale brk from a prior cmds on this PID would
+     * make malloc write into unmapped VA and freeze the cooperative sched. */
+    proc_t *p = proc_current();
+    if (p)
+        proc_brk_reset(p->pid);
     return (uint64_t)proc_exec((const char *)path, (char *const *)argv);
 }
 
@@ -664,7 +674,9 @@ static uint64_t sys_getcwd_impl(uint64_t buf, uint64_t size, uint64_t a3,
     size_t len = strlen(g_cwd);
     if (len + 1 > size) return (uint64_t)-1;
     memcpy((void *)buf, g_cwd, len + 1);
-    return buf;
+    /* Return 0 on success — returning `buf` truncates to a negative int in
+     * userspace when the pointer sits in high canonical VA. */
+    return 0;
 }
 
 static uint64_t sys_chdir_impl(uint64_t path, uint64_t a2, uint64_t a3,
@@ -688,6 +700,11 @@ static uint64_t sys_chdir_impl(uint64_t path, uint64_t a2, uint64_t a3,
 #define USER_HEAP_MAX   0x0000030000000000ULL
 
 static uint64_t g_proc_brk[32];  /* per-pid brk, indexed by pid */
+
+static void proc_brk_reset(uint64_t pid) {
+    if (pid < 32)
+        g_proc_brk[pid] = 0;
+}
 
 static uint64_t sys_brk_impl(uint64_t addr, uint64_t a2, uint64_t a3,
                              uint64_t a4, uint64_t a5, uint64_t a6) {
