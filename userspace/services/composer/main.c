@@ -92,6 +92,7 @@ typedef struct {
     uint32_t w, h;               /* content dimensions (excluding decoration) */
     uint32_t *pixels;            /* shared buffer virtual address (content only) */
     int      level;             /* SURF_LEVEL_* */
+    uint32_t z_seq;             /* paint/hit-test order within level; higher = raised more recently */
     int      valid;             /* 0 = dead/slot free */
     uint32_t owner_pid;         /* PID of app that renders into this */
     uint64_t reply_port;        /* port to send mouse events / surface_ready */
@@ -124,6 +125,9 @@ static surface_info_t surfaces[MAX_SURFACES];
 static int         surface_count = 0;
 static int         drag_idx = -1;
 static int         focused_idx = -1;
+/* Monotonic counter for surface_info_t.z_seq — raising a surface (focus/
+ * click/create) bumps it above every other surface in its level. */
+static uint32_t    g_z_seq_counter = 0;
 static int         drag_off_x, drag_off_y;
 /* While LMB is down on a surface, keep forwarding moves/ups to it even if
  * the cursor leaves its bounds — required for egui::Window drag. */
@@ -236,9 +240,11 @@ static void log_xy(const char *prefix, int32_t x, int32_t y, const char *suffix)
 #define DEC_CLOSE    0xFFFF5F57   /* close button red */
 #define DEC_MIN      0xFFFEBC2E   /* minimize button yellow */
 #define DEC_MAX      0xFF28C840   /* maximize button green */
-#define DEC_CLOSE_D  0xFFC0403A   /* close button dark (inactive) */
-#define DEC_MIN_D    0xFFC8A020   /* minimize button dark (inactive) */
-#define DEC_MAX_D    0xFF1C9830   /* maximize button dark (inactive) */
+/* macOS-style unfocused chrome: traffic lights desaturate to flat grey and
+ * the title text fades from near-black to mid-grey (see draw_decoration). */
+#define DEC_TRAFFIC_D  0xFFC7C7CC  /* unfocused traffic-light grey */
+#define DEC_TITLE_FG   0xFF3C3C41  /* focused title text (near-black) */
+#define DEC_TITLE_FG_D 0xFF9A9AA0  /* unfocused title text (mid-grey) */
 
 static void dec_fill_rect(int x0, int y0, int x1, int y1, uint32_t color) {
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
@@ -350,7 +356,7 @@ static void dec_mask_corners(int x0, int y0, int w, int total_h, int r) {
 
 /* Draw window decoration (title bar) into backing buffer.
  * Called during compositing, before blitting content. */
-static void draw_decoration(const surface_info_t *s) {
+static void draw_decoration(const surface_info_t *s, int has_focus) {
     if (!surface_decorated(s)) return;
 
     int x0 = s->x, y0 = s->y;
@@ -363,20 +369,20 @@ static void draw_decoration(const surface_info_t *s) {
     /* Bottom edge line */
     dec_fill_rect(x0, y1 - 1, x1, y1, DEC_BG_DARK);
 
-    /* Traffic light buttons */
-    int has_focus = 1; /* TODO: track actual focus */
+    /* Traffic light buttons — flat grey when the window isn't focused,
+     * matching macOS Finder's active/inactive window chrome. */
     int btn_cy = y0 + WM_BTN_Y;
     int btn_r = WM_BTN_SIZE / 2;
 
     /* Close */
     dec_fill_circle(x0 + WM_CLOSE_X + btn_r, btn_cy, btn_r,
-                    has_focus ? DEC_CLOSE : DEC_CLOSE_D);
+                    has_focus ? DEC_CLOSE : DEC_TRAFFIC_D);
     /* Minimize */
     dec_fill_circle(x0 + WM_MIN_X + btn_r, btn_cy, btn_r,
-                    has_focus ? DEC_MIN : DEC_MIN_D);
+                    has_focus ? DEC_MIN : DEC_TRAFFIC_D);
     /* Maximize */
     dec_fill_circle(x0 + WM_MAX_X + btn_r, btn_cy, btn_r,
-                    has_focus ? DEC_MAX : DEC_MAX_D);
+                    has_focus ? DEC_MAX : DEC_TRAFFIC_D);
 
     /* Draw title text using xgfx */
     xgfx_surface_t surf = { backing, (uint32_t)fb_w, (uint32_t)fb_h, (uint32_t)backing_stride };
@@ -385,7 +391,7 @@ static void draw_decoration(const surface_info_t *s) {
     int title_x = x0 + btn_end + 8;
     int title_y = y0 + (WM_TITLE_BAR_H - 16) / 2; /* 16 = font height */
     xgfx_draw_text(&surf, title_x, title_y, s->title,
-                   xgfx_argb(255, 60, 60, 65));
+                   has_focus ? DEC_TITLE_FG : DEC_TITLE_FG_D);
 }
 
 /* Check if a point (relative to window origin) is on a decoration button.
@@ -488,6 +494,42 @@ static inline uint32_t desktop_bg_color(int x, int y) {
     return 0xFF000000 | desktop_bg_base(y);
 }
 
+/* Fill `out` with valid, non-hidden surface indices at `level`, sorted
+ * ascending by z_seq (paint order: lowest first, on top last). MAX_SURFACES
+ * is tiny (8) so insertion sort is plenty. */
+static int level_order(int level, int *out) {
+    int n = 0;
+    for (int i = 0; i < surface_count; i++) {
+        if (surfaces[i].valid && !surfaces[i].hidden && surfaces[i].level == level)
+            out[n++] = i;
+    }
+    for (int a = 1; a < n; a++) {
+        int key = out[a];
+        uint32_t key_seq = surfaces[key].z_seq;
+        int b = a - 1;
+        while (b >= 0 && surfaces[out[b]].z_seq > key_seq) {
+            out[b + 1] = out[b];
+            b--;
+        }
+        out[b + 1] = key;
+    }
+    return n;
+}
+
+/* True if `idx` already has the highest z_seq among valid, visible
+ * surfaces in its level — i.e. raising it again would be a no-op. Used to
+ * skip redundant z_changed/full-screen redraws on repeat clicks. */
+static int surface_is_topmost_in_level(int idx) {
+    const surface_info_t *s = &surfaces[idx];
+    for (int i = 0; i < surface_count; i++) {
+        if (i == idx) continue;
+        if (surfaces[i].valid && !surfaces[i].hidden &&
+            surfaces[i].level == s->level && surfaces[i].z_seq > s->z_seq)
+            return 0;
+    }
+    return 1;
+}
+
 static void draw_region(int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 > fb_w) x1 = fb_w; if (y1 > fb_h) y1 = fb_h;
@@ -503,12 +545,14 @@ static void draw_region(int x0, int y0, int x1, int y1) {
         }
     }
 
-    /* Then: blit each overlapping surface, bottom-to-top.
-     * Skip dead apps: their shared buffers may have been freed. */
+    /* Then: blit each overlapping surface, bottom-to-top by z_seq within
+     * each level. Skip dead apps: their shared buffers may have been freed. */
     for (int level = SURF_LEVEL_NORMAL; level <= SURF_LEVEL_OVERLAY; level++) {
-        for (int i = 0; i < surface_count; i++) {
+        int order[MAX_SURFACES];
+        int n = level_order(level, order);
+        for (int oi = 0; oi < n; oi++) {
+            int i = order[oi];
             const surface_info_t *s = &surfaces[i];
-            if (!s->valid || s->hidden || s->level != level) continue;
             /* Safety: don't read from a dead app's buffer. */
             if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
 
@@ -517,7 +561,7 @@ static void draw_region(int x0, int y0, int x1, int y1) {
              * decorated GPU windows are movable/closable like CPU ones. */
             if (s->is_gpu) {
                 if (surface_decorated(s)) {
-                    draw_decoration(s);
+                    draw_decoration(s, i == focused_idx);
                     int total_h = surface_total_h(s);
                     dec_mask_corners(s->x, s->y, (int)s->w, total_h, WIN_RADIUS);
                 }
@@ -527,7 +571,7 @@ static void draw_region(int x0, int y0, int x1, int y1) {
 
             if (surface_decorated(s)) {
                 /* Draw decoration (title bar) into backing */
-                draw_decoration(s);
+                draw_decoration(s, i == focused_idx);
                 /* Blit content offset by WM_TITLE_BAR_H below window origin */
                 int content_y = s->y + WM_TITLE_BAR_H;
                 int sx0 = x0 - s->x; if (sx0 < 0) sx0 = 0;
@@ -560,9 +604,11 @@ static void draw_region(int x0, int y0, int x1, int y1) {
  * Searches from highest z-level down to fixed. */
 static int surface_at(int32_t px, int32_t py) {
     for (int level = SURF_LEVEL_OVERLAY; level >= SURF_LEVEL_NORMAL; level--) {
-        for (int i = surface_count - 1; i >= 0; i--) {
+        int order[MAX_SURFACES];
+        int n = level_order(level, order);
+        for (int oi = n - 1; oi >= 0; oi--) {
+            int i = order[oi];
             const surface_info_t *s = &surfaces[i];
-            if (!s->valid || s->hidden || s->level != level) continue;
             if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid)) continue;
             int32_t rx = px - s->x, ry = py - s->y;
             if (surface_hit(s, rx, ry))
@@ -589,6 +635,7 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
     sp->level = (flags & WM_FLAG_PANEL) ? SURF_LEVEL_PANEL
               : (flags & WM_FLAG_OVERLAY) ? SURF_LEVEL_OVERLAY
               : SURF_LEVEL_NORMAL;
+    sp->z_seq = ++g_z_seq_counter;  /* new surfaces raise above existing ones in their level */
     sp->valid = 1;
     sp->owner_pid = owner_pid;
     sp->reply_port = reply_port;
@@ -1022,9 +1069,33 @@ void display_main(void) {
 
                 if (ev.button == MOUSE_LEFT && hit >= 0) {
                     int new_idx = hit;
-                    /* Track focus for keyboard forwarding */
-                    if (surfaces[new_idx].level == SURF_LEVEL_NORMAL)
+                    /* Track focus for keyboard forwarding; raise the window
+                     * above every other normal-level window so it actually
+                     * paints on top, not just receives keyboard input.
+                     * Skip the reorder (and the full-screen redraw it forces)
+                     * if it's already frontmost — clicking the same window
+                     * repeatedly must not recomposite the whole desktop. */
+                    if (surfaces[new_idx].level == SURF_LEVEL_NORMAL) {
+                        int old_focused = focused_idx;
                         focused_idx = new_idx;
+                        if (!surface_is_topmost_in_level(new_idx)) {
+                            surfaces[new_idx].z_seq = ++g_z_seq_counter;
+                            z_changed = 1;
+                        } else if (old_focused != new_idx) {
+                            /* No reorder needed, but the title bar chrome
+                             * (traffic lights / title text) still needs to
+                             * repaint on both the old and newly focused
+                             * window to reflect the focus change. */
+                            if (old_focused >= 0 && surfaces[old_focused].valid) {
+                                surface_info_t *os = &surfaces[old_focused];
+                                damage_add(os->x, os->y, os->x + (int)os->w,
+                                           os->y + surface_total_h(os), 0);
+                            }
+                            surface_info_t *ns = &surfaces[new_idx];
+                            damage_add(ns->x, ns->y, ns->x + (int)ns->w,
+                                       ns->y + surface_total_h(ns), 0);
+                        }
+                    }
                     pointer_grab_idx = new_idx;
                     int32_t wx = ev.x - surfaces[new_idx].x;
                     int32_t wy = ev.y - surfaces[new_idx].y;
@@ -1116,6 +1187,19 @@ void display_main(void) {
                         sys_port_send(surfaces[new_idx].reply_port, &mmsg);
                     }
                 click_done:;
+                }
+                if (ev.button == MOUSE_LEFT && hit < 0 && drag_idx < 0) {
+                    /* Clicking empty desktop clears focus system-wide, like
+                     * macOS — whatever app was active loses focus and its
+                     * chrome (title bar / traffic lights) dims. This is the
+                     * same has_focus check draw_decoration() already uses
+                     * for every app window, not a terminal-specific rule. */
+                    if (focused_idx >= 0 && surfaces[focused_idx].valid) {
+                        surface_info_t *os = &surfaces[focused_idx];
+                        damage_add(os->x, os->y, os->x + (int)os->w,
+                                   os->y + surface_total_h(os), 0);
+                        focused_idx = -1;
+                    }
                 }
                 if (ev.button == MOUSE_RIGHT && hit < 0) {
                     /* Don't spawn a menu mid-drag or right after (trackpad). */
@@ -1350,6 +1434,11 @@ void display_main(void) {
                             drag_off_y = bm->grab_off_y;
                             pointer_grab_idx = -1; /* composer owns the drag */
                             focused_idx = drag_idx;
+                            if (surfaces[drag_idx].level == SURF_LEVEL_NORMAL &&
+                                !surface_is_topmost_in_level(drag_idx)) {
+                                surfaces[drag_idx].z_seq = ++g_z_seq_counter;
+                                z_changed = 1;
+                            }
                         }
                     }
                 }
@@ -1509,14 +1598,27 @@ void display_main(void) {
                                     gr->gpu_res_id,
                                     sv_handle);
                                 s->gpu_sv_handle = sv_handle;
-                                /* One dirty + full stack present (not a burst). */
+                                /* One dirty rect scoped to this surface only.
+                                 * Do NOT set z_changed here — that forces a
+                                 * full-screen dirty rect, which makes the
+                                 * present path re-transfer the ENTIRE CPU
+                                 * backing (desktop bg + decorations only, no
+                                 * GPU window content) into the scanout render
+                                 * target, blanking every other GPU window's
+                                 * on-screen area for a frame before the quad
+                                 * redraw restores it (visible as a flicker —
+                                 * e.g. the terminal blinking when a context
+                                 * menu opens). The per-surface dirty rect
+                                 * below already drives a correctly scoped
+                                 * redraw (and lets overlay_only engage for
+                                 * OVERLAY-level surfaces, skipping the L1
+                                 * transfer entirely). */
                                 s->dirty = 1;
                                 s->dirty_restore = 0;
                                 s->dirty_x = 0;
                                 s->dirty_y = 0;
                                 s->dirty_w = s->w;
                                 s->dirty_h = s->h;
-                                z_changed = 1;
                                 log_int("[composer]  GPU surface ready: res=",
                                         (int32_t)gr->gpu_res_id, "\n");
                                 /* App windows (e.g. Terminal) take keyboard focus
@@ -1756,24 +1858,34 @@ void display_main(void) {
                 int ngpu = 0;
                 /* Always re-blit remaining GPU windows. overlay_erase used to
                  * skip this and only re-xfer L1 — that punched a desktop-colored
-                 * (or stale) hole through any window under the menu. */
-                for (int i = 0; i < surface_count; i++) {
-                    surface_info_t *s = &surfaces[i];
-                    if (!s->valid || s->hidden) continue;
-                    if (!s->is_gpu || !s->gpu_sv_handle) continue;
-                    if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
-                        continue;
-                    int draw_y = s->y;
-                    if (surface_decorated(s))
-                        draw_y += WM_TITLE_BAR_H;
-                    gpu_surfs[ngpu].sv_handle = s->gpu_sv_handle;
-                    gpu_surfs[ngpu].x = s->x;
-                    gpu_surfs[ngpu].y = draw_y;
-                    gpu_surfs[ngpu].w = s->w;
-                    gpu_surfs[ngpu].h = s->h;
-                    gpu_surfs[ngpu].tex_w = s->gpu_tex_w ? s->gpu_tex_w : s->w;
-                    gpu_surfs[ngpu].tex_h = s->gpu_tex_h ? s->gpu_tex_h : s->h;
-                    ngpu++;
+                 * (or stale) hole through any window under the menu.
+                 *
+                 * Order matters here: quads are drawn back-to-front, so this
+                 * MUST walk levels low→high (and z_seq within a level), never
+                 * raw slot index — slots get reused across create/destroy, so
+                 * an unrelated app could end up with a higher slot than an
+                 * OVERLAY (menu) and incorrectly paint on top of it. */
+                int lvl_order[MAX_SURFACES];
+                for (int level = SURF_LEVEL_NORMAL; level <= SURF_LEVEL_OVERLAY; level++) {
+                    int n = level_order(level, lvl_order);
+                    for (int oi = 0; oi < n; oi++) {
+                        int i = lvl_order[oi];
+                        surface_info_t *s = &surfaces[i];
+                        if (!s->is_gpu || !s->gpu_sv_handle) continue;
+                        if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
+                            continue;
+                        int draw_y = s->y;
+                        if (surface_decorated(s))
+                            draw_y += WM_TITLE_BAR_H;
+                        gpu_surfs[ngpu].sv_handle = s->gpu_sv_handle;
+                        gpu_surfs[ngpu].x = s->x;
+                        gpu_surfs[ngpu].y = draw_y;
+                        gpu_surfs[ngpu].w = s->w;
+                        gpu_surfs[ngpu].h = s->h;
+                        gpu_surfs[ngpu].tex_w = s->gpu_tex_w ? s->gpu_tex_w : s->w;
+                        gpu_surfs[ngpu].tex_h = s->gpu_tex_h ? s->gpu_tex_h : s->h;
+                        ngpu++;
+                    }
                 }
 
                 /* Hover-only: overlay_fast (skip L1 xfer). Fly-out topology
