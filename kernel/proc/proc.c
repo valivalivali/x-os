@@ -1,4 +1,5 @@
 #include "kernel/proc/proc.h"
+#include "kernel/proc/signal.h"
 #include "kernel/elf/elf.h"
 #include "kernel/memory/vmm.h"
 #include "kernel/memory/heap.h"
@@ -7,6 +8,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/fs/xfs.h"
+#include "kernel/ipc/pipe.h"
 
 #define USER_STACK_SIZE  (64 * 1024)
 #define USER_STACK_TOP   0x00007FFF00000000ULL
@@ -55,6 +57,7 @@ proc_t *proc_spawn_ring3(const uint8_t *elf_data, size_t elf_len) {
         }
         vmm_map_page(pml4_virt, va, page, VMM_U | VMM_RW);
     }
+    proc_map_sigreturn_trampoline(pml4_virt);
     uint64_t user_rsp = USER_STACK_TOP - 16;
 
     /* Allocate kernel stack for interrupts/syscalls */
@@ -138,6 +141,16 @@ uint64_t proc_fork(void) {
     child->ring3 = true;
     child->parent_pid = parent->pid;
     child->reaped = false; /* waitpid must see this child */
+    for (int i = 0; i < (int)sizeof(child->name); i++)
+        child->name[i] = parent->name[i];
+    /* Inherit signal disposition / mask (XNU-style fork). */
+    child->sig_blocked = parent->sig_blocked;
+    child->sig_pending = 0;
+    for (int i = 0; i < XOS_NSIG; i++) {
+        child->sig_handler[i] = parent->sig_handler[i];
+        child->sig_mask[i] = parent->sig_mask[i];
+        child->sig_flags[i] = parent->sig_flags[i];
+    }
 
     /* The child needs to resume where the parent was — i.e., returning
      * from the syscall instruction. We copy the parent's kernel stack
@@ -234,6 +247,9 @@ uint64_t proc_fork(void) {
     ksp--;
     *ksp = 0;           /* r15 */
     child->rsp = (uint64_t)ksp;
+
+    /* Child inherits open pipe ends (refcounted). */
+    pipe_fork_inherit((uint32_t)parent->pid);
 
     kprintf("[proc] fork: parent=%lu child=%lu rip=%p rsp=%p\n",
             parent->pid, child->pid, (void *)user_rip, (void *)user_rsp);
@@ -341,6 +357,7 @@ int proc_exec(const char *path, char *const argv[]) {
         }
         vmm_map_page(new_pml4_virt, va, page, VMM_U | VMM_RW);
     }
+    proc_map_sigreturn_trampoline(new_pml4_virt);
 
     /* Set up argv on the user stack.
      * The x86_64 SysV ABI puts argc and argv[] on the stack at program
@@ -367,6 +384,20 @@ int proc_exec(const char *path, char *const argv[]) {
         argc = 1;
     }
     if (argc > 64) argc = 64;  /* safety limit */
+
+    /* Update short process name for ps (basename of argv[0]). */
+    {
+        const char *comm = argv[0] ? argv[0] : path;
+        const char *slash = comm;
+        for (const char *q = comm; *q; q++)
+            if (*q == '/') slash = q + 1;
+        size_t nl = 0;
+        while (slash[nl] && nl < sizeof(p->name) - 1) {
+            p->name[nl] = slash[nl];
+            nl++;
+        }
+        p->name[nl] = '\0';
+    }
 
     /* Helper: write bytes to user stack via kernel HHDM.
      * Handles writes that cross page boundaries. */
@@ -483,6 +514,9 @@ int proc_exec(const char *path, char *const argv[]) {
     /* Update g_kernel_rsp0 for this process */
     g_kernel_rsp0 = (uint64_t)(kstack + SCHED_STACK_SIZE);
 
+    kprintf("[proc] exec: pid=%lu path=%s entry=%p argc=%d\n",
+            p->pid, path, (void *)entry, argc);
+
     /* Jump to userspace immediately */
     enter_userspace(new_pml4_phys, entry, user_rsp, 0);
 
@@ -491,11 +525,22 @@ int proc_exec(const char *path, char *const argv[]) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Waitpid — wait for child to exit. pid == -1 means any child. */
+/* Waitpid — wait for child to exit. pid == -1 means any child.
+ * Status encoding matches newlib wait.h: WIFEXITED => low byte 0,
+ * WEXITSTATUS => (status >> 8) & 0xff. */
 
-int proc_waitpid(int pid, int *status) {
+#define XOS_WNOHANG 1
+
+static int wait_status_encode(int exit_code) {
+    return (exit_code & 0xff) << 8;
+}
+
+/* newlib ECHILD */
+#define XOS_ECHILD 10
+
+int proc_waitpid(int pid, int *status, int options) {
     proc_t *parent = proc_current();
-    if (!parent) return -1;
+    if (!parent) return -XOS_ECHILD;
 
     for (;;) {
         proc_t *child = NULL;
@@ -504,10 +549,12 @@ int proc_waitpid(int pid, int *status) {
         if (pid > 0) {
             child = proc_by_pid((uint64_t)pid);
             if (!child || child->parent_pid != parent->pid)
-                return -1;
+                return -XOS_ECHILD;
             if (child->state == PROC_DEAD && !child->reaped) {
-                if (status) *status = child->exit_code;
+                if (status) *status = wait_status_encode(child->exit_code);
                 child->reaped = true;
+                kprintf("[proc] waitpid: pid=%lu reaped child=%lu code=%d\n",
+                        parent->pid, child->pid, child->exit_code);
                 return (int)child->pid;
             }
             has_live = 1;
@@ -518,16 +565,24 @@ int proc_waitpid(int pid, int *status) {
                 if (!c || c->parent_pid != parent->pid)
                     continue;
                 if (c->state == PROC_DEAD && !c->reaped) {
-                    if (status) *status = c->exit_code;
+                    if (status) *status = wait_status_encode(c->exit_code);
                     c->reaped = true;
+                    kprintf("[proc] waitpid: pid=%lu reaped child=%lu code=%d\n",
+                            parent->pid, c->pid, c->exit_code);
                     return (int)c->pid;
                 }
                 if (c->state != PROC_DEAD)
                     has_live = 1;
             }
-            if (!has_live)
-                return -1; /* ECHILD */
+            if (!has_live) {
+                kprintf("[proc] waitpid: pid=%lu ECHILD (opts=%d)\n",
+                        parent->pid, options);
+                return -XOS_ECHILD;
+            }
         }
+
+        if (options & XOS_WNOHANG)
+            return 0; /* no zombie ready yet */
 
         /* Still running — let the child (and terminal) schedule. */
         sched_yield();

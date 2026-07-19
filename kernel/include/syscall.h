@@ -105,8 +105,22 @@
 #define SYS_IOCTL       88
 #define SYS_NET_SEND    89
 #define SYS_NET_RECV    90
+#define SYS_PROC_LIST   91
+#define SYS_MSGBUF_READ 92
+#define SYS_SYSCTL      93
+#define SYS_GETPPID     94
+#define SYS_SIGRETURN   95
+#define SYS_SIGSUSPEND  96
 
-#define SYSCALL_MAX          91
+#define SYSCALL_MAX          97
+
+/* Process table entry for SYS_PROC_LIST (adv_cmds ps). */
+typedef struct {
+    uint64_t pid;
+    uint64_t ppid;
+    uint32_t state; /* PROC_* from sched.h */
+    char     name[16];
+} proc_info_t;
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -170,6 +184,10 @@ int sys_mem_alloc(uint64_t vaddr, uint64_t flags);
 int sys_mem_share(uint64_t vaddr, uint64_t target_pid, uint64_t target_vaddr,
                   uint64_t flags);
 int sys_proc_exists(uint64_t pid);
+int sys_proc_list(proc_info_t *buf, int max);
+int sys_msgbuf_read(char *buf, size_t size);
+/* name: NUL-terminated OID (e.g. "kern.ostype"); out/out_len for string values. */
+int sys_sysctl(const char *name, char *out, size_t out_len);
 
 /* Input wrappers */
 int sys_input_poll(input_event_t *out);
@@ -229,6 +247,7 @@ int sys_fork(void);
 int sys_exec(const char *path, char *const argv[]);
 int sys_waitpid(int pid, int *status, int options);
 int sys_getpid(void);
+int sys_getppid(void);
 int sys_pipe(int pipefd[2]);
 int sys_dup(int oldfd);
 int sys_dup2(int oldfd, int newfd);
@@ -266,7 +285,9 @@ int sys_munmap(void *addr, size_t length);
 int sys_mprotect(void *addr, size_t length, int prot);
 int sys_sigaction(int signum, const void *act, void *oldact);
 int sys_sigprocmask(int how, const void *set, void *oldset);
+int sys_sigsuspend(const void *mask);
 int sys_kill(int pid, int sig);
+int sys_sigreturn(void);
 int sys_fcntl(int fd, int cmd, int arg);
 int sys_ioctl(int fd, int cmd, void *arg);
 int sys_net_send(const void *buf, int len);

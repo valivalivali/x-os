@@ -2,11 +2,13 @@
 #include "kernel/arch/x86_64/rtc.h"
 #include "kernel/sched/sched.h"
 #include "kernel/proc/proc.h"
+#include "kernel/proc/signal.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/vmm.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/ipc/ipc.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/msgbuf.h"
 #include "kernel/lib/string.h"
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/serial.h"
@@ -83,7 +85,7 @@ static uint64_t sys_proc_pid_impl(void) {
 static uint64_t sys_proc_spawn(uint64_t uelf, uint64_t len,
                                uint64_t a3, uint64_t a4,
                                uint64_t a5, uint64_t a6) {
-    (void)a3; (void)a4; (void)a5; (void)a6;
+    (void)a4; (void)a5; (void)a6;
     if (!uelf || len == 0 || len > 8 * 1024 * 1024) {
         return 0; /* invalid args */
     }
@@ -96,6 +98,16 @@ static uint64_t sys_proc_spawn(uint64_t uelf, uint64_t len,
 
     proc_t *child = proc_spawn_ring3(kbuf, len);
     uint64_t pid = child ? child->pid : 0;
+    /* Optional process name (a3) — used by init for composer/dock/zsh/… */
+    if (child && a3) {
+        const char *name = (const char *)a3;
+        size_t i = 0;
+        while (name[i] && i < sizeof(child->name) - 1) {
+            child->name[i] = name[i];
+            i++;
+        }
+        child->name[i] = '\0';
+    }
 
     kfree(kbuf);
     return pid;
@@ -513,11 +525,89 @@ static uint64_t sys_gpu_transfer_3d_impl(uint64_t resource_id, uint64_t x,
                : (uint64_t)-1;
 }
 
+/* Current working directory + absolute path resolution (relative paths). */
+#define XOS_PATH_MAX 256
+static char g_cwd[XOS_PATH_MAX] = "/";
+
+static int path_abs(const char *in, char *out, size_t outsz) {
+    char joined[XOS_PATH_MAX];
+    char comps[32][XFS_NAME_MAX];
+    int ncomp = 0;
+
+    if (!in || !in[0] || !out || outsz < 2)
+        return -1;
+
+    if (in[0] == '/') {
+        if (strlen(in) >= sizeof(joined))
+            return -1;
+        strcpy(joined, in);
+    } else {
+        size_t cl = strlen(g_cwd);
+        size_t il = strlen(in);
+        if (cl + 1 + il + 1 > sizeof(joined))
+            return -1;
+        strcpy(joined, g_cwd);
+        if (cl == 0 || g_cwd[cl - 1] != '/') {
+            joined[cl] = '/';
+            strcpy(joined + cl + 1, in);
+        } else {
+            strcpy(joined + cl, in);
+        }
+    }
+
+    const char *p = joined;
+    if (*p == '/')
+        p++;
+    while (*p) {
+        char comp[XFS_NAME_MAX];
+        size_t i = 0;
+        while (p[i] && p[i] != '/' && i < XFS_NAME_MAX - 1) {
+            comp[i] = p[i];
+            i++;
+        }
+        comp[i] = '\0';
+        p += i;
+        if (*p == '/')
+            p++;
+        if (comp[0] == '\0' || (comp[0] == '.' && comp[1] == '\0'))
+            continue;
+        if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
+            if (ncomp > 0)
+                ncomp--;
+            continue;
+        }
+        if (ncomp >= 32)
+            return -1;
+        strcpy(comps[ncomp++], comp);
+    }
+
+    if (ncomp == 0) {
+        out[0] = '/';
+        out[1] = '\0';
+        return 0;
+    }
+
+    size_t pos = 0;
+    for (int i = 0; i < ncomp; i++) {
+        size_t cl = strlen(comps[i]);
+        if (pos + 1 + cl + 1 > outsz)
+            return -1;
+        out[pos++] = '/';
+        memcpy(out + pos, comps[i], cl);
+        pos += cl;
+    }
+    out[pos] = '\0';
+    return 0;
+}
+
 static uint64_t sys_open_impl(uint64_t path, uint64_t flags,
                          uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path) return (uint64_t)-1;
-    return (uint64_t)xfs_open((const char *)path, (uint32_t)flags);
+    char abs[XOS_PATH_MAX];
+    if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
+        return (uint64_t)-1;
+    return (uint64_t)xfs_open(abs, (uint32_t)flags);
 }
 
 static uint64_t sys_read_impl(uint64_t fd, uint64_t buf, uint64_t count,
@@ -548,7 +638,10 @@ static uint64_t sys_mkdir_impl(uint64_t path, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path) return (uint64_t)-1;
-    return (uint64_t)xfs_mkdir((const char *)path);
+    char abs[XOS_PATH_MAX];
+    if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
+        return (uint64_t)-1;
+    return (uint64_t)xfs_mkdir(abs);
 }
 
 static uint64_t sys_readdir_impl(uint64_t fd, uint64_t entries, uint64_t max,
@@ -593,9 +686,9 @@ static uint64_t sys_exec_impl(uint64_t path, uint64_t argv, uint64_t a3,
 
 static uint64_t sys_waitpid_impl(uint64_t pid, uint64_t status, uint64_t a3,
                                  uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)a3; (void)a4; (void)a5; (void)a6;
+    (void)a4; (void)a5; (void)a6;
     int *st = status ? (int *)status : NULL;
-    return (uint64_t)proc_waitpid((int)pid, st);
+    return (uint64_t)proc_waitpid((int)pid, st, (int)a3);
 }
 
 static uint64_t sys_getpid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
@@ -603,6 +696,13 @@ static uint64_t sys_getpid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     proc_t *p = proc_current();
     return p ? p->pid : 0;
+}
+
+static uint64_t sys_getppid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                 uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    return p ? p->parent_pid : 0;
 }
 
 static uint64_t sys_pipe_impl(uint64_t upipefd, uint64_t a2, uint64_t a3,
@@ -647,7 +747,10 @@ static uint64_t sys_stat_impl(uint64_t path, uint64_t statbuf, uint64_t a3,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path || !statbuf) return (uint64_t)-1;
-    return (uint64_t)xfs_stat((const char *)path, (xfs_dirent_t *)statbuf);
+    char abs[XOS_PATH_MAX];
+    if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
+        return (uint64_t)-1;
+    return (uint64_t)xfs_stat(abs, (xfs_dirent_t *)statbuf);
 }
 
 static uint64_t sys_fstat_impl(uint64_t fd, uint64_t statbuf, uint64_t a3,
@@ -661,11 +764,11 @@ static uint64_t sys_unlink_impl(uint64_t path, uint64_t a2, uint64_t a3,
                                 uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path) return (uint64_t)-1;
-    return (uint64_t)xfs_unlink((const char *)path);
+    char abs[XOS_PATH_MAX];
+    if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
+        return (uint64_t)-1;
+    return (uint64_t)xfs_unlink(abs);
 }
-
-/* Per-process current working directory */
-static char g_cwd[XFS_NAME_MAX] = "/";
 
 static uint64_t sys_getcwd_impl(uint64_t buf, uint64_t size, uint64_t a3,
                                 uint64_t a4, uint64_t a5, uint64_t a6) {
@@ -683,14 +786,91 @@ static uint64_t sys_chdir_impl(uint64_t path, uint64_t a2, uint64_t a3,
                                uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     if (!path) return (uint64_t)-1;
+    char abs[XOS_PATH_MAX];
+    if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
+        return (uint64_t)-1;
     /* Verify path exists and is a directory */
     xfs_dirent_t st;
-    if (xfs_stat((const char *)path, &st) != 0) return (uint64_t)-1;
+    if (xfs_stat(abs, &st) != 0) return (uint64_t)-1;
     if (!(st.flags & 1)) return (uint64_t)-1; /* not a directory */
-    size_t len = strlen((const char *)path);
-    if (len >= XFS_NAME_MAX) return (uint64_t)-1;
-    memcpy(g_cwd, (const void *)path, len + 1);
+    size_t len = strlen(abs);
+    if (len >= sizeof(g_cwd)) return (uint64_t)-1;
+    memcpy(g_cwd, abs, len + 1);
     return 0;
+}
+
+static uint64_t sys_proc_list_impl(uint64_t ubuf, uint64_t max,
+                                   uint64_t a3, uint64_t a4,
+                                   uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!ubuf || max == 0 || max > SCHED_MAX_PROCS)
+        return (uint64_t)-1;
+    proc_info_t *out = (proc_info_t *)ubuf;
+    int n = 0;
+    for (uint64_t i = 1; i < SCHED_MAX_PROCS && n < (int)max; i++) {
+        proc_t *p = proc_by_pid(i);
+        if (!p)
+            continue;
+        if (p->state == PROC_DEAD && p->reaped)
+            continue;
+        out[n].pid = p->pid;
+        out[n].ppid = p->parent_pid;
+        out[n].state = (uint32_t)p->state;
+        memcpy(out[n].name, p->name, sizeof(out[n].name));
+        n++;
+    }
+    return (uint64_t)n;
+}
+
+static uint64_t sys_msgbuf_read_impl(uint64_t ubuf, uint64_t size,
+                                     uint64_t a3, uint64_t a4,
+                                     uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!ubuf || size == 0)
+        return (uint64_t)-1;
+    if (size > MSGBUF_SIZE)
+        size = MSGBUF_SIZE;
+    return (uint64_t)msgbuf_copy((char *)ubuf, (size_t)size);
+}
+
+/* Minimal sysctl MIB inspired by XNU kern_mib / system_cmds. */
+static uint64_t sys_sysctl_impl(uint64_t uname, uint64_t uout, uint64_t out_len,
+                                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a4; (void)a5; (void)a6;
+    if (!uname || !uout || out_len == 0)
+        return (uint64_t)-1;
+    const char *name = (const char *)uname;
+    char *out = (char *)uout;
+
+    struct { const char *key; const char *val; } keys[] = {
+        { "kern.ostype", "XOS" },
+        { "kern.osrelease", "1.0.0" },
+        { "kern.osversion", "XOS1" },
+        { "kern.hostname", "x-os" },
+        { "kern.version", "X OS 1.0; microkernel + userspace" },
+        { "hw.ncpu", "1" },
+        { "hw.memsize", "536870912" },
+        { "hw.machine", "x86_64" },
+        { NULL, NULL }
+    };
+
+    if (strcmp(name, "kern.msgbuf") == 0) {
+        size_t n = msgbuf_copy(out, (size_t)out_len - 1);
+        out[n] = '\0';
+        return (uint64_t)n;
+    }
+
+    for (int i = 0; keys[i].key; i++) {
+        if (strcmp(name, keys[i].key) == 0) {
+            size_t n = strlen(keys[i].val);
+            if (n + 1 > out_len)
+                n = (size_t)out_len - 1;
+            memcpy(out, keys[i].val, n);
+            out[n] = '\0';
+            return (uint64_t)n;
+        }
+    }
+    return (uint64_t)-1;
 }
 
 /* Per-process brk (program break) for sbrk/malloc support.
@@ -777,7 +957,9 @@ uint64_t sys_munmap_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint6
 uint64_t sys_mprotect_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_sigaction_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_sigprocmask_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+uint64_t sys_sigsuspend_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_kill_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+/* sys_sigreturn_impl declared in kernel/proc/signal.h */
 uint64_t sys_fcntl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_ioctl_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 uint64_t sys_net_send_impl(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -837,6 +1019,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_EXEC]        = (void *)sys_exec_impl,
     [SYS_WAITPID]     = (void *)sys_waitpid_impl,
     [SYS_GETPID]      = (void *)sys_getpid_impl,
+    [SYS_GETPPID]     = (void *)sys_getppid_impl,
     [SYS_PIPE]        = (void *)sys_pipe_impl,
     [SYS_DUP]         = (void *)sys_dup_impl,
     [SYS_DUP2]        = (void *)sys_dup2_impl,
@@ -868,11 +1051,16 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_MPROTECT]    = (void *)sys_mprotect_impl,
     [SYS_SIGACTION]   = (void *)sys_sigaction_impl,
     [SYS_SIGPROCMASK] = (void *)sys_sigprocmask_impl,
+    [SYS_SIGSUSPEND]  = (void *)sys_sigsuspend_impl,
     [SYS_KILL]        = (void *)sys_kill_impl,
     [SYS_FCNTL]       = (void *)sys_fcntl_impl,
     [SYS_IOCTL]       = (void *)sys_ioctl_impl,
     [SYS_NET_SEND]    = (void *)sys_net_send_impl,
     [SYS_NET_RECV]    = (void *)sys_net_recv_impl,
+    [SYS_PROC_LIST]   = (void *)sys_proc_list_impl,
+    [SYS_MSGBUF_READ] = (void *)sys_msgbuf_read_impl,
+    [SYS_SYSCTL]      = (void *)sys_sysctl_impl,
+    [SYS_SIGRETURN]   = (void *)sys_sigreturn_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

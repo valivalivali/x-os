@@ -9,8 +9,7 @@ void kprintf(const char *fmt, ...);
 void kvprintf(const char *fmt, va_list ap);
 __attribute__((noreturn)) void kpanic(const char *fmt, ...);
 
-/* Verbose boot flag.  Set to false to suppress [boot] diagnostic prints.
- * Default true; may be toggled by kernel command line in future. */
+/* Verbose boot flag.  Set by boot-args `-v` (XNU-style). Silent by default. */
 extern bool g_verbose_boot;
 
 /* Conditional boot logging.  Only prints when g_verbose_boot is true. */

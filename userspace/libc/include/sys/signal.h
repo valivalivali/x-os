@@ -95,17 +95,17 @@ typedef struct {
 
 typedef void (*_sig_func_ptr)(int);
 
+/* X OS: match Apple/BSD layout (handler, mask, flags) so prebuilt zsh
+ * objects and the kernel agree. Upstream newlib uses flags-first here. */
 struct sigaction {
-  int         sa_flags;       /* Special flags to affect behavior of signal */
-  sigset_t    sa_mask;        /* Additional set of signals to be blocked */
-                              /*   during execution of signal-catching */
-                              /*   function. */
   union {
     _sig_func_ptr _handler;  /* SIG_DFL, SIG_IGN, or pointer to a function */
 #if defined(_POSIX_REALTIME_SIGNALS)
     void      (*_sigaction)( int, siginfo_t *, void * );
 #endif
   } _signal_handlers;
+  sigset_t    sa_mask;
+  int         sa_flags;
 };
 
 #define sa_handler    _signal_handlers._handler

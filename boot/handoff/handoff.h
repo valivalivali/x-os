@@ -40,6 +40,7 @@ typedef struct {
     uint64_t             hhdm_offset;
     hand_memmap_entry_t *memmap;
     uint64_t             memmap_count;
+    const char          *cmdline; /* Limine kernel cmdline → boot-args */
     bool                 valid;
 } handoff_t;
 

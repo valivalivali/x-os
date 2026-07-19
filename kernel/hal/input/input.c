@@ -88,5 +88,17 @@ void input_update_mouse(int dx, int dy, uint8_t buttons) {
     mbtn = buttons;
 }
 
+void input_mouse_wheel(int dy) {
+    if (dy == 0) return;
+    input_event_t e;
+    memset(&e, 0, sizeof(e));
+    e.type = EV_MOUSE_WHEEL;
+    e.x = mx;
+    e.y = my;
+    e.dy = dy;
+    e.buttons = mbtn;
+    input_push(&e);
+}
+
 int32_t input_mouse_x(void)       { return mx; }
 int32_t input_mouse_y(void)       { return my; }

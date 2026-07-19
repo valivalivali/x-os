@@ -19,7 +19,7 @@ static void spawn_blob(int index, const char *name) {
         log("[init] spawn ");
         log(name);
         log("\n");
-        syscall2(SYS_PROC_SPAWN, (uintptr_t)blob_buf, n);
+        syscall3(SYS_PROC_SPAWN, (uintptr_t)blob_buf, n, (uintptr_t)name);
     }
 }
 
@@ -44,11 +44,49 @@ static int write_blob_to_file(int index, const char *path) {
     return 0;
 }
 
+static void write_str(const char *path, const char *s) {
+    int fd = sys_open(path, XFS_O_CREAT | XFS_O_WRONLY | XFS_O_TRUNC);
+    if (fd < 0) return;
+    size_t n = 0;
+    while (s[n]) n++;
+    sys_write(fd, s, n);
+    sys_close(fd);
+}
+
+static void mkdir_p(const char *path) {
+    /* One level at a time — parents must already exist from kernel or prior. */
+    sys_mkdir(path);
+}
+
 static void seed_fs(void) {
-    sys_mkdir("/Applications");
-    sys_mkdir("/Documents");
-    sys_mkdir("/Desktop");
-    sys_mkdir("/Downloads");
+    /* Apple files-974 / usertemplate-109 layout (subset that fits the ramdisk). */
+    mkdir_p("/Applications");
+    mkdir_p("/Applications/Utilities");
+    mkdir_p("/Documents");
+    mkdir_p("/Desktop");
+    mkdir_p("/Downloads");
+    mkdir_p("/Users");
+    mkdir_p("/Users/Shared");
+    mkdir_p("/Users/vali");
+    mkdir_p("/Users/vali/Desktop");
+    mkdir_p("/Users/vali/Documents");
+    mkdir_p("/Users/vali/Downloads");
+    mkdir_p("/Users/vali/Library");
+    mkdir_p("/Users/vali/Library/Preferences");
+    mkdir_p("/Library/Application Support");
+    mkdir_p("/Library/Fonts");
+    mkdir_p("/Library/Keychains");
+    mkdir_p("/System/Library/CoreServices");
+    mkdir_p("/System/Library/Frameworks");
+    mkdir_p("/System/Library/LaunchDaemons");
+    mkdir_p("/System/Library/LaunchAgents");
+    mkdir_p("/System/Volumes");
+    mkdir_p("/System/Volumes/Data");
+    mkdir_p("/private/etc");
+    mkdir_p("/private/var/db");
+    mkdir_p("/private/var/log");
+    mkdir_p("/etc");
+    mkdir_p("/etc/paths.d");
 
     int fd;
     fd = sys_open("/Applications/hello.txt", XFS_O_CREAT | XFS_O_WRONLY);
@@ -61,6 +99,61 @@ static void seed_fs(void) {
     if (fd >= 0) { sys_write(fd, "file1", 5); sys_close(fd); }
     fd = sys_open("/Downloads/file2.txt", XFS_O_CREAT | XFS_O_WRONLY);
     if (fd >= 0) { sys_write(fd, "file2", 5); sys_close(fd); }
+
+    write_str("/System/Library/CoreServices/SystemVersion.plist",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+              "<plist version=\"1.0\"><dict>\n"
+              "  <key>ProductName</key><string>X OS</string>\n"
+              "  <key>ProductVersion</key><string>1.0</string>\n"
+              "  <key>ProductUserVisibleVersion</key><string>1.0</string>\n"
+              "  <key>ProductBuildVersion</key><string>XOS1</string>\n"
+              "  <key>ProductCopyright</key><string>X OS</string>\n"
+              "</dict></plist>\n");
+    write_str("/Users/vali/Library/Preferences/.GlobalPreferences.plist",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+              "<plist version=\"1.0\"><dict>\n"
+              "  <key>Locale</key><string>en_US</string>\n"
+              "</dict></plist>\n");
+
+    /* files-974 private/etc skeletons (also under /etc for convenience). */
+    write_str("/etc/paths",
+              "/usr/local/bin\n"
+              "/usr/bin\n"
+              "/bin\n"
+              "/usr/sbin\n"
+              "/sbin\n");
+    write_str("/private/etc/paths",
+              "/usr/local/bin\n"
+              "/usr/bin\n"
+              "/bin\n"
+              "/usr/sbin\n"
+              "/sbin\n");
+    write_str("/etc/shells",
+              "/bin/bash\n"
+              "/bin/sh\n"
+              "/bin/zsh\n"
+              "/bin/cmds\n");
+    write_str("/private/etc/shells",
+              "/bin/bash\n"
+              "/bin/sh\n"
+              "/bin/zsh\n"
+              "/bin/cmds\n");
+    write_str("/etc/hosts",
+              "##\n"
+              "# Host Database\n"
+              "##\n"
+              "127.0.0.1\tlocalhost\n"
+              "255.255.255.255\tbroadcasthost\n"
+              "::1\t\tlocalhost\n");
+    write_str("/private/etc/hosts",
+              "##\n"
+              "# Host Database\n"
+              "##\n"
+              "127.0.0.1\tlocalhost\n"
+              "255.255.255.255\tbroadcasthost\n"
+              "::1\t\tlocalhost\n");
+    write_str("/etc/hostname", "localhost\n");
+
     log("[init] fs seeded\n");
 }
 

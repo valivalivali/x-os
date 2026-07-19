@@ -3,6 +3,8 @@
 #include "kernel/arch/x86_64/serial.h"
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/msgbuf.h"
+#include "kernel/boot/bootargs.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/heap.h"
 #include "kernel/arch/x86_64/gdt.h"
@@ -44,9 +46,18 @@ static void enable_sse(void) {
 void kmain(void) {
     enable_sse();
     serial_init();
-    kputs("\n=== X OS ===\n");
-    boot_puts("kmain reached\n");
+    msgbuf_init();
+
     const handoff_t *h = handoff_get();
+    bootargs_init(h->cmdline);
+    g_verbose_boot = bootargs_verbose();
+
+    /* Always print banner; detail lines follow -v like macOS verbose boot. */
+    kputs("\n=== X OS ===\n");
+    if (g_verbose_boot)
+        kprintf("[boot] boot-args: %s\n",
+                bootargs_raw()[0] ? bootargs_raw() : "(none)");
+    boot_puts("kmain reached\n");
     boot_log("framebuffer %lux%lu pitch=%lu bpp=%u addr=%p\n",
             h->fb.width, h->fb.height, h->fb.pitch, h->fb.bpp, (void *)h->fb.addr);
     boot_log("hhdm=%p memmap entries=%lu\n",
@@ -114,6 +125,11 @@ void kmain(void) {
     boot_puts("spawning ring-3 init\n");
     proc_t *init = proc_spawn_ring3(init_elf_data, init_elf_len);
     if (init) {
+        init->name[0] = 'i';
+        init->name[1] = 'n';
+        init->name[2] = 'i';
+        init->name[3] = 't';
+        init->name[4] = '\0';
         gdt_set_rsp0((uint64_t)(init->kstack + SCHED_STACK_SIZE));
         boot_log("init spawned pid=%lu, entering ring-3\n", init->pid);
 

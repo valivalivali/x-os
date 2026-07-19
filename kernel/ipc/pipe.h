@@ -10,3 +10,5 @@ int pipe_read(int fd, void *buf, size_t count);
 int pipe_write(int fd, const void *buf, size_t count);
 void pipe_close(int fd);
 int pipe_dup(int oldfd, int newfd);
+/* Bump end-refs on pipes created by parent so the child keeps working copies. */
+void pipe_fork_inherit(uint32_t parent_pid);

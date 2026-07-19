@@ -25,9 +25,10 @@ uint64_t proc_fork(void);
  * Returns only on failure. */
 int proc_exec(const char *path, char *const argv[]);
 
-/* Wait for a child process to exit. Returns child PID on success,
- * -1 on error. If status is non-NULL, stores the exit code. */
-int proc_waitpid(int pid, int *status);
+/* Wait for a child. options: WNOHANG (1). Status is wait(2) encoded
+ * ((exit & 0xff) << 8). Returns child PID, 0 if WNOHANG and none ready,
+ * or -1 on error. */
+int proc_waitpid(int pid, int *status, int options);
 
 /* First-time drop into ring-3.  Never returns.
  *   pml4_phys : physical address of the process page table

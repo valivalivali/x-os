@@ -33,9 +33,18 @@ typedef struct proc {
     uint64_t parent_pid;    /* PID of parent (0 = init/kernel) */
     int exit_code;          /* exit code when state == PROC_DEAD but not reaped */
     bool reaped;            /* true after wait() has collected exit_code */
-    /* Callee-saved GPRs to restore for fork children (SysV AMD64). */
+    /* Callee-saved GPRs to restore for fork children (SysV AMD64).
+     * Offsets are hardcoded in context.S — keep these fields before name[]. */
     uint64_t fork_rbx, fork_rbp, fork_r12, fork_r13, fork_r14, fork_r15;
     uint64_t fork_rflags;
+    char name[16];          /* short comm for ps (must stay after fork_*) */
+    /* Signal state (after fork_* / name — safe for context.S offsets). */
+#define XOS_NSIG 32
+    uint64_t sig_blocked;                 /* current blocked mask */
+    uint64_t sig_pending;                 /* pending bitmask (bit N = signal N) */
+    uint64_t sig_handler[XOS_NSIG];       /* 0=DFL, 1=IGN, else userspace addr */
+    uint64_t sig_mask[XOS_NSIG];          /* sa_mask per action */
+    int      sig_flags[XOS_NSIG];         /* sa_flags */
 } proc_t;
 
 void sched_init(void);

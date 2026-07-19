@@ -139,6 +139,18 @@ int sys_proc_exists(uint64_t pid) {
     return (int)syscall1(SYS_PROC_EXISTS, pid);
 }
 
+int sys_proc_list(proc_info_t *buf, int max) {
+    return (int)syscall2(SYS_PROC_LIST, (uintptr_t)buf, (uintptr_t)max);
+}
+
+int sys_msgbuf_read(char *buf, size_t size) {
+    return (int)syscall2(SYS_MSGBUF_READ, (uintptr_t)buf, (uintptr_t)size);
+}
+
+int sys_sysctl(const char *name, char *out, size_t out_len) {
+    return (int)syscall3(SYS_SYSCTL, (uintptr_t)name, (uintptr_t)out, (uintptr_t)out_len);
+}
+
 /* Input wrappers */
 
 int sys_input_poll(input_event_t *out) {
@@ -292,12 +304,16 @@ int sys_exec(const char *path, char *const argv[]) {
 }
 
 int sys_waitpid(int pid, int *status, int options) {
-    (void)options; /* options not yet supported */
-    return (int)syscall2(SYS_WAITPID, (uintptr_t)pid, (uintptr_t)status);
+    return (int)syscall3(SYS_WAITPID, (uintptr_t)pid, (uintptr_t)status,
+                         (uintptr_t)options);
 }
 
 int sys_getpid(void) {
     return (int)syscall0(SYS_GETPID);
+}
+
+int sys_getppid(void) {
+    return (int)syscall0(SYS_GETPPID);
 }
 
 int sys_pipe(int pipefd[2]) {
@@ -408,8 +424,14 @@ int sys_sigaction(int signum, const void *act, void *oldact) {
 int sys_sigprocmask(int how, const void *set, void *oldset) {
     return (int)syscall3(SYS_SIGPROCMASK, how, (uintptr_t)set, (uintptr_t)oldset);
 }
+int sys_sigsuspend(const void *mask) {
+    return (int)syscall1(SYS_SIGSUSPEND, (uintptr_t)mask);
+}
 int sys_kill(int pid, int sig) {
     return (int)syscall2(SYS_KILL, pid, sig);
+}
+int sys_sigreturn(void) {
+    return (int)syscall0(SYS_SIGRETURN);
 }
 int sys_fcntl(int fd, int cmd, int arg) {
     return (int)syscall3(SYS_FCNTL, fd, cmd, arg);

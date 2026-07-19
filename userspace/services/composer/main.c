@@ -975,6 +975,12 @@ void display_main(void) {
          * so that drag_off_* is computed from the same position that
          * will be used while dragging.  */
         input_event_t ev;
+        /* Coalesce mouse moves: one IPC per frame. Flooding the 64-slot app
+         * port with moves drops KEY events (typing appears dead). */
+        int have_coalesced_move = 0;
+        mouse_event_msg_t coalesced_move;
+        uint64_t coalesced_move_port = 0;
+
         while (sys_input_poll(&ev)) {
             if (ev.type == EV_KEY_DOWN || ev.type == EV_KEY_UP) {
                 if (ev.type == EV_KEY_DOWN && ev.ch == 27) {
@@ -1000,9 +1006,8 @@ void display_main(void) {
                     kmsg.payload_len = sizeof(ke);
                     uint8_t *pd = (uint8_t *)&ke;
                     for (size_t i = 0; i < sizeof(ke); i++) kmsg.payload[i] = pd[i];
-                    /* Brief retry only — never block forever (deadlocks with
-                     * apps that send DIRTY back to the composer port). */
-                    for (int t = 0; t < 16; t++) {
+                    /* Keys must get through — apps coalesce/drops moves. */
+                    for (int t = 0; t < 256; t++) {
                         if (sys_port_send(surfaces[focused_idx].reply_port, &kmsg))
                             break;
                         syscall0(SYS_YIELD);
@@ -1214,6 +1219,35 @@ void display_main(void) {
                 if (ev.button == MOUSE_LEFT)
                     pointer_grab_idx = -1;
             }
+            if (ev.type == EV_MOUSE_WHEEL) {
+                int hit = surface_at(ev.x, ev.y);
+                if (hit < 0 && focused_idx >= 0 && surfaces[focused_idx].valid)
+                    hit = focused_idx;
+                if (hit >= 0 && surfaces[hit].reply_port) {
+                    int32_t wx = ev.x - surfaces[hit].x;
+                    int32_t wy = ev.y - surfaces[hit].y;
+                    if (surface_decorated(&surfaces[hit]))
+                        wy -= WM_TITLE_BAR_H;
+                    mouse_event_msg_t mev = {
+                        .type = COMPOSER_MOUSE_EVENT,
+                        .x = wx,
+                        .y = wy,
+                        .button = (uint32_t)(int32_t)ev.dy,
+                        .action = 3, /* wheel */
+                        .surface_idx = (uint32_t)hit
+                    };
+                    ipc_msg_t mmsg;
+                    mmsg.type = IPC_MSG_EVENT;
+                    mmsg.sender_pid = 0;
+                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
+                    mmsg.cap_count = 0;
+                    mmsg.payload_len = sizeof(mev);
+                    uint8_t *pd = (uint8_t *)&mev;
+                    for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
+                    sys_port_send(surfaces[hit].reply_port, &mmsg);
+                }
+            }
+
             /* Forward mouse move to app for hover/resize tracking */
             if (ev.type == EV_MOUSE_MOVE) {
                 int hit = surface_at(ev.x, ev.y);
@@ -1225,26 +1259,28 @@ void display_main(void) {
                     /* Offset for decorated windows */
                     if (surface_decorated(&surfaces[hit]))
                         wy -= WM_TITLE_BAR_H;
-                    mouse_event_msg_t mev = {
-                        .type = COMPOSER_MOUSE_EVENT,
-                        .x = wx,
-                        .y = wy,
-                        .button = 0,
-                        .action = 0,
-                        .surface_idx = (uint32_t)hit
-                    };
-                    ipc_msg_t mmsg;
-                    mmsg.type = IPC_MSG_EVENT;
-                    mmsg.sender_pid = 0;
-                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
-                    mmsg.cap_count = 0;
-                    mmsg.payload_len = sizeof(mev);
-                    uint8_t *pd = (uint8_t *)&mev;
-                    for (size_t i = 0; i < sizeof(mev); i++) mmsg.payload[i] = pd[i];
-                    /* Best-effort: dropping moves is fine; keys retry above. */
-                    (void)sys_port_send(surfaces[hit].reply_port, &mmsg);
+                    coalesced_move.type = COMPOSER_MOUSE_EVENT;
+                    coalesced_move.x = wx;
+                    coalesced_move.y = wy;
+                    coalesced_move.button = 0;
+                    coalesced_move.action = 0;
+                    coalesced_move.surface_idx = (uint32_t)hit;
+                    coalesced_move_port = surfaces[hit].reply_port;
+                    have_coalesced_move = 1;
                 }
             }
+        }
+
+        if (have_coalesced_move && coalesced_move_port) {
+            ipc_msg_t mmsg;
+            mmsg.type = IPC_MSG_EVENT;
+            mmsg.sender_pid = 0;
+            for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) mmsg.caps[i] = CAP_NULL;
+            mmsg.cap_count = 0;
+            mmsg.payload_len = sizeof(coalesced_move);
+            uint8_t *pd = (uint8_t *)&coalesced_move;
+            for (size_t i = 0; i < sizeof(coalesced_move); i++) mmsg.payload[i] = pd[i];
+            (void)sys_port_send(coalesced_move_port, &mmsg);
         }
 
         /* Drain IPC messages from apps. */

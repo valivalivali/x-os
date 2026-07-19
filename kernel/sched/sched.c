@@ -1,4 +1,5 @@
 #include "kernel/sched/sched.h"
+#include "kernel/proc/signal.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/memory/heap.h"
@@ -95,10 +96,18 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].parent_pid = 0;
             procs[i].exit_code = 0;
             procs[i].reaped = true;
+            procs[i].name[0] = '\0';
             procs[i].fork_rbx = procs[i].fork_rbp = 0;
             procs[i].fork_r12 = procs[i].fork_r13 = 0;
             procs[i].fork_r14 = procs[i].fork_r15 = 0;
             procs[i].fork_rflags = 0;
+            procs[i].sig_blocked = 0;
+            procs[i].sig_pending = 0;
+            for (int s = 0; s < XOS_NSIG; s++) {
+                procs[i].sig_handler[s] = 0; /* SIG_DFL */
+                procs[i].sig_mask[s] = 0;
+                procs[i].sig_flags[s] = 0;
+            }
             ready_enqueue(&procs[i]);
             return &procs[i];
         }
@@ -108,6 +117,13 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
 
 void proc_exit(proc_t *p) {
     if (!p) return;
+
+    kprintf("[proc] exit: pid=%lu code=%d parent=%lu\n",
+            p->pid, p->exit_code, p->parent_pid);
+
+    /* Notify parent (SIGCHLD) before tearing down — waitpid + handlers. */
+    if (p->parent_pid)
+        proc_send_signal(p->parent_pid, XOS_SIGCHLD);
 
     /* Free process resources: user page tables + all mapped user pages,
      * and the kernel stack. */

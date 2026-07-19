@@ -122,8 +122,8 @@ typedef struct {
 typedef struct {
     uint32_t type;          /* WM_MOUSE_EVENT */
     int32_t  x, y;          /* content-local coordinates */
-    uint32_t button;        /* 0=none, 1=left, 2=right */
-    uint32_t action;        /* 0=move, 1=down, 2=up */
+    uint32_t button;        /* 0=none, 1=left, 2=right; wheel: signed notches */
+    uint32_t action;        /* 0=move, 1=down, 2=up, 3=wheel */
     uint32_t surface_idx;
 } wm_mouse_event_msg_t;
 

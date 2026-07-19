@@ -277,6 +277,11 @@ $(ZSH_CURSES_A): userspace/shell/curses_stubs.c
 
 $(ZSH_ELF): userspace/shell/zsh_start.S userspace/shell/zsh_entry.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/libc/xos-libc.ld $(ZSH_CURSES_A)
 	@mkdir -p $(dir $@)
+	@# Prebuilt Src/*.o only — never let Make's implicit %.o: %.c rule rebuild them.
+	@test -f $(ZSH_SRC)/Src/init.o -a -f $(ZSH_SRC)/Src/builtin.o \
+	  -a -f $(ZSH_SRC)/Src/exec.o -a -f $(ZSH_SRC)/Src/hashtable.o \
+	  -a -f $(ZSH_SRC)/Src/jobs.o -a -f $(ZSH_SRC)/Src/signals.o \
+	  || { echo "error: missing zsh Src/*.o — restore from userspace/shell/zsh-obj-backup/"; exit 1; }
 	@echo ">> Building zsh (Apple zsh-118 lineage → zsh_main)..."
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/shell/zsh_start.S -o $(BUILD_DIR)/userspace/shell/zsh_start.o
 	$(CC) $(LIBC_CFLAGS) -c userspace/shell/zsh_entry.c -o $(BUILD_DIR)/userspace/shell/zsh_entry.o

@@ -11,6 +11,7 @@ typedef enum {
     EV_MOUSE_UP,
     EV_KEY_DOWN,
     EV_KEY_UP,
+    EV_MOUSE_WHEEL, /* dy: +1 = scroll up, -1 = scroll down */
 } event_type_t;
 
 #define MOUSE_LEFT   0x01
@@ -40,6 +41,9 @@ void    input_push(const input_event_t *e);  /* driver -> queue (ISR-safe) */
 
 /* Called by the mouse driver each packet. dy is already in screen space. */
 void    input_update_mouse(int dx, int dy, uint8_t buttons);
+
+/* Vertical wheel notch from IntelliMouse (PS/2 4-byte packet). */
+void    input_mouse_wheel(int dy);
 
 int32_t input_mouse_x(void);
 int32_t input_mouse_y(void);

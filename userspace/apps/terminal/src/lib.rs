@@ -11,8 +11,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use egui::{
-    pos2, Area, Button, CentralPanel, Color32, CornerRadius, Frame, Id, Margin, Order, RichText,
-    ScrollArea, Sense, Shadow, Stroke, Vec2, Window,
+    pos2, scroll_area::{DragScroll, ScrollSource}, Area, Button, CentralPanel, Color32,
+    CornerRadius, Frame, Id, Margin, Order, RichText, ScrollArea, Sense, Shadow, Stroke, Vec2,
+    Window,
 };
 
 use xos_egui_platform::{self as platform, XosEguiPlatform};
@@ -24,9 +25,19 @@ const WIN_RADIUS: u8 = 20;
 const WIN_INSET: f32 = 4.0;
 const CHROME_H: f32 = 28.0;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnsiParse {
+    Normal,
+    Esc,
+    Csi,
+    Osc,
+    OscEsc, /* OSC … ESC — waiting for '\' (ST) */
+}
+
 struct TerminalApp {
     lines: Vec<String>,
     current: String,
+    ansi: AnsiParse,
     bridged: bool,
     focused: bool,
     open: bool,
@@ -39,6 +50,7 @@ impl TerminalApp {
         let mut app = Self {
             lines: Vec::new(),
             current: String::new(),
+            ansi: AnsiParse::Normal,
             bridged: false,
             focused: true,
             open: true,
@@ -63,8 +75,10 @@ impl TerminalApp {
             return;
         }
         self.bridged = true;
-        self.lines.clear();
-        self.current.clear();
+        /* Drop only the waiting placeholder — keep any early shell output. */
+        self.lines
+            .retain(|l| l != "Waiting for shell bridge…");
+        self.ansi = AnsiParse::Normal;
     }
 
     fn feed_bytes(&mut self, bytes: &[u8]) {
@@ -72,12 +86,59 @@ impl TerminalApp {
             self.set_bridged();
         }
         for &b in bytes {
+            match self.ansi {
+                AnsiParse::Esc => {
+                    self.ansi = match b {
+                        b'[' => AnsiParse::Csi,
+                        b']' => AnsiParse::Osc,
+                        /* Single-char ESC sequences (ESC 7/8/M/c/…) — drop. */
+                        _ => AnsiParse::Normal,
+                    };
+                    continue;
+                }
+                AnsiParse::Csi => {
+                    /* CSI is terminated by a final byte in 0x40..=0x7E. */
+                    if (0x40..=0x7e).contains(&b) {
+                        self.ansi = AnsiParse::Normal;
+                    }
+                    continue;
+                }
+                AnsiParse::Osc => {
+                    if b == 0x07 {
+                        self.ansi = AnsiParse::Normal;
+                    } else if b == 0x1b {
+                        self.ansi = AnsiParse::OscEsc;
+                    }
+                    continue;
+                }
+                AnsiParse::OscEsc => {
+                    self.ansi = if b == b'\\' {
+                        AnsiParse::Normal
+                    } else {
+                        AnsiParse::Osc
+                    };
+                    continue;
+                }
+                AnsiParse::Normal => {}
+            }
+
             match b {
+                0x1b => {
+                    self.ansi = AnsiParse::Esc;
+                }
                 b'\n' => {
                     self.lines.push(core::mem::take(&mut self.current));
                     self.trim_lines();
                 }
-                b'\r' => {}
+                b'\r' => {
+                    /* CR: return to column 0 (overwrite current line). */
+                    self.current.clear();
+                }
+                0x0c => {
+                    /* Form-feed → clear scrollback (Apple `clear`). */
+                    self.lines.clear();
+                    self.current.clear();
+                }
                 0x08 | 0x7f => {
                     self.current.pop();
                 }
@@ -126,21 +187,31 @@ impl TerminalApp {
             .constrain(false)
             .show(&ctx, |ui| {
                 let body = ui.available_rect_before_wrap();
-                if ui
-                    .interact(body, ui.id().with("term_body"), Sense::click())
-                    .clicked()
-                {
-                    self.focused = true;
-                }
 
                 ScrollArea::vertical()
                     .id_salt("term_scroll")
                     .auto_shrink([false, false])
+                    /* Stick while following output; user drag/wheel can leave bottom. */
                     .stick_to_bottom(true)
+                    /* Desktop: click-drag on content (not only the scrollbar). */
+                    .scroll_source(ScrollSource {
+                        scroll_bar: true,
+                        mouse_wheel: true,
+                        drag: DragScroll::Always,
+                    })
                     .show(ui, |ui| {
-                        ui.set_min_size(Vec2::new(body.width(), body.height().max(40.0)));
+                        ui.set_min_width(body.width());
                         /* Room under floating chrome so first lines aren't covered. */
                         ui.add_space(CHROME_H);
+
+                        /* Focus on click without stealing ScrollArea drag. */
+                        let resp = ui.allocate_response(
+                            Vec2::new(body.width(), 0.0),
+                            Sense::click(),
+                        );
+                        if resp.clicked() {
+                            self.focused = true;
+                        }
 
                         for line in &self.lines {
                             if line.is_empty() {
@@ -157,6 +228,8 @@ impl TerminalApp {
                                 ui.monospace("▌");
                             }
                         });
+                        /* Extra slack so the last line isn't flush against the bar. */
+                        ui.add_space(8.0);
                     });
             });
 
@@ -271,6 +344,17 @@ pub extern "C" fn xos_terminal_mouse_event(
         if action != 0 {
             (*state).needs_present = 1;
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn xos_terminal_wheel_event(state: *mut TerminalState, delta: f32) {
+    if state.is_null() {
+        return;
+    }
+    unsafe {
+        platform::xos_egui_platform_wheel_event((*state).platform, delta);
+        (*state).needs_present = 1;
     }
 }
 

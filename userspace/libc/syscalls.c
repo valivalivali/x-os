@@ -22,8 +22,9 @@
 
 #include "kernel/include/syscall.h"
 
-#undef errno
-extern int errno;
+/* Use newlib's errno macro ((*__errno())) — do NOT #undef it. Stubs used to
+ * write a bare global `errno` while zsh reads (*__errno()), so wait() left
+ * errno at 0 and zsh printed "wait failed: success" after every command. */
 
 /* -------------------------------------------------------------------------- */
 /* Process management */
@@ -52,26 +53,141 @@ pid_t _getpid(void) {
 }
 
 pid_t _wait(int *status) {
-    return sys_waitpid(-1, status, 0);
+    int ret = sys_waitpid(-1, status, 0);
+    if (ret < 0) {
+        /* Kernel returns -errno; default ECHILD when bare -1. */
+        errno = (ret < -1) ? -ret : ECHILD;
+        return -1;
+    }
+    return ret;
 }
 
 int _kill(int pid, int sig) {
-    (void)sig;  /* signals not yet implemented */
-    (void)pid;
+    int ret = sys_kill(pid, sig);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
     return 0;
 }
 
 /* -------------------------------------------------------------------------- */
 /* I/O — IPC bridge mode for terminal integration */
 
-/* When set, _read receives from g_bridge_input_port and _write sends to
- * g_bridge_output_port. Used by zsh when running inside the terminal. */
-static port_handle_t g_bridge_input_port = 0;   /* port to recv keyboard chars from */
-static port_handle_t g_bridge_output_port = 0;  /* port to send output text to */
+/* When set, stdin/stdout and zsh's SHTTY (=dup of 0) talk to the Terminal
+ * app over IPC. ZLE writes echo to SHTTY, not necessarily fd 1. */
+static port_handle_t g_bridge_input_port = 0;
+static port_handle_t g_bridge_output_port = 0;
+
+/* Virtual bridge-tty fds: bit N set ⇒ fd N is a duplex bridge tty.
+ * 0/1/2 start set; dup/F_DUPFD allocate fds >= 10. */
+#define BRIDGE_FD_MAX 64
+static uint64_t g_bridge_tty_bits;
+static int g_bridge_next_fd = 10;
+static struct termios g_bridge_termios;
+static int g_bridge_termios_init;
+
+static void bridge_termios_ensure(void) {
+    if (g_bridge_termios_init)
+        return;
+    memset(&g_bridge_termios, 0, sizeof(g_bridge_termios));
+    /* Cooked + echo defaults; ZLE switches to raw via tcsetattr. */
+    g_bridge_termios.c_iflag = ICRNL | IXON;
+    g_bridge_termios.c_oflag = OPOST | ONLCR;
+    g_bridge_termios.c_cflag = CS8 | CREAD;
+    g_bridge_termios.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN;
+    g_bridge_termios.c_cc[VMIN] = 1;
+    g_bridge_termios.c_cc[VTIME] = 0;
+    g_bridge_termios.c_ispeed = 9600;
+    g_bridge_termios.c_ospeed = 9600;
+    g_bridge_termios_init = 1;
+}
+
+static int bridge_is_tty(int fd) {
+    if (fd < 0 || fd >= BRIDGE_FD_MAX || !g_bridge_output_port)
+        return 0;
+    return (g_bridge_tty_bits & (1ULL << fd)) != 0;
+}
+
+static void bridge_mark_tty(int fd) {
+    if (fd >= 0 && fd < BRIDGE_FD_MAX)
+        g_bridge_tty_bits |= (1ULL << fd);
+}
+
+static void bridge_clear_tty(int fd) {
+    if (fd >= 0 && fd < BRIDGE_FD_MAX)
+        g_bridge_tty_bits &= ~(1ULL << fd);
+}
+
+static int bridge_alloc_fd(int minfd) {
+    int start = minfd < 10 ? 10 : minfd;
+    if (start < g_bridge_next_fd)
+        start = g_bridge_next_fd;
+    for (int fd = start; fd < BRIDGE_FD_MAX; fd++) {
+        if (!bridge_is_tty(fd)) {
+            bridge_mark_tty(fd);
+            if (fd >= g_bridge_next_fd)
+                g_bridge_next_fd = fd + 1;
+            return fd;
+        }
+    }
+    errno = EMFILE;
+    return -1;
+}
+
+static _ssize_t bridge_write(const void *buf, size_t cnt) {
+    const char *p = (const char *)buf;
+    size_t remaining = cnt;
+    while (remaining > 0) {
+        size_t chunk = remaining > IPC_MSG_MAX_PAYLOAD ? IPC_MSG_MAX_PAYLOAD : remaining;
+        ipc_msg_t msg;
+        for (size_t i = 0; i < sizeof(msg); i++)
+            ((uint8_t *)&msg)[i] = 0;
+        msg.type = IPC_MSG_EVENT;
+        msg.sender_pid = syscall0(SYS_PROC_PID);
+        msg.cap_count = 0;
+        msg.payload_len = (uint32_t)chunk;
+        for (size_t i = 0; i < chunk; i++)
+            msg.payload[i] = ((const uint8_t *)p)[i];
+        while (!sys_port_send(g_bridge_output_port, &msg))
+            syscall0(SYS_YIELD);
+        p += chunk;
+        remaining -= chunk;
+    }
+    return (_ssize_t)cnt;
+}
+
+static _ssize_t bridge_read(void *buf, size_t cnt) {
+    char *cbuf = (char *)buf;
+    size_t got = 0;
+    while (got < cnt) {
+        ipc_msg_t msg;
+        for (size_t i = 0; i < sizeof(msg); i++)
+            ((uint8_t *)&msg)[i] = 0;
+        if (sys_port_recv(g_bridge_input_port, &msg, 0)) {
+            if (msg.payload_len >= 1) {
+                char c = (char)msg.payload[0];
+                if (c == '\r')
+                    c = '\n';
+                cbuf[got++] = c;
+                break;
+            }
+        }
+        syscall0(SYS_YIELD);
+    }
+    return (_ssize_t)got;
+}
 
 void set_shell_bridge(port_handle_t input_port, port_handle_t output_port) {
     g_bridge_input_port = input_port;
     g_bridge_output_port = output_port;
+    g_bridge_tty_bits = 0;
+    g_bridge_next_fd = 10;
+    /* stdin/stdout/stderr are the primary bridge tty. */
+    bridge_mark_tty(0);
+    bridge_mark_tty(1);
+    bridge_mark_tty(2);
+    bridge_termios_ensure();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -92,26 +208,8 @@ typedef struct {
 #define XOS_EV_KEY_DOWN 4
 
 _ssize_t _read(int fd, void *buf, size_t cnt) {
-    if (fd == 0 && g_bridge_input_port) {
-        /* IPC bridge mode: receive keyboard chars from terminal via IPC */
-        char *cbuf = (char *)buf;
-        size_t got = 0;
-        while (got < cnt) {
-            ipc_msg_t msg;
-            /* Manual zeroing — avoid newlib memset which may use SSE */
-            for (size_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-            if (sys_port_recv(g_bridge_input_port, &msg, 0)) {
-                if (msg.payload_len >= 1) {
-                    char c = (char)msg.payload[0];
-                    if (c == '\r') c = '\n';
-                    cbuf[got++] = c;
-                    break;
-                }
-            }
-            syscall0(SYS_YIELD);
-        }
-        return (_ssize_t)got;
-    }
+    if (bridge_is_tty(fd) && g_bridge_input_port)
+        return bridge_read(buf, cnt);
     if (fd == 0) {
         /* stdin: read from keyboard via SYS_INPUT_POLL */
         char *cbuf = (char *)buf;
@@ -139,30 +237,9 @@ _ssize_t _read(int fd, void *buf, size_t cnt) {
 }
 
 _ssize_t _write(int fd, const void *buf, size_t cnt) {
-    if ((fd == 1 || fd == 2) && g_bridge_output_port) {
-        /* IPC bridge mode: send output text to terminal via IPC.
-         * Retry when the 8-slot port is full so echo/prompts are not dropped
-         * while the terminal is still draining. */
-        const char *p = (const char *)buf;
-        size_t remaining = cnt;
-        while (remaining > 0) {
-            size_t chunk = remaining > IPC_MSG_MAX_PAYLOAD ? IPC_MSG_MAX_PAYLOAD : remaining;
-            ipc_msg_t msg;
-            /* Manual zeroing — avoid newlib memset which may use SSE */
-            for (size_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-            msg.type = IPC_MSG_EVENT;
-            msg.sender_pid = syscall0(SYS_PROC_PID);
-            msg.cap_count = 0;
-            msg.payload_len = (uint32_t)chunk;
-            /* Manual copy — avoid newlib memcpy which may use SSE */
-            for (size_t i = 0; i < chunk; i++) msg.payload[i] = ((const uint8_t *)p)[i];
-            while (!sys_port_send(g_bridge_output_port, &msg))
-                syscall0(SYS_YIELD);
-            p += chunk;
-            remaining -= chunk;
-        }
-        return (_ssize_t)cnt;
-    }
+    /* ZLE echoes via SHTTY (dup of stdin), not only fd 1/2. */
+    if (bridge_is_tty(fd) && g_bridge_output_port)
+        return bridge_write(buf, cnt);
     if (fd == 1 || fd == 2) {
         /* stdout/stderr: write to serial via SYS_DEBUG_LOG (max 4096 per call) */
         const char *p = (const char *)buf;
@@ -194,27 +271,12 @@ int _open(const char *file, int flags, int mode) {
     if (flags & O_CREAT) xfs_flags |= 4;
     if (flags & O_TRUNC) xfs_flags |= 8;
 
-    /* xfs resolve_path only accepts absolute paths — prepend cwd. */
-    char abspath[512];
-    const char *path = file;
-    if (file && file[0] != '/') {
-        /* Kernel cwd defaults to "/"; avoid getcwd pointer-truncation issues. */
-        const char *cwdp = "/";
-        if (file[0] == '\0' || (file[0] == '.' && file[1] == '\0')) {
-            path = cwdp;
-        } else {
-            const char *rel = (file[0] == '.' && file[1] == '/') ? file + 2 : file;
-            size_t fl = 0; while (rel[fl]) fl++;
-            if (1 + fl < sizeof(abspath)) {
-                abspath[0] = '/';
-                for (size_t i = 0; i < fl; i++) abspath[1 + i] = rel[i];
-                abspath[1 + fl] = '\0';
-                path = abspath;
-            }
-        }
+    /* Kernel sys_open resolves relative paths against cwd (path_abs). */
+    if (!file) {
+        errno = EINVAL;
+        return -1;
     }
-
-    int ret = sys_open(path, xfs_flags);
+    int ret = sys_open(file, xfs_flags);
     if (ret < 0) {
         errno = ENOENT;
         return -1;
@@ -223,6 +285,11 @@ int _open(const char *file, int flags, int mode) {
 }
 
 int _close(int fd) {
+    /* Never drop the primary stdio bridge slots — zsh may zclose after movefd. */
+    if (bridge_is_tty(fd) && fd >= 10)
+        bridge_clear_tty(fd);
+    if (fd >= 0 && fd <= 2 && g_bridge_output_port)
+        return 0;
     sys_close(fd);
     return 0;
 }
@@ -237,11 +304,8 @@ off_t _lseek(int fd, off_t offset, int whence) {
 }
 
 int _isatty(int fd) {
-    /* IPC shell bridge presents stdin/stdout as a terminal to zsh. */
-    if (g_bridge_input_port || g_bridge_output_port) {
-        if (fd == 0 || fd == 1 || fd == 2)
-            return 1;
-    }
+    if (bridge_is_tty(fd))
+        return 1;
     struct termios t;
     return tcgetattr(fd, &t) == 0 ? 1 : 0;
 }
@@ -249,6 +313,11 @@ int _isatty(int fd) {
 int _fstat(int fd, struct stat *st) {
     if (!st) return -1;
     memset(st, 0, sizeof(*st));
+    if (bridge_is_tty(fd)) {
+        st->st_mode = S_IFCHR | 0666;
+        st->st_nlink = 1;
+        return 0;
+    }
     off_t cur = _lseek(fd, 0, SEEK_CUR);
     off_t end = _lseek(fd, 0, SEEK_END);
     if (cur >= 0 && end >= 0) {
@@ -407,8 +476,19 @@ int mkdir(const char *path, mode_t mode) { return _mkdir(path, (int)mode); }
 /* -------------------------------------------------------------------------- */
 /* Additional POSIX stubs needed by dash */
 
-int dup2(int oldfd, int newfd) { return sys_dup2(oldfd, newfd); }
-int dup(int oldfd) { return sys_dup(oldfd); }
+int dup(int oldfd) {
+    if (bridge_is_tty(oldfd))
+        return bridge_alloc_fd(10);
+    return sys_dup(oldfd);
+}
+
+int dup2(int oldfd, int newfd) {
+    if (bridge_is_tty(oldfd) && newfd >= 0 && newfd < BRIDGE_FD_MAX) {
+        bridge_mark_tty(newfd);
+        return newfd;
+    }
+    return sys_dup2(oldfd, newfd);
+}
 
 uid_t geteuid(void) { return 0; }
 uid_t getuid(void) { return 0; }
@@ -429,18 +509,48 @@ int setegid(gid_t gid) { (void)gid; return 0; }
 #undef sigaction
 #undef sigsuspend
 
-int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) { (void)how;(void)set;(void)oldset; return 0; }
+int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
+    return sys_sigprocmask(how, set, oldset);
+}
 int sigemptyset(sigset_t *set) { if (set) memset(set, 0, sizeof(*set)); return 0; }
 int sigfillset(sigset_t *set) { if (set) memset(set, 0xff, sizeof(*set)); return 0; }
-int sigaddset(sigset_t *set, int signum) { (void)signum; if (set) ((unsigned char*)set)[signum/8] |= (1<<(signum%8)); return 0; }
-int sigdelset(sigset_t *set, int signum) { (void)signum; if (set) ((unsigned char*)set)[signum/8] &= ~(1<<(signum%8)); return 0; }
-int sigismember(const sigset_t *set, int signum) { (void)signum; return set && (((const unsigned char*)set)[signum/8] & (1<<(signum%8))); }
-int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) { (void)signum;(void)act;(void)oldact; return 0; }
-int sigsuspend(const sigset_t *mask) { (void)mask; return 0; }
+/* Match newlib macros: bit N = signal N (not N-1). */
+int sigaddset(sigset_t *set, int signum) {
+    if (!set || signum <= 0) return -1;
+    *set |= (sigset_t)(1UL << signum);
+    return 0;
+}
+int sigdelset(sigset_t *set, int signum) {
+    if (!set || signum <= 0) return -1;
+    *set &= ~(sigset_t)(1UL << signum);
+    return 0;
+}
+int sigismember(const sigset_t *set, int signum) {
+    if (!set || signum <= 0) return 0;
+    return (*set & (sigset_t)(1UL << signum)) ? 1 : 0;
+}
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    return sys_sigaction(signum, act, oldact);
+}
+int sigsuspend(const sigset_t *mask) {
+    /* POSIX sigsuspend is atomic: replace the mask and sleep until a signal
+     * is delivered under that mask. Doing sigprocmask() then sigsuspend()
+     * separately is wrong — unblocking SIGCHLD in sigprocmask delivers the
+     * handler on that return, then sigsuspend() sleeps forever with nothing
+     * pending (zsh never returns to the prompt after an external command). */
+    sigset_t old;
+    if (sys_sigprocmask(SIG_SETMASK, NULL, &old) < 0)
+        return -1;
+    (void)sys_sigsuspend(mask); /* kernel installs mask, waits, returns -EINTR */
+    /* Handler already ran on syscall return; restore previous mask. */
+    sys_sigprocmask(SIG_SETMASK, &old, NULL);
+    errno = EINTR;
+    return -1;
+}
 
 /* Process group / terminal */
 pid_t getpgrp(void) { return 0; }
-pid_t getppid(void) { return 0; }
+pid_t getppid(void) { return sys_getppid(); }
 int setpgid(pid_t pid, pid_t pgrp) { (void)pid;(void)pgrp; return 0; }
 pid_t setsid(void) { return 0; }
 int tcsetpgrp(int fd, pid_t pgrp) { (void)fd;(void)pgrp; return 0; }
@@ -489,8 +599,35 @@ int _toupper(int c) { return toupper(c); }
 int _tolower(int c) { return tolower(c); }
 
 int killpg(pid_t pid, int sig) { return kill(-pid, sig); }
-int fcntl(int fd, int cmd, ...) { (void)fd;(void)cmd; return 0; }
-pid_t waitpid(pid_t pid, int *status, int options) { return sys_waitpid((int)pid, status, options); }
+int fcntl(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    int arg = va_arg(ap, int);
+    va_end(ap);
+
+    if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+        if (bridge_is_tty(fd))
+            return bridge_alloc_fd(arg);
+        /* Kernel has no F_DUPFD — fall back to dup. */
+        return dup(fd);
+    }
+    if (cmd == F_GETFD || cmd == F_GETFL)
+        return 0;
+    if (cmd == F_SETFD || cmd == F_SETFL)
+        return 0;
+    (void)fd;
+    return 0;
+}
+pid_t waitpid(pid_t pid, int *status, int options) {
+    int ret = sys_waitpid((int)pid, status, options);
+    if (ret < 0) {
+        /* zsh treats errno!=ECHILD as fatal ("wait failed: success" when errno
+         * was left 0). Map kernel -errno; bare -1 ⇒ ECHILD. */
+        errno = (ret < -1) ? -ret : ECHILD;
+        return -1;
+    }
+    return ret;
+}
 pid_t vfork(void) { return _fork(); }
 mode_t umask(mode_t mask) { (void)mask; return 0; }
 
@@ -500,6 +637,39 @@ int ioctl(int fd, unsigned long request, ...) {
     va_start(ap, request);
     void *arg = va_arg(ap, void *);
     va_end(ap);
+
+    /* Bridge tty may be fd>=10 (zsh SHTTY); kernel only accepts 0..2. */
+    if (bridge_is_tty(fd)) {
+#ifndef TIOCGWINSZ
+#define TIOCGWINSZ 0x40087468
+#endif
+#ifndef TIOCSWINSZ
+#define TIOCSWINSZ 0x80087467
+#endif
+        if (request == TIOCGWINSZ && arg) {
+            struct { unsigned short row, col, xpixel, ypixel; } *ws = arg;
+            ws->row = 24;
+            ws->col = 80;
+            ws->xpixel = 0;
+            ws->ypixel = 0;
+            return 0;
+        }
+        if (request == TIOCSWINSZ)
+            return 0;
+        if (request == TIOCGETA && arg) {
+            bridge_termios_ensure();
+            *(struct termios *)arg = g_bridge_termios;
+            return 0;
+        }
+        if ((request == TIOCSETA || request == TIOCSETAW || request == TIOCSETAF)
+            && arg) {
+            bridge_termios_ensure();
+            g_bridge_termios = *(const struct termios *)arg;
+            return 0;
+        }
+        /* Ignore TIOCSPGRP / misc tty ioctls on the bridge. */
+        return 0;
+    }
     return (int)syscall3(SYS_IOCTL, (uintptr_t)fd, (uintptr_t)request, (uintptr_t)arg);
 }
 
@@ -514,11 +684,22 @@ int cfsetspeed(struct termios *t, speed_t s) {
 
 int tcgetattr(int fd, struct termios *t) {
     if (!t) return -1;
+    if (bridge_is_tty(fd)) {
+        bridge_termios_ensure();
+        *t = g_bridge_termios;
+        return 0;
+    }
     return ioctl(fd, TIOCGETA, t);
 }
 
 int tcsetattr(int fd, int act, const struct termios *t) {
     if (!t) return -1;
+    (void)act;
+    if (bridge_is_tty(fd)) {
+        bridge_termios_ensure();
+        g_bridge_termios = *t;
+        return 0;
+    }
     unsigned long req;
     switch (act & ~TCSASOFT) {
         case TCSANOW:   req = TIOCSETA; break;
@@ -546,10 +727,8 @@ void cfmakeraw(struct termios *t) {
 }
 
 int isatty(int fd) {
-    if (g_bridge_input_port || g_bridge_output_port) {
-        if (fd == 0 || fd == 1 || fd == 2)
-            return 1;
-    }
+    if (bridge_is_tty(fd))
+        return 1;
     struct termios t;
     return tcgetattr(fd, &t) == 0 ? 1 : 0;
 }

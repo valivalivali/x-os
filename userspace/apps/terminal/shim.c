@@ -365,38 +365,67 @@ static void notify_gpu_ready(void) {
     if (cp) sys_port_send(cp, &gmsg);
 }
 
+/* Set-1 make codes → ASCII when composer/kernel left ch=0. */
+static char scancode_to_ascii(uint8_t sc) {
+    static const char map[128] = {
+        0, 27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
+        '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
+        0, 'a','s','d','f','g','h','j','k','l',';','\'','`',
+        0, '\\','z','x','c','v','b','n','m',',','.','/', 0,
+        '*', 0, ' ',
+    };
+    return (sc < 128) ? map[sc] : 0;
+}
+
 static void handle_key(const wm_key_event_msg_t *ke) {
     /* Only key-down; shell reads a byte stream. */
     if (ke->action != 0) return;
 
+    unsigned char ch = (unsigned char)ke->ch;
+    if (ch == 0)
+        ch = (unsigned char)scancode_to_ascii(ke->scancode);
+    if (ch == 0)
+        return;
+
     if (g_shell_connected) {
-        if (ke->ch >= 32 && ke->ch < 127) {
-            send_shell_byte((char)ke->ch);
-            return;
-        }
-        if (ke->ch == '\n' || ke->ch == '\r') {
-            send_shell_byte('\n');
-            return;
-        }
-        if (ke->ch == 0x08 || ke->ch == 0x7F) {
-            send_shell_byte(0x7f);
-            return;
-        }
-        if (ke->ch == '\t') {
-            send_shell_byte('\t');
-            return;
+        char out = (char)ch;
+        if (ch == '\r')
+            out = '\n';
+        if (ch == 0x08)
+            out = 0x7f;
+        if ((ch >= 32 && ch < 127) || ch == '\n' || ch == '\r' ||
+            ch == 0x08 || ch == 0x7f || ch == '\t') {
+            send_shell_byte(out);
+            /* Local echo so typing is visible even if ZLE redraw is delayed
+             * or the shell is briefly blocked in waitpid. ZLE full-line
+             * refreshes (\r + prompt) replace this correctly. */
+            if (g_term && ch >= 32 && ch < 127) {
+                uint8_t echo[1] = { ch };
+                xos_terminal_feed_output(g_term, echo, 1);
+            } else if (g_term && (ch == '\n' || ch == '\r')) {
+                uint8_t echo[1] = { '\n' };
+                xos_terminal_feed_output(g_term, echo, 1);
+            } else if (g_term && (ch == 0x08 || ch == 0x7f)) {
+                uint8_t echo[1] = { 0x7f };
+                xos_terminal_feed_output(g_term, echo, 1);
+            }
         }
         return;
     }
 
     /* Not bridged yet — still feed egui so the window stays responsive. */
-    if (ke->ch >= 32 && ke->ch < 127) {
-        xos_terminal_text_event(g_term, (uint32_t)(uint8_t)ke->ch);
-        return;
-    }
+    if (ch >= 32 && ch < 127)
+        xos_terminal_text_event(g_term, (uint32_t)ch);
 }
 
 static void handle_mouse(const wm_mouse_event_msg_t *me) {
+    if (me->action == 3) {
+        /* Wheel notches → egui points (positive = scroll up). */
+        float delta = (float)(int32_t)me->button * 48.0f;
+        xos_terminal_wheel_event(g_term, delta);
+        return;
+    }
+
     if (me->action == 1 && me->button == 1) {
         g_btn_down = 1;
         if (in_title_drag_zone(me->x, me->y)) {
@@ -458,7 +487,7 @@ static int drain_events(void) {
                     g_have_pending_move = 0;
                 }
                 handle_mouse(me);
-                got_click = 1;
+                got_click = 1; /* down/up/wheel → paint */
             } else {
                 g_pending_move = *me;
                 g_have_pending_move = 1;
@@ -478,9 +507,15 @@ static int drain_events(void) {
     if (g_have_pending_move) {
         handle_mouse(&g_pending_move);
         g_have_pending_move = 0;
-        /* Title drag already sent SET_BOUNDS; hover needs no frame. */
-        if (!got_shell && !got_key && !got_click)
-            return g_title_dragging ? 1 : 0;
+        /* Hover (no button): skip expensive present. Button-held moves must
+         * run egui frames so ScrollArea / scrollbar dragging works. */
+        if (!got_shell && !got_key && !got_click) {
+            if (g_title_dragging)
+                return 1;
+            if (g_btn_down && !g_title_dragging)
+                return finish_frame(1);
+            return 0;
+        }
     }
 
     if (got_click || got_key || got_shell) {

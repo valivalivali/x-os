@@ -22,6 +22,12 @@ static volatile struct limine_hhdm_request hhdm_req = {
     .id = LIMINE_HHDM_REQUEST, .revision = 0
 };
 
+/* Kernel file → cmdline used as XNU-style boot-args (-v, serial=3, …). */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_kernel_file_request kfile_req = {
+    .id = LIMINE_KERNEL_FILE_REQUEST, .revision = 0
+};
+
 __attribute__((used, section(".limine_requests_start")))
 static volatile LIMINE_REQUESTS_START_MARKER;
 
@@ -77,6 +83,10 @@ const handoff_t *handoff_get(void) {
         g_handoff.memmap       = g_entries;
         g_handoff.memmap_count = n;
     }
+
+    g_handoff.cmdline = NULL;
+    if (kfile_req.response && kfile_req.response->kernel_file)
+        g_handoff.cmdline = kfile_req.response->kernel_file->cmdline;
 
     g_handoff.valid = true;
     g_ready = true;

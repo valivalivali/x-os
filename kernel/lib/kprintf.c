@@ -1,11 +1,24 @@
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/msgbuf.h"
 #include "kernel/arch/x86_64/serial.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-bool g_verbose_boot = true;
+/* macOS-style: silent unless boot-args contain -v (set in bootargs_init). */
+bool g_verbose_boot = false;
 
-void kputs(const char *s) { serial_write(s); }
+static void cons_putc(char c) {
+    serial_putc(c);
+    msgbuf_putc(c);
+}
+
+static void cons_write(const char *s) {
+    if (!s) s = "(null)";
+    for (; *s; s++)
+        cons_putc(*s);
+}
+
+void kputs(const char *s) { cons_write(s); }
 
 static void put_uint(uint64_t v, unsigned base, bool upper) {
     char buf[32];
@@ -13,25 +26,25 @@ static void put_uint(uint64_t v, unsigned base, bool upper) {
     int i = 0;
     if (v == 0) { buf[i++] = '0'; }
     while (v) { buf[i++] = digits[v % base]; v /= base; }
-    while (i--) serial_putc(buf[i]);
+    while (i--) cons_putc(buf[i]);
 }
 
 static void put_int(int64_t v) {
-    if (v < 0) { serial_putc('-'); put_uint((uint64_t)(-v), 10, false); }
+    if (v < 0) { cons_putc('-'); put_uint((uint64_t)(-v), 10, false); }
     else put_uint((uint64_t)v, 10, false);
 }
 
 void kvprintf(const char *fmt, va_list ap) {
     for (; *fmt; fmt++) {
-        if (*fmt != '%') { serial_putc(*fmt); continue; }
+        if (*fmt != '%') { cons_putc(*fmt); continue; }
         fmt++;
         bool islong = false;
         while (*fmt == 'l') { islong = true; fmt++; }
         switch (*fmt) {
-            case 'c': serial_putc((char)va_arg(ap, int)); break;
+            case 'c': cons_putc((char)va_arg(ap, int)); break;
             case 's': {
                 const char *s = va_arg(ap, const char *);
-                serial_write(s ? s : "(null)");
+                cons_write(s ? s : "(null)");
                 break;
             }
             case 'd': case 'i':
@@ -48,11 +61,11 @@ void kvprintf(const char *fmt, va_list ap) {
                 put_uint(islong ? va_arg(ap, uint64_t) : va_arg(ap, unsigned), 16, true);
                 break;
             case 'p':
-                serial_write("0x");
+                cons_write("0x");
                 put_uint((uint64_t)(uintptr_t)va_arg(ap, void *), 16, false);
                 break;
-            case '%': serial_putc('%'); break;
-            default:  serial_putc('%'); serial_putc(*fmt); break;
+            case '%': cons_putc('%'); break;
+            default:  cons_putc('%'); cons_putc(*fmt); break;
         }
     }
 }

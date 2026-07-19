@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 #include <termios.h>
 #include <sys/ioctl.h>
 
@@ -111,6 +112,21 @@ static int less_main(int argc, char **argv);
 static int vi_main(int argc, char **argv);
 static int sudo_main(int argc, char **argv);
 static int su_main(int argc, char **argv);
+static int realpath_main(int argc, char **argv);
+static int mktemp_main(int argc, char **argv);
+static int time_cmd_main(int argc, char **argv);
+static int path_helper_main(int argc, char **argv);
+static int ps_main(int argc, char **argv);
+static int sysctl_main(int argc, char **argv);
+static int dmesg_main(int argc, char **argv);
+static int clear_main(int argc, char **argv);
+static int sw_vers_main(int argc, char **argv);
+static int hostinfo_main(int argc, char **argv);
+static int pagesize_main(int argc, char **argv);
+static int arch_main(int argc, char **argv);
+static int pkill_main(int argc, char **argv);
+static int whoami_main(int argc, char **argv);
+static int sync_main(int argc, char **argv);
 
 struct cmd_entry {
     const char *name;
@@ -184,6 +200,22 @@ static const struct cmd_entry cmd_table[] = {
     { "vim",       vi_main },
     { "sudo",      sudo_main },
     { "su",        su_main },
+    { "realpath",  realpath_main },
+    { "mktemp",    mktemp_main },
+    { "time",      time_cmd_main },
+    { "path_helper", path_helper_main },
+    { "ps",        ps_main },
+    { "sysctl",    sysctl_main },
+    { "dmesg",     dmesg_main },
+    { "clear",     clear_main },
+    { "sw_vers",   sw_vers_main },
+    { "hostinfo",  hostinfo_main },
+    { "pagesize",  pagesize_main },
+    { "arch",      arch_main },
+    { "machine",   arch_main },
+    { "pkill",     pkill_main },
+    { "whoami",    whoami_main },
+    { "sync",      sync_main },
     { NULL, NULL }
 };
 
@@ -198,7 +230,8 @@ static const char *base_name(const char *path) {
 }
 
 int cmds_main(int argc, char **argv) {
-    /* Exec clears the parent's bridge state — reattach so printf reaches the terminal. */
+    /* Exec clears the parent's bridge state — reattach so printf reaches the terminal.
+     * Output-only: stdin stays on SYS_INPUT_POLL (input_port=0). */
     {
         port_handle_t bridge = sys_ns_lookup(PORT_NS_SHELL_BRIDGE);
         if (bridge)
@@ -211,15 +244,30 @@ int cmds_main(int argc, char **argv) {
     }
 
     const char *cmd = base_name(argv[0]);
+    {
+        char buf[96];
+        int n = 0;
+        const char *p = "[cmds] run ";
+        while (*p && n < 80) buf[n++] = *p++;
+        p = cmd;
+        while (*p && n < 94) buf[n++] = *p++;
+        buf[n++] = '\n';
+        syscall2(SYS_DEBUG_LOG, (uintptr_t)buf, (uintptr_t)n);
+    }
 
     for (const struct cmd_entry *e = cmd_table; e->name; e++) {
         if (strcmp(cmd, e->name) == 0) {
-            return e->fn(argc, argv);
+            int rc = e->fn(argc, argv);
+            {
+                char done[] = "[cmds] done\n";
+                syscall2(SYS_DEBUG_LOG, (uintptr_t)done, sizeof(done) - 1);
+            }
+            return rc;
         }
     }
 
     fprintf(stderr, "cmds: unknown command '%s'\n", cmd);
-    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim sudo su\n");
+    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim sudo su realpath mktemp time path_helper ps sysctl dmesg clear sw_vers hostinfo pagesize arch pkill whoami sync\n");
     return 1;
 }
 
@@ -468,10 +516,10 @@ static int sleep_main(int argc, char **argv) {
 /* Simplified: hardcoded values, no sysctl */
 
 static int uname_main(int argc, char **argv) {
-    const char *sysname  = "x-os";
+    const char *sysname  = "XOS";
     const char *hostname = "x-os";
-    const char *release  = "1.0";
-    const char *version  = "x-os 1.0 (Tahoe)";
+    const char *release  = "1.0.0";
+    const char *version  = "X OS 1.0";
     const char *machine  = "x86_64";
 
     int flags = 0;
@@ -548,8 +596,12 @@ static int cat_main(int argc, char **argv) {
 
 static int ls_main(int argc, char **argv) {
     const char *path = ".";
-    if (argc >= 2)
-        path = argv[1];
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-')
+            continue; /* ignore flags for now (-a/-l stubs) */
+        path = argv[i];
+        break;
+    }
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -3260,4 +3312,289 @@ static int sudo_main(int argc, char **argv) {
     /* Already root: run the target applet in-process. A second exec was
      * hitting a kernel argv-stack alignment bug and corrupting argv[0]. */
     return cmds_main(argc - 1, &argv[1]);
+}
+
+/* realpath / mktemp / time / path_helper — from shell_cmds-329 (simplified). */
+
+static int realpath_main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: realpath file\n");
+        return 1;
+    }
+    char cwd[256];
+    char out[512];
+    if (!getcwd(cwd, sizeof(cwd)))
+        strcpy(cwd, "/");
+    const char *p = argv[1];
+    if (p[0] == '/') {
+        snprintf(out, sizeof(out), "%s", p);
+    } else {
+        if (strcmp(cwd, "/") == 0)
+            snprintf(out, sizeof(out), "/%s", p);
+        else
+            snprintf(out, sizeof(out), "%s/%s", cwd, p);
+    }
+    printf("%s\n", out);
+    return 0;
+}
+
+static int mktemp_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    static unsigned seq;
+    char path[64];
+    seq++;
+    snprintf(path, sizeof(path), "/tmp/tmp.%u", seq);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "mktemp: cannot create %s\n", path);
+        return 1;
+    }
+    fclose(f);
+    printf("%s\n", path);
+    return 0;
+}
+
+static int time_cmd_main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: time command [args...]\n");
+        return 1;
+    }
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
+    int rc = cmds_main(argc - 1, &argv[1]);
+    gettimeofday(&t1, NULL);
+    long usec = (long)(t1.tv_sec - t0.tv_sec) * 1000000L +
+                (long)(t1.tv_usec - t0.tv_usec);
+    if (usec < 0) usec = 0;
+    fprintf(stderr, "\nreal\t%ld.%02lds\n", usec / 1000000, (usec / 10000) % 100);
+    return rc;
+}
+
+static int path_helper_main(int argc, char **argv) {
+    /* Apple path_helper: emit PATH from /etc/paths (+ /etc/paths.d later). */
+    int csh = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0) csh = 1;
+        else if (strcmp(argv[i], "-s") == 0) csh = 0;
+    }
+    char path[256] = "/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/bin";
+    FILE *f = fopen("/etc/paths", "r");
+    if (f) {
+        char line[128];
+        path[0] = '\0';
+        while (fgets(line, sizeof(line), f)) {
+            size_t n = strlen(line);
+            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+                line[--n] = '\0';
+            if (n == 0 || line[0] == '#') continue;
+            if (path[0]) {
+                size_t pl = strlen(path);
+                if (pl + 1 + n < sizeof(path)) {
+                    path[pl] = ':';
+                    memcpy(path + pl + 1, line, n + 1);
+                }
+            } else {
+                snprintf(path, sizeof(path), "%s", line);
+            }
+        }
+        fclose(f);
+    }
+    if (csh)
+        printf("setenv PATH \"%s\";\n", path);
+    else
+        printf("PATH=\"%s\"; export PATH;\n", path);
+    return 0;
+}
+
+/* ps — simplified from adv_cmds-237 (no sysctl/kvm yet). */
+static int ps_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    proc_info_t list[32];
+    int n = sys_proc_list(list, 32);
+    if (n < 0) {
+        fprintf(stderr, "ps: cannot read process table\n");
+        return 1;
+    }
+    printf("  PID  PPID STAT COMMAND\n");
+    for (int i = 0; i < n; i++) {
+        const char *st = "?";
+        switch (list[i].state) {
+        case 0: st = "Z"; break; /* PROC_DEAD */
+        case 1: st = "R"; break; /* READY */
+        case 2: st = "R"; break; /* RUNNING */
+        case 3: st = "S"; break; /* BLOCKED */
+        }
+        const char *name = list[i].name[0] ? list[i].name : "?";
+        printf("%5llu %5llu  %s  %s\n",
+               (unsigned long long)list[i].pid,
+               (unsigned long long)list[i].ppid,
+               st, name);
+    }
+    return 0;
+}
+
+/* sysctl — reads OIDs from the kernel (XNU kern_mib / system_cmds style). */
+static int sysctl_main(int argc, char **argv) {
+    static const char *all[] = {
+        "kern.ostype", "kern.osrelease", "kern.osversion", "kern.hostname",
+        "kern.version", "hw.ncpu", "hw.memsize", "hw.machine", NULL
+    };
+    char val[256];
+
+    if (argc >= 2 && strcmp(argv[1], "-a") != 0) {
+        for (int i = 1; i < argc; i++) {
+            int n = sys_sysctl(argv[i], val, sizeof(val));
+            if (n < 0) {
+                fprintf(stderr, "sysctl: unknown oid '%s'\n", argv[i]);
+                return 1;
+            }
+            printf("%s: %s\n", argv[i], val);
+        }
+        return 0;
+    }
+
+    for (int k = 0; all[k]; k++) {
+        int n = sys_sysctl(all[k], val, sizeof(val));
+        if (n >= 0)
+            printf("%s: %s\n", all[k], val);
+    }
+    return 0;
+}
+
+/* dmesg — dump XNU-style kernel msgbuf. */
+static int dmesg_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    char buf[8192];
+    int n = sys_msgbuf_read(buf, sizeof(buf) - 1);
+    if (n < 0) {
+        fprintf(stderr, "dmesg: cannot read kernel log\n");
+        return 1;
+    }
+    if (n == 0) {
+        printf("(empty msgbuf)\n");
+        return 0;
+    }
+    buf[n] = '\0';
+    fputs(buf, stdout);
+    if (n > 0 && buf[n - 1] != '\n')
+        fputc('\n', stdout);
+    fflush(stdout);
+    return 0;
+}
+
+/* clear — form-feed clears egui terminal scrollback. */
+static int clear_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    fputc('\f', stdout);
+    fflush(stdout);
+    return 0;
+}
+
+/* sw_vers — system_cmds / CoreServices SystemVersion.plist. */
+static int sw_vers_main(int argc, char **argv) {
+    int product = 1, version = 1, build = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-productName") == 0) {
+            product = 1; version = 0; build = 0;
+        } else if (strcmp(argv[i], "-productVersion") == 0) {
+            product = 0; version = 1; build = 0;
+        } else if (strcmp(argv[i], "-buildVersion") == 0) {
+            product = 0; version = 0; build = 1;
+        }
+    }
+    if (product && version && build) {
+        printf("ProductName:\t\tX OS\n");
+        printf("ProductVersion:\t\t1.0\n");
+        printf("BuildVersion:\t\tXOS1\n");
+    } else if (product) {
+        printf("X OS\n");
+    } else if (version) {
+        printf("1.0\n");
+    } else if (build) {
+        printf("XOS1\n");
+    }
+    return 0;
+}
+
+/* hostinfo — simplified from system_cmds/hostinfo (Mach APIs → sysctl). */
+static int hostinfo_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    char ver[256] = "X OS";
+    char mem[64] = "536870912";
+    char ncpu[16] = "1";
+    sys_sysctl("kern.version", ver, sizeof(ver));
+    sys_sysctl("hw.memsize", mem, sizeof(mem));
+    sys_sysctl("hw.ncpu", ncpu, sizeof(ncpu));
+    printf("X OS kernel version:\n\t %s\n", ver);
+    printf("Kernel configured for up to %s processor%s.\n",
+           ncpu, (strcmp(ncpu, "1") == 0) ? "" : "s");
+    printf("%s processor%s physically available.\n",
+           ncpu, (strcmp(ncpu, "1") == 0) ? " is" : "s are");
+    printf("Primary memory available: %.2f gigabytes\n",
+           (double)strtoull(mem, NULL, 10) / (1024.0 * 1024.0 * 1024.0));
+    printf("Default processor set: %s task%s, %s thread%s\n",
+           "1", "", ncpu, (strcmp(ncpu, "1") == 0) ? "" : "s");
+    printf("Load average: 0.00\n");
+    return 0;
+}
+
+static int pagesize_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    printf("4096\n");
+    return 0;
+}
+
+static int arch_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    printf("x86_64\n");
+    return 0;
+}
+
+/* pkill — adv_cmds-inspired; match process name via SYS_PROC_LIST. */
+static int pkill_main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: pkill name\n");
+        return 1;
+    }
+    const char *pat = argv[argc - 1];
+    proc_info_t list[32];
+    int n = sys_proc_list(list, 32);
+    if (n < 0) {
+        fprintf(stderr, "pkill: cannot read process table\n");
+        return 1;
+    }
+    int killed = 0;
+    for (int i = 0; i < n; i++) {
+        if (!list[i].name[0])
+            continue;
+        if (strcmp(list[i].name, pat) == 0 || strstr(list[i].name, pat)) {
+            /* Don't kill init / composer / ourselves casually. */
+            if (list[i].pid <= 2)
+                continue;
+            sys_kill((int)list[i].pid, 15);
+            killed++;
+        }
+    }
+    return killed ? 0 : 1;
+}
+
+static int whoami_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    printf("root\n");
+    return 0;
+}
+
+/* sync — system_cmds stub (no dirty-page flush yet). */
+static int sync_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return 0;
 }

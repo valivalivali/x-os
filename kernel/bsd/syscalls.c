@@ -12,6 +12,7 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/sched/sched.h"
 #include "kernel/lib/string.h"
+#include "kernel/proc/signal.h"
 
 /* Kernel-side termios definitions (adapted from XNU bsd/sys/termios.h) */
 #define NCCS 20
@@ -203,26 +204,125 @@ uint64_t sys_mprotect_impl(uint64_t addr, uint64_t length, uint64_t prot,
     return 0;
 }
 
+/* Apple/BSD layout used by prebuilt zsh objects (NOT newlib's flags-first):
+ *   sa_handler @0, sa_mask @8, sa_flags @16. */
+struct xos_sigaction {
+    uint64_t sa_handler;
+    uint64_t sa_mask;
+    int      sa_flags;
+};
+
+#define XOS_SIG_BLOCK   1
+#define XOS_SIG_UNBLOCK 2
+#define XOS_SIG_SETMASK 0
+
 uint64_t sys_sigaction_impl(uint64_t signum, uint64_t act, uint64_t oldact,
                             uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)signum; (void)act; (void)oldact; (void)a4; (void)a5; (void)a6;
+    (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (!p) return (uint64_t)-1;
+    if (signum == 0 || signum >= (uint64_t)XOS_NSIG)
+        return (uint64_t)-1;
+    /* SIGKILL / SIGSTOP cannot be caught or ignored. */
+    if (signum == 9 || signum == 17)
+        return (uint64_t)-1;
+
+    if (oldact) {
+        struct xos_sigaction *oa = (struct xos_sigaction *)oldact;
+        oa->sa_handler = p->sig_handler[signum];
+        oa->sa_mask = p->sig_mask[signum];
+        oa->sa_flags = p->sig_flags[signum];
+    }
+    if (act) {
+        const struct xos_sigaction *na = (const struct xos_sigaction *)act;
+        p->sig_handler[signum] = na->sa_handler;
+        p->sig_mask[signum] = na->sa_mask;
+        p->sig_flags[signum] = na->sa_flags;
+        if (signum == 20 /* SIGCHLD */)
+            kprintf("[sig] pid=%lu SIGCHLD handler=%p flags=%d\n",
+                    p->pid, (void *)na->sa_handler, na->sa_flags);
+    }
     return 0;
 }
 
 uint64_t sys_sigprocmask_impl(uint64_t how, uint64_t set, uint64_t oldset,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)how; (void)set; (void)oldset; (void)a4; (void)a5; (void)a6;
+    (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (!p) return (uint64_t)-1;
+
+    if (oldset)
+        *(uint64_t *)oldset = p->sig_blocked;
+
+    if (set) {
+        uint64_t s = *(const uint64_t *)set;
+        switch ((int)how) {
+        case XOS_SIG_BLOCK:
+            p->sig_blocked |= s;
+            break;
+        case XOS_SIG_UNBLOCK:
+            p->sig_blocked &= ~s;
+            break;
+        case XOS_SIG_SETMASK:
+            p->sig_blocked = s;
+            break;
+        default:
+            return (uint64_t)-1;
+        }
+    }
     return 0;
 }
 
 uint64_t sys_kill_impl(uint64_t pid, uint64_t sig,
                        uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)sig; (void)a3; (void)a4; (void)a5; (void)a6;
-    if (sig == 9 || sig == 15) {
-        extern void proc_kill(uint64_t pid);
-        proc_kill(pid);
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    extern int proc_send_signal(uint64_t pid, int sig);
+    if ((int64_t)pid < 0)
+        pid = (uint64_t)(-(int64_t)pid); /* killpg-style: treat as pid */
+
+    proc_t *t = proc_by_pid(pid);
+    if (!t)
+        return (uint64_t)-(int64_t)3; /* -ESRCH */
+
+    /* kill(pid, 0) — existence check (zsh waitforpid). */
+    if ((int)sig == 0)
+        return 0;
+
+    int ret = proc_send_signal(pid, (int)sig);
+    return ret < 0 ? (uint64_t)-(int64_t)1 : 0;
+}
+
+/* Atomic sigsuspend: optionally install `maskptr`, then sleep until a signal
+ * is deliverable. Returns -EINTR so signal_on_syscall_return runs the handler.
+ * Must install the mask in-kernel (not via a prior sigprocmask) so a pending
+ * SIGCHLD is not consumed before we enter the wait. */
+uint64_t sys_sigsuspend_impl(uint64_t maskptr, uint64_t a2, uint64_t a3,
+                             uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (!p) return (uint64_t)-1;
+
+    if (maskptr)
+        p->sig_blocked = *(const uint64_t *)maskptr;
+
+    if (p->sig_pending & ~p->sig_blocked) {
+        kprintf("[sig] sigsuspend wake(immediate) pid=%lu pending=%lx blocked=%lx\n",
+                p->pid, (unsigned long)p->sig_pending,
+                (unsigned long)p->sig_blocked);
+        return (uint64_t)-(int64_t)4; /* -EINTR */
     }
-    return 0;
+    kprintf("[sig] sigsuspend sleep pid=%lu pending=%lx blocked=%lx\n",
+            p->pid, (unsigned long)p->sig_pending,
+            (unsigned long)p->sig_blocked);
+    for (;;) {
+        if (p->sig_pending & ~p->sig_blocked) {
+            kprintf("[sig] sigsuspend wake pid=%lu pending=%lx blocked=%lx\n",
+                    p->pid, (unsigned long)p->sig_pending,
+                    (unsigned long)p->sig_blocked);
+            return (uint64_t)-(int64_t)4; /* -EINTR */
+        }
+        sched_yield();
+    }
 }
 
 uint64_t sys_fcntl_impl(uint64_t fd, uint64_t cmd, uint64_t arg,

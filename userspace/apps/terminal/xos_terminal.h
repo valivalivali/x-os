@@ -21,6 +21,9 @@ void xos_terminal_destroy(void *state);
 void xos_terminal_mouse_event(void *state, int32_t x, int32_t y,
                               uint32_t button, uint32_t action);
 
+/* Vertical wheel delta in points (positive = scroll up / content down). */
+void xos_terminal_wheel_event(void *state, float delta);
+
 void xos_terminal_key_event(void *state, uint32_t key, uint32_t pressed);
 
 void xos_terminal_text_event(void *state, uint32_t ch);
