@@ -132,6 +132,14 @@ LIBCXX_SRC_MARKER := $(LIBCXX_VENDOR_DIR)/.fetched
 LLVM_CXX      := /opt/homebrew/opt/llvm/bin/clang++
 LLVM_AR       := /opt/homebrew/opt/llvm/bin/llvm-ar
 
+# ---- zlib static library ---------------------------------------------------
+ZLIB_DIR      := userspace/lib/zlib
+ZLIB_SRCS     := adler32.c compress.c crc32.c deflate.c infback.c inffast.c \
+                 inflate.c inftrees.c trees.c uncompr.c zutil.c \
+                 gzclose.c gzlib.c gzread.c gzwrite.c
+ZLIB_OBJS     := $(patsubst %.c,$(BUILD_DIR)/zlib/%.o,$(ZLIB_SRCS))
+ZLIB_A        := $(BUILD_DIR)/zlib/libz.a
+
 # ---- ThorVG static library -------------------------------------------------
 THORVG_DIR    := userspace/lib/thorvg
 THORVG_A      := $(BUILD_DIR)/thorvg/thorvg.a
@@ -168,7 +176,7 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
-.PHONY: all run run-uefi clean distclean setup limine cmds thorvg libcxx-src
+.PHONY: all run run-uefi clean distclean setup limine cmds thorvg zlib libcxx-src
 
 all: $(ISO)
 
@@ -422,6 +430,17 @@ thorvg: $(THORVG_A)
 $(THORVG_A): scripts/build_thorvg.sh $(wildcard $(THORVG_DIR)/src/**/*.cpp) $(wildcard $(THORVG_DIR)/src/*.cpp) $(THORVG_DIR)/thorvg_xos.cpp $(THORVG_DIR)/thorvg_config.h $(THORVG_DIR)/src/common/config.h $(THORVG_DIR)/src/common/tvgLock.h
 	@mkdir -p $(BUILD_DIR)/thorvg
 	bash scripts/build_thorvg.sh
+
+# ---- zlib static library ---------------------------------------------------
+zlib: $(ZLIB_A)
+
+$(BUILD_DIR)/zlib/%.o: $(ZLIB_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBC_CFLAGS) -DHAVE_HIDDEN -include unistd.h -I$(ZLIB_DIR) -c $< -o $@
+
+$(ZLIB_A): $(ZLIB_OBJS)
+	$(LLVM_AR) rcs $@ $(ZLIB_OBJS)
+	@echo ">> built $@"
 
 # ---- context menu service (Rust + egui) -----------------------------------
 menu: $(MENU_ELF)
