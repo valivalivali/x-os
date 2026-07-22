@@ -249,23 +249,29 @@ static void on_key(uint8_t scancode, char ch, uint16_t key, uint32_t action) {
 static xos_lvgl_ctx_t g_ctx;
 
 static void build_terminal_ui(void) {
-    /* Full-surface dark background */
-    lv_obj_t *bg = lv_obj_create(lv_screen_active());
-    lv_obj_set_size(bg, g_ctx.width, g_ctx.height);
-    lv_obj_set_style_bg_color(bg, lv_color_hex(0x1E1E2E), 0);
-    lv_obj_set_style_bg_opa(bg, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bg, 0, 0);
-    lv_obj_set_style_pad_all(bg, 8, 0);
-    lv_obj_clear_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
+    /* Catppuccin Mocha palette */
+    const uint32_t COL_MANTLE  = 0x181825;  /* terminal bg */
+    const uint32_t COL_TEXT    = 0xCDD6F4;  /* main text */
 
-    /* Scrollable container for terminal text */
-    g_term_cont = lv_obj_create(bg);
-    lv_obj_set_size(g_term_cont, g_ctx.width - 16, g_ctx.height - 16);
-    lv_obj_set_style_bg_color(g_term_cont, lv_color_hex(0x1E1E2E), 0);
-    lv_obj_set_style_bg_opa(g_term_cont, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(g_term_cont, 0, 0);
-    lv_obj_set_style_pad_all(g_term_cont, 4, 0);
-    lv_obj_set_style_text_color(g_term_cont, lv_color_hex(0xCDD6F4), 0);
+    /* Root container — full surface, no border, no radius.
+     * The compositor handles rounded corners via dec_mask_corners. */
+    lv_obj_t *root = lv_screen_active();
+    lv_obj_set_size(root, g_ctx.width, g_ctx.height);
+    lv_obj_set_style_bg_color(root, lv_color_hex(COL_MANTLE), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_radius(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Use root as the scrollable terminal container directly —
+     * no nested container that would create a visible panel/border. */
+    g_term_cont = root;
+    lv_obj_set_style_pad_left(g_term_cont, 14, 0);
+    lv_obj_set_style_pad_right(g_term_cont, 14, 0);
+    lv_obj_set_style_pad_top(g_term_cont, 10, 0);
+    lv_obj_set_style_pad_bottom(g_term_cont, 10, 0);
+    lv_obj_set_style_text_color(g_term_cont, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(g_term_cont, &lv_font_montserrat_14, 0);
     lv_obj_set_scrollbar_mode(g_term_cont, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_scroll_dir(g_term_cont, LV_DIR_VER);
@@ -273,9 +279,11 @@ static void build_terminal_ui(void) {
     /* Terminal text label */
     g_term_label = lv_label_create(g_term_cont);
     lv_label_set_long_mode(g_term_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(g_term_label, g_ctx.width - 24);
-    lv_obj_set_style_text_color(g_term_label, lv_color_hex(0xCDD6F4), 0);
+    lv_obj_set_width(g_term_label, g_ctx.width - 28);
+    lv_obj_set_style_text_color(g_term_label, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(g_term_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_line_space(g_term_label, 2, 0);
+    lv_obj_set_style_text_letter_space(g_term_label, 0, 0);
     lv_label_set_text(g_term_label, "");
 
     /* Connecting banner */
@@ -317,13 +325,13 @@ void terminal_main(void) {
     if (win_x < 40) win_x = 40;
     if (win_y < 40) win_y = 40;
 
-    /* Initialize LVGL with compositor surface */
-    if (xos_lvgl_init(&g_ctx, win_x, win_y, win_w, win_h,
-                      WM_FLAG_DEFAULT, "Terminal") < 0) {
-        log("[terminal] LVGL init failed\n");
+    /* Initialize LVGL with GPU-backed compositor surface */
+    if (xos_lvgl_gpu_init(&g_ctx, win_x, win_y, win_w, win_h,
+                          WM_FLAG_DEFAULT, "Terminal") < 0) {
+        log("[terminal] LVGL GPU init failed\n");
         return;
     }
-    log("[terminal] LVGL initialized\n");
+    log("[terminal] LVGL GPU initialized\n");
 
     /* Register key hook for shell input */
     xos_lvgl_set_key_hook(on_key);

@@ -21,6 +21,7 @@
 
 /* Syscalls */
 #include "kernel/include/syscall.h"
+#include "kernel/fs/xfs.h"
 
 /* ---- Logging ------------------------------------------------------------- */
 
@@ -28,6 +29,19 @@ static void log(const char *s) {
     size_t n = 0;
     while (s[n]) n++;
     syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
+}
+
+static void log_int(const char *prefix, int val, const char *suffix) {
+    log(prefix);
+    char buf[16];
+    int neg = 0;
+    if (val < 0) { neg = 1; val = -val; }
+    int i = 15; buf[i--] = '\0';
+    if (val == 0) buf[i--] = '0';
+    while (val > 0 && i >= 0) { buf[i--] = '0' + (val % 10); val /= 10; }
+    if (neg && i >= 0) buf[i--] = '-';
+    log(&buf[i + 1]);
+    log(suffix);
 }
 
 /* ---- IPC ----------------------------------------------------------------- */
@@ -131,6 +145,90 @@ static uint32_t get_screen_height(void) {
     return 1600;
 }
 
+/* ---- App launching ------------------------------------------------------- */
+
+#define MAX_DOCK_APPS 8
+
+typedef struct {
+    char name[32];      /* app display name (without .app) */
+    char path[128];     /* full path to executable */
+} dock_app_t;
+
+static dock_app_t g_apps[MAX_DOCK_APPS];
+static int g_app_count = 0;
+
+static int str_ends_with(const char *s, const char *suffix) {
+    int slen = 0, flen = 0;
+    while (s[slen]) slen++;
+    while (suffix[flen]) flen++;
+    if (flen > slen) return 0;
+    for (int i = 0; i < flen; i++)
+        if (s[slen - flen + i] != suffix[i]) return 0;
+    return 1;
+}
+
+static void scan_apps(void) {
+    g_app_count = 0;
+
+    int fd = sys_open("/Applications", XFS_O_RDONLY);
+    if (fd < 0) return;
+
+    xfs_dirent_t entries[32];
+    int n = sys_readdir(fd, entries, 32);
+    sys_close(fd);
+    if (n < 0) n = 0;
+
+    for (int i = 0; i < n && g_app_count < MAX_DOCK_APPS; i++) {
+        if (entries[i].flags != XFS_DENT_DIR) continue;
+        if (!str_ends_with(entries[i].name, ".app")) continue;
+
+        /* Extract app name without .app suffix */
+        char *dname = entries[i].name;
+        int dlen = 0;
+        while (dname[dlen]) dlen++;
+        int name_len = dlen - 4;  /* strip .app */
+        if (name_len <= 0 || name_len >= 32) continue;
+
+        memcpy(g_apps[g_app_count].name, dname, name_len);
+        g_apps[g_app_count].name[name_len] = '\0';
+
+        /* Build path: /Applications/<dir>/Contents/Xos/<name> */
+        char *p = g_apps[g_app_count].path;
+        int pos = 0;
+        const char *prefix = "/Applications/";
+        while (prefix[pos]) { p[pos] = prefix[pos]; pos++; }
+        for (int j = 0; j < dlen; j++) p[pos++] = dname[j];
+        const char *mid = "/Contents/Xos/";
+        for (int j = 0; mid[j]; j++) p[pos++] = mid[j];
+        for (int j = 0; j < name_len; j++) p[pos++] = g_apps[g_app_count].name[j];
+        p[pos] = '\0';
+
+        g_app_count++;
+    }
+
+    log_int("[dock] found ", g_app_count, " apps\n");
+}
+
+static void launch_app(int idx) {
+    if (idx < 0 || idx >= g_app_count) return;
+
+    log("[dock] launching ");
+    log(g_apps[idx].name);
+    log("\n");
+
+    int pid = sys_fork();
+    if (pid == 0) {
+        /* Child: exec the app binary */
+        char *argv[2];
+        argv[0] = g_apps[idx].name;
+        argv[1] = NULL;
+        sys_exec(g_apps[idx].path, argv);
+        /* If exec fails, exit */
+        sys_exit(1);
+    }
+    /* Parent: continue running dock, don't wait */
+}
+
 /* ---- Main ---------------------------------------------------------------- */
 
 #define DOCK_W 962
@@ -200,7 +298,33 @@ void dock_main(void) {
     send_dirty(0, 0, DOCK_W, DOCK_H);
     log("[dock] rendered\n");
 
+    /* Scan for installed apps */
+    scan_apps();
+
+    /* Main event loop — listen for mouse clicks from compositor */
     for (;;) {
+        ipc_msg_t msg;
+        if (sys_port_recv(g_port, &msg, 0)) {
+            if (msg.payload_len >= sizeof(uint32_t)) {
+                uint32_t type = 0;
+                memcpy(&type, msg.payload, sizeof(type));
+
+                if (type == WM_MOUSE_EVENT) {
+                    wm_mouse_event_msg_t *mev =
+                        (wm_mouse_event_msg_t *)msg.payload;
+                    if (mev->action == 1 && mev->button == 1) {
+                        /* Click on dock — map x to app index */
+                        if (g_app_count > 0) {
+                            int slot_w = (int)DOCK_W / g_app_count;
+                            int idx = mev->x / slot_w;
+                            if (idx < 0) idx = 0;
+                            if (idx >= g_app_count) idx = g_app_count - 1;
+                            launch_app(idx);
+                        }
+                    }
+                }
+            }
+        }
         syscall0(SYS_YIELD);
     }
 }

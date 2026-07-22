@@ -17,7 +17,7 @@
  */
 
 typedef struct {
-    uint32_t *surface_buf;   /* compositor-provided shared buffer */
+    uint32_t *surface_buf;   /* compositor-provided shared buffer (CPU mode) */
     uint32_t  surface_idx;   /* compositor surface index */
     int32_t   width;
     int32_t   height;
@@ -28,6 +28,12 @@ typedef struct {
     void     *draw_buf1;
     void     *draw_buf2;
     bool      closed;        /* set when WM_WINDOW_CLOSE received */
+    /* GPU mode fields */
+    int      gpu_mode;       /* 1 = GPU-backed surface */
+    uint32_t gpu_res_id;     /* virtio-gpu resource ID for render target */
+    uint32_t *gpu_backing;   /* GPU backing buffer (page-aligned, full-screen) */
+    uint64_t gpu_backing_vaddr; /* GPU backing buffer virtual address */
+    uint32_t gpu_backing_size;  /* GPU backing buffer size in bytes */
 } xos_lvgl_ctx_t;
 
 /* Key event hook — called before LVGL processes the key.
@@ -41,6 +47,14 @@ void xos_lvgl_set_key_hook(xos_key_hook_t hook);
 int xos_lvgl_init(xos_lvgl_ctx_t *ctx,
                   int32_t x, int32_t y, int32_t w, int32_t h,
                   uint32_t wm_flags, const char *title);
+
+/* Initialize LVGL with a GPU-backed compositor surface.
+ * Creates a VirGL texture resource and uploads LVGL's rendered output
+ * via GPU transfer. The compositor composites this surface as a
+ * textured quad. Returns 0 on success, -1 on failure. */
+int xos_lvgl_gpu_init(xos_lvgl_ctx_t *ctx,
+                      int32_t x, int32_t y, int32_t w, int32_t h,
+                      uint32_t wm_flags, const char *title);
 
 /* Pump: call lv_tick_inc + lv_timer_handler + process IPC input.
  * Call this in your main loop. */

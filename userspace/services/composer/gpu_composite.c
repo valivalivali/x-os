@@ -759,7 +759,7 @@ void gpu_comp_create_gpu_surface_sv(int surf_idx, uint32_t res_id,
     cmd_dword(PIPE_FORMAT_R8G8B8A8_UNORM);  /* format */
     cmd_dword(0);   /* first_level */
     cmd_dword(0);   /* last_level */
-    cmd_dword(0x688);  /* swizzle: R=0, G=1, B=2, A=3 (default) */
+    cmd_dword(BGRA_SWIZZLE);  /* swizzle: R<->B swap for BGRA data */
     cmd_submit();
 }
 
@@ -1016,5 +1016,94 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
 
     cmd_submit();
     sys_gpu_flush_res(g_fb_res_id, tx0, ty0, tw, th);
+}
+
+void gpu_comp_mask_corners(int32_t x0, int32_t y0, int32_t w, int32_t total_h, int32_t r) {
+    if (!g_active || !g_initialized) return;
+    if (r <= 0) return;
+
+    /* For each corner, transfer only the scanlines that have masked pixels
+     * (outside the circle). Transfer the full width of the corner region
+     * per scanline — the backing already has desktop colors in masked areas
+     * and the GPU content was overwritten by dec_mask_corners, so we just
+     * need to push those scanlines to the scanout. */
+    for (int y = 0; y < r; y++) {
+        int dy_top = r - y - 1;     /* distance from circle edge for top corners */
+        int dy_bot = y;             /* distance from circle edge for bottom corners */
+
+        /* Top-left: masked pixels are x=0..(r-1) where (r-x-1)^2 + dy^2 >= r^2 */
+        int tl_start = -1, tl_end = -1;
+        for (int x = 0; x < r; x++) {
+            int dx = r - x - 1;
+            if (dx * dx + dy_top * dy_top >= r * r) {
+                if (tl_start < 0) tl_start = x;
+                tl_end = x;
+            }
+        }
+        if (tl_start >= 0) {
+            int px = x0 + tl_start, py = y0 + y;
+            int rw = tl_end - tl_start + 1;
+            sys_gpu_transfer_3d(g_fb_res_id, (uint32_t)px, (uint32_t)py, 0,
+                                (uint32_t)rw, 1, 1, 0, 0, 0, 0);
+        }
+
+        /* Top-right: masked pixels are x=0..(r-1) where x^2 + dy^2 >= r^2 */
+        int tr_start = -1, tr_end = -1;
+        for (int x = 0; x < r; x++) {
+            int dx = x;
+            if (dx * dx + dy_top * dy_top >= r * r) {
+                if (tr_start < 0) tr_start = x;
+                tr_end = x;
+            }
+        }
+        if (tr_start >= 0) {
+            int px = x0 + w - r + tr_start, py = y0 + y;
+            int rw = tr_end - tr_start + 1;
+            sys_gpu_transfer_3d(g_fb_res_id, (uint32_t)px, (uint32_t)py, 0,
+                                (uint32_t)rw, 1, 1, 0, 0, 0, 0);
+        }
+
+        /* Bottom-left */
+        int bl_start = -1, bl_end = -1;
+        for (int x = 0; x < r; x++) {
+            int dx = r - x - 1;
+            if (dx * dx + dy_bot * dy_bot >= r * r) {
+                if (bl_start < 0) bl_start = x;
+                bl_end = x;
+            }
+        }
+        if (bl_start >= 0) {
+            int px = x0 + bl_start, py = y0 + total_h - r + y;
+            int rw = bl_end - bl_start + 1;
+            sys_gpu_transfer_3d(g_fb_res_id, (uint32_t)px, (uint32_t)py, 0,
+                                (uint32_t)rw, 1, 1, 0, 0, 0, 0);
+        }
+
+        /* Bottom-right */
+        int br_start = -1, br_end = -1;
+        for (int x = 0; x < r; x++) {
+            int dx = x;
+            if (dx * dx + dy_bot * dy_bot >= r * r) {
+                if (br_start < 0) br_start = x;
+                br_end = x;
+            }
+        }
+        if (br_start >= 0) {
+            int px = x0 + w - r + br_start, py = y0 + total_h - r + y;
+            int rw = br_end - br_start + 1;
+            sys_gpu_transfer_3d(g_fb_res_id, (uint32_t)px, (uint32_t)py, 0,
+                                (uint32_t)rw, 1, 1, 0, 0, 0, 0);
+        }
+    }
+
+    /* Flush the full corner regions to scanout */
+    sys_gpu_flush_res(g_fb_res_id, (uint32_t)x0, (uint32_t)y0,
+                      (uint32_t)r, (uint32_t)r);
+    sys_gpu_flush_res(g_fb_res_id, (uint32_t)(x0 + w - r), (uint32_t)y0,
+                      (uint32_t)r, (uint32_t)r);
+    sys_gpu_flush_res(g_fb_res_id, (uint32_t)x0, (uint32_t)(y0 + total_h - r),
+                      (uint32_t)r, (uint32_t)r);
+    sys_gpu_flush_res(g_fb_res_id, (uint32_t)(x0 + w - r), (uint32_t)(y0 + total_h - r),
+                      (uint32_t)r, (uint32_t)r);
 }
 

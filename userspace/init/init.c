@@ -157,6 +157,62 @@ static void seed_fs(void) {
     log("[init] fs seeded\n");
 }
 
+/* ---- App bundle creation ------------------------------------------------ */
+
+static void create_terminal_bundle(void) {
+    /* /Applications/Terminal.app/Contents/Xos/Terminal  — ELF binary
+     * /Applications/Terminal.app/Contents/Info.plist     — app metadata
+     * /Applications/Terminal.app/Contents/Resources/src/main.c — source
+     */
+    mkdir_p("/Applications/Terminal.app");
+    mkdir_p("/Applications/Terminal.app/Contents");
+    mkdir_p("/Applications/Terminal.app/Contents/Xos");
+    mkdir_p("/Applications/Terminal.app/Contents/Resources");
+    mkdir_p("/Applications/Terminal.app/Contents/Resources/src");
+
+    /* Write the terminal ELF binary into the bundle */
+    if (write_blob_to_file(7, "/Applications/Terminal.app/Contents/Xos/Terminal") == 0)
+        log("[init] wrote Terminal.app binary\n");
+    else
+        log("[init] failed to write Terminal.app binary\n");
+
+    /* Info.plist — app metadata (X OS plist format, compatible with macOS) */
+    write_str("/Applications/Terminal.app/Contents/Info.plist",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+              "<plist version=\"1.0\">\n"
+              "<dict>\n"
+              "  <key>CFBundleName</key><string>Terminal</string>\n"
+              "  <key>CFBundleDisplayName</key><string>Terminal</string>\n"
+              "  <key>CFBundleIdentifier</key><string>xos.app.terminal</string>\n"
+              "  <key>CFBundleVersion</key><string>1.0</string>\n"
+              "  <key>CFBundleShortVersionString</key><string>1.0</string>\n"
+              "  <key>CFBundleExecutable</key><string>Terminal</string>\n"
+              "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+              "  <key>CFBundleSignature</key><string>????</string>\n"
+              "  <key>LSMinimumSystemVersion</key><string>1.0</string>\n"
+              "  <key>NSHighResolutionCapable</key><true/>\n"
+              "</dict>\n"
+              "</plist>\n");
+
+    /* Source file — so "Show Package Contents" reveals the source */
+    static const char src[] =
+        "/* Terminal.app — main.c\n"
+        " * LVGL-based terminal for X OS.\n"
+        " * Source included in bundle for inspection.\n"
+        " */\n"
+        "// See userspace/apps/terminal/main.c in the X OS source tree.\n";
+    int fd = sys_open("/Applications/Terminal.app/Contents/Resources/src/main.c",
+                      XFS_O_CREAT | XFS_O_WRONLY | XFS_O_TRUNC);
+    if (fd >= 0) {
+        size_t n = 0;
+        while (src[n]) n++;
+        sys_write(fd, src, n);
+        sys_close(fd);
+    }
+
+    log("[init] Terminal.app bundle created\n");
+}
+
 void init_main(void) {
     log("[init] start\n");
 
@@ -166,6 +222,9 @@ void init_main(void) {
      * Writing ~60 full copies here made desktop take 10–20s to appear. */
     if (write_blob_to_file(5, "/bin/cmds") == 0)
         log("[init] wrote /bin/cmds\n");
+
+    /* Create Terminal.app bundle on filesystem */
+    create_terminal_bundle();
 
     spawn_blob(0, "composer");
     spawn_blob(1, "menubar");

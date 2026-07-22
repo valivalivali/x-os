@@ -166,3 +166,9 @@ void gpu_comp_present(int32_t fb_w, int32_t fb_h,
 
 /* Check if GPU compositing is active. */
 int gpu_comp_active(void);
+
+/* Re-transfer corner mask pixels from backing to the 3D fb resource.
+ * Only transfers pixels OUTSIDE the rounded rect (the actual mask area),
+ * preserving GPU-rendered content inside the circle.
+ * x0,y0 = window origin; w = window width; total_h = full window height; r = radius */
+void gpu_comp_mask_corners(int32_t x0, int32_t y0, int32_t w, int32_t total_h, int32_t r);

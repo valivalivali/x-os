@@ -313,7 +313,7 @@ $(OBJ_DIR)/%.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Build userspace init ELF (start.S + init.c + syscall wrappers)
-$(INIT_ELF): userspace/init/start.S userspace/init/init.c userspace/runtime/syscall.c userspace/init/init.ld
+$(INIT_ELF): userspace/init/start.S userspace/init/init.c kernel/fs/xfs.h userspace/runtime/syscall.c userspace/init/init.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/init/start.S -o $(BUILD_DIR)/userspace/init/start.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/init/init.c -o $(BUILD_DIR)/userspace/init/init.o
@@ -466,7 +466,7 @@ $(DOCK_SVG_H): userspace/services/dock/dock.svg scripts/svg_to_header.py
 	python3 scripts/svg_to_header.py userspace/services/dock/dock.svg $(DOCK_SVG_H)
 	@echo ">> generated $@"
 
-$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DOCK_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/dock/dock.ld
+$(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DOCK_SVG_H) $(THORVG_A) $(LIBCXX_A) userspace/lib/wm/wm.h kernel/fs/xfs.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/dock/dock.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/dock/start.S -o $(BUILD_DIR)/userspace/services/dock/start.o
 	$(CC) $(LIBC_CFLAGS) -msse -msse2 -I$(BUILD_DIR)/userspace/services/dock -Iuserspace/lib/thorvg -Iuserspace/lib/wm -c userspace/services/dock/main.c -o $(BUILD_DIR)/userspace/services/dock/main.o
@@ -577,7 +577,7 @@ $(LVGL_A): $(LVGL_OBJS)
 	$(LLVM_AR) rcs $@ $(LVGL_OBJS)
 	@echo ">> built $@ ($(words $(LVGL_OBJS)) objects)"
 
-# ---- terminal app (LVGL software-rendered) -------------------------------
+# ---- terminal app (LVGL GPU-backed) --------------------------------------
 terminal: $(TERMINAL_ELF)
 
 $(TERMINAL_ELF): userspace/apps/terminal/main.c userspace/apps/terminal/start.S userspace/lib/lvgl_drv/xos_lvgl_drv.c userspace/lib/lvgl_drv/xos_lvgl_drv.h $(LVGL_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/apps/terminal/terminal.ld

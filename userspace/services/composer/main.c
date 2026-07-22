@@ -1896,6 +1896,31 @@ void display_main(void) {
                                  dirty_x0, dirty_y0,
                                  dirty_x1 - dirty_x0, dirty_y1 - dirty_y0,
                                  overlay_fast);
+
+                /* Re-mask corners after GPU present: the GPU quad is a
+                 * rectangle that overwrites the rounded corners we masked
+                 * in paint_region. Write desktop colors to the corner areas
+                 * in backing, then re-transfer+flush only the masked pixels
+                 * (outside the circle) so the scanout shows rounded corners
+                 * on all 4 sides without overwriting GPU content inside. */
+                for (int level = SURF_LEVEL_NORMAL; level <= SURF_LEVEL_OVERLAY; level++) {
+                    int n2 = level_order(level, lvl_order);
+                    for (int oi = 0; oi < n2; oi++) {
+                        int i = lvl_order[oi];
+                        surface_info_t *s = &surfaces[i];
+                        if (!s->is_gpu || !s->gpu_sv_handle) continue;
+                        if (s->owner_pid != 0 && !sys_proc_exists(s->owner_pid))
+                            continue;
+                        if (surface_decorated(s)) {
+                            int total_h = surface_total_h(s);
+                            dec_mask_corners(s->x, s->y, (int)s->w,
+                                             total_h, WIN_RADIUS);
+                            gpu_comp_mask_corners(s->x, s->y,
+                                                  (int)s->w, total_h,
+                                                  WIN_RADIUS);
+                        }
+                    }
+                }
             }
 
             if (surface_moved)

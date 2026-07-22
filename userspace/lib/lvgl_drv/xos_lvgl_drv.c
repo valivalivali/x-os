@@ -5,6 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ---- VirGL constants for GPU-backed surface ----------------------------- */
+#define PIPE_TEXTURE_2D           2
+#define PIPE_FORMAT_R8G8B8A8_UNORM 67
+#define VIRGL_BIND_SAMPLER_VIEW   (1 << 3)
+#define XOS_PAGE_SIZE             4096
+#define XOS_GPU_BACKING_BASE      0x0000700000000000ULL
+
 /* ---- Internal state ---------------------------------------------------- */
 
 static xos_lvgl_ctx_t *g_ctx = NULL;
@@ -35,7 +42,7 @@ static void xos_flush_cb(lv_display_t *disp, const lv_area_t *area,
                          uint8_t *px_map)
 {
     xos_lvgl_ctx_t *ctx = (xos_lvgl_ctx_t *)lv_display_get_user_data(disp);
-    if (!ctx || !ctx->surface_buf) {
+    if (!ctx) {
         lv_display_flush_ready(disp);
         return;
     }
@@ -43,8 +50,65 @@ static void xos_flush_cb(lv_display_t *disp, const lv_area_t *area,
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
 
-    /* LVGL renders in XRGB8888 (32-bit). Copy the dirty area to the
-     * compositor surface buffer. */
+    if (ctx->gpu_mode) {
+        /* GPU mode: copy rendered pixels to GPU backing buffer, then
+         * transfer to GPU texture. The compositor samples from this
+         * texture to composite the surface. */
+        if (!ctx->gpu_backing) {
+            lv_display_flush_ready(disp);
+            return;
+        }
+
+        uint32_t *src = (uint32_t *)px_map;
+        uint32_t *dst = ctx->gpu_backing;
+        int32_t surf_stride = ctx->width;
+
+        for (int32_t y = 0; y < h; y++) {
+            uint32_t *s = src + y * w;
+            uint32_t *d = dst + (area->y1 + y) * surf_stride + area->x1;
+            for (int32_t x = 0; x < w; x++) {
+                /* Set alpha to 0xFF — LVGL XRGB8888 may leave X byte unset */
+                d[x] = s[x] | 0xFF000000u;
+            }
+        }
+
+        /* Upload dirty region to GPU texture */
+        sys_gpu_transfer_3d(ctx->gpu_res_id,
+                            (uint32_t)area->x1, (uint32_t)area->y1, 0,
+                            (uint32_t)w, (uint32_t)h, 1,
+                            0, 0, 0, 0);
+
+        /* Notify compositor of dirty rect */
+        wm_dirty_msg_t dm;
+        memset(&dm, 0, sizeof(dm));
+        dm.type = WM_SURFACE_DIRTY;
+        dm.surface_idx = ctx->surface_idx;
+        dm.x = (uint32_t)area->x1;
+        dm.y = (uint32_t)area->y1;
+        dm.w = (uint32_t)w;
+        dm.h = (uint32_t)h;
+        dm.flags = 0;
+
+        ipc_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.type = IPC_MSG_EVENT;
+        msg.sender_pid = syscall0(SYS_PROC_PID);
+        msg.payload_len = sizeof(dm);
+        memcpy(msg.payload, &dm, sizeof(dm));
+
+        port_handle_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+        if (cp) sys_port_send(cp, &msg);
+
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    /* CPU mode: copy to shared compositor surface buffer */
+    if (!ctx->surface_buf) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
     uint32_t *src = (uint32_t *)px_map;
     uint32_t *dst = ctx->surface_buf;
     int32_t surf_stride = ctx->width;
@@ -157,8 +221,77 @@ static int create_compositor_surface(xos_lvgl_ctx_t *ctx,
     if (!got) return -1;
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
+    /* GPU surfaces get buf_vaddr=0 (no shared buffer) */
     ctx->surface_buf = (uint32_t *)srm->buf_vaddr;
     ctx->surface_idx = srm->surface_idx;
+    return 0;
+}
+
+/* ---- GPU resource setup ------------------------------------------------- */
+
+static int setup_gpu_resource(xos_lvgl_ctx_t *ctx)
+{
+    int32_t w = ctx->width;
+    int32_t h = ctx->height;
+
+    /* Allocate page-aligned backing buffer via sys_mem_alloc */
+    uint32_t buf_size = (uint32_t)w * h * 4;
+    uint32_t npages = (buf_size + XOS_PAGE_SIZE - 1) / XOS_PAGE_SIZE;
+    uint64_t vaddr = XOS_GPU_BACKING_BASE;
+
+    for (uint32_t p = 0; p < npages; p++) {
+        uint64_t va = vaddr + (uint64_t)p * XOS_PAGE_SIZE;
+        if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0)
+            return -1;
+    }
+
+    ctx->gpu_backing_vaddr = vaddr;
+    ctx->gpu_backing = (uint32_t *)vaddr;
+    ctx->gpu_backing_size = buf_size;
+
+    /* Clear backing buffer to black */
+    memset(ctx->gpu_backing, 0, buf_size);
+
+    /* Allocate a GPU resource ID */
+    ctx->gpu_res_id = sys_gpu_alloc_res_id();
+    if (ctx->gpu_res_id == 0) return -1;
+
+    /* Create 2D texture resource (R8G8B8A8_UNORM, sampler-view bind) */
+    if (sys_gpu_res_create_3d(ctx->gpu_res_id, PIPE_TEXTURE_2D,
+                              PIPE_FORMAT_R8G8B8A8_UNORM,
+                              VIRGL_BIND_SAMPLER_VIEW,
+                              (uint32_t)w, (uint32_t)h,
+                              1, 1, 0, 0, 0) != 0)
+        return -1;
+
+    /* Attach backing memory to the GPU resource */
+    if (sys_gpu_res_attach_virt(ctx->gpu_res_id, vaddr, npages, buf_size) != 0)
+        return -1;
+
+    /* Initial upload so the texture is not blank */
+    sys_gpu_transfer_3d(ctx->gpu_res_id, 0, 0, 0,
+                        (uint32_t)w, (uint32_t)h, 1, 0, 0, 0, 0);
+
+    /* Notify compositor that our GPU render target is ready */
+    wm_surface_gpu_ready_msg_t gr;
+    memset(&gr, 0, sizeof(gr));
+    gr.type = WM_SURFACE_GPU_READY;
+    gr.surface_idx = ctx->surface_idx;
+    gr.gpu_res_id = ctx->gpu_res_id;
+    gr.gpu_ctx_id = 0;  /* no app context; compositor attaches to its own */
+    gr.tex_w = 0;       /* use surface w/h */
+    gr.tex_h = 0;
+
+    ipc_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = IPC_MSG_EVENT;
+    msg.sender_pid = syscall0(SYS_PROC_PID);
+    msg.payload_len = sizeof(gr);
+    memcpy(msg.payload, &gr, sizeof(gr));
+
+    port_handle_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+    if (!cp || !sys_port_send(cp, &msg)) return -1;
+
     return 0;
 }
 
@@ -175,6 +308,57 @@ int xos_lvgl_init(xos_lvgl_ctx_t *ctx,
 
     /* Create compositor surface */
     if (create_compositor_surface(ctx, x, y, w, h, wm_flags, title) < 0)
+        return -1;
+
+    /* Initialize LVGL core */
+    lv_init();
+
+    /* Allocate draw buffers — 1/2 screen each for double buffering */
+    size_t buf_size = (size_t)w * h * 4 / 2;
+    ctx->draw_buf1 = malloc(buf_size);
+    ctx->draw_buf2 = malloc(buf_size);
+    if (!ctx->draw_buf1 || !ctx->draw_buf2) return -1;
+
+    /* Create LVGL display */
+    ctx->disp = lv_display_create(w, h);
+    lv_display_set_user_data(ctx->disp, ctx);
+    lv_display_set_buffers(ctx->disp,
+                           ctx->draw_buf1, ctx->draw_buf2,
+                           buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(ctx->disp, xos_flush_cb);
+
+    /* Create mouse indev */
+    ctx->mouse = lv_indev_create();
+    lv_indev_set_type(ctx->mouse, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(ctx->mouse, xos_mouse_read_cb);
+    lv_indev_set_user_data(ctx->mouse, ctx);
+
+    /* Create keyboard indev */
+    ctx->keyboard = lv_indev_create();
+    lv_indev_set_type(ctx->keyboard, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_read_cb(ctx->keyboard, xos_key_read_cb);
+    lv_indev_set_user_data(ctx->keyboard, ctx);
+
+    return 0;
+}
+
+int xos_lvgl_gpu_init(xos_lvgl_ctx_t *ctx,
+                      int32_t x, int32_t y, int32_t w, int32_t h,
+                      uint32_t wm_flags, const char *title)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->width = w;
+    ctx->height = h;
+    ctx->gpu_mode = 1;
+    g_ctx = ctx;
+
+    /* Create compositor surface with WM_FLAG_GPU */
+    if (create_compositor_surface(ctx, x, y, w, h,
+                                  wm_flags | WM_FLAG_GPU, title) < 0)
+        return -1;
+
+    /* Set up GPU texture resource and notify compositor */
+    if (setup_gpu_resource(ctx) < 0)
         return -1;
 
     /* Initialize LVGL core */
