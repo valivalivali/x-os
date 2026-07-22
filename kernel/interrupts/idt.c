@@ -106,6 +106,10 @@ void idt_init(void) {
     pic_mask_all();
 }
 
+void idt_reload(void) {
+    __asm__ volatile("lidt %0" : : "m"(idtr));
+}
+
 void irq_install(int irq, irq_handler_t fn) {
     if (irq < 0 || irq > 15) return;
     handlers[irq] = fn;

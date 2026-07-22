@@ -23,6 +23,7 @@
 #include "kernel/hal/gpu/virtio_gpu.h"
 #include "kernel/hal/net/virtio_net.h"
 #include "kernel/fs/xfs.h"
+#include "kernel/hal/apic/smp.h"
 
 extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
@@ -30,7 +31,7 @@ extern uint64_t g_kernel_rsp0;
 
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
-static void enable_sse(void) {
+void enable_sse(void) {
     uint64_t cr0, cr4;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     cr0 &= ~(1ULL << 2); /* clear EM  */
@@ -65,6 +66,7 @@ void kmain(void) {
     heap_init();
     gdt_init();
     idt_init();
+    smp_init();
     timer_init(1000);
     syscall_init();
     sched_init();

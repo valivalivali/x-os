@@ -283,7 +283,10 @@ LIBC_LDFLAGS := \
 # newlib test program
 TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
-QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
+# Auto-detect host CPU count (logical cores = physical + hyperthreads)
+SMP_CPUS := $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
+QEMU_BASE  := -M q35 -m 512M -smp $(SMP_CPUS) -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
 .PHONY: all run run-uefi clean distclean setup limine cmds thorvg zlib lvgl libcxx-src
 

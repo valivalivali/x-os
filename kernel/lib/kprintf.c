@@ -1,11 +1,15 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/msgbuf.h"
 #include "kernel/arch/x86_64/serial.h"
+#include "kernel/hal/apic/spinlock.h"
 #include <stdint.h>
 #include <stdbool.h>
 
 /* macOS-style: silent unless boot-args contain -v (set in bootargs_init). */
 bool g_verbose_boot = false;
+
+/* Serial output spinlock — prevents interleaved output from multiple CPUs. */
+static spinlock_t cons_lock = SPINLOCK_INIT;
 
 static void cons_putc(char c) {
     serial_putc(c);
@@ -18,7 +22,11 @@ static void cons_write(const char *s) {
         cons_putc(*s);
 }
 
-void kputs(const char *s) { cons_write(s); }
+void kputs(const char *s) {
+    uint64_t rflags = spinlock_acquire_irqsave(&cons_lock);
+    cons_write(s);
+    spinlock_release_irqrestore(&cons_lock, rflags);
+}
 
 static void put_uint(uint64_t v, unsigned base, bool upper) {
     char buf[32];
@@ -73,7 +81,9 @@ void kvprintf(const char *fmt, va_list ap) {
 void kprintf(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    uint64_t rflags = spinlock_acquire_irqsave(&cons_lock);
     kvprintf(fmt, ap);
+    spinlock_release_irqrestore(&cons_lock, rflags);
     va_end(ap);
 }
 

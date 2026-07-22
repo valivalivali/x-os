@@ -13,5 +13,6 @@ struct interrupt_frame {
 typedef void (*irq_handler_t)(void);
 
 void idt_init(void);                          /* loads IDT, remaps + masks PIC */
+void idt_reload(void);                        /* reload IDTR (for APs) */
 void irq_install(int irq, irq_handler_t fn);  /* registers + unmasks an IRQ    */
 void irq_uninstall(int irq);

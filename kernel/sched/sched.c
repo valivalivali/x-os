@@ -7,10 +7,15 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/gdt.h"
+#include "kernel/hal/apic/spinlock.h"
 
 static proc_t procs[SCHED_MAX_PROCS];
 static proc_t *current = NULL;
 static proc_t *ready_head = NULL;
+
+/* Scheduler spinlock — protects the process table and ready queue.
+ * Used with irqsave to prevent deadlock with interrupt-time wakeups. */
+static spinlock_t sched_lock = SPINLOCK_INIT;
 
 static void ready_dequeue(proc_t *p) {
     proc_t **pp = &ready_head;
@@ -209,9 +214,14 @@ static proc_t *pick_next_ready(void) {
 void sched_yield(void) {
     if (!current) return;
 
+    uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
+
     proc_t *next = pick_next_ready();
 
-    if (next == current) return;
+    if (next == current) {
+        spinlock_release_irqrestore(&sched_lock, rflags);
+        return;
+    }
 
     proc_t *prev = current;
     /* Only runnable tasks go back on the ready list. */
@@ -227,6 +237,8 @@ void sched_yield(void) {
     if (next->ring3) {
         gdt_set_rsp0((uint64_t)(next->kstack + SCHED_STACK_SIZE));
     }
+
+    spinlock_release_irqrestore(&sched_lock, rflags);
 
     context_switch(prev, next);
 }

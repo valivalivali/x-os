@@ -28,6 +28,12 @@ static volatile struct limine_kernel_file_request kfile_req = {
     .id = LIMINE_KERNEL_FILE_REQUEST, .revision = 0
 };
 
+/* SMP / multi-processor request — Limine boots all CPUs into long mode. */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_smp_request smp_req = {
+    .id = LIMINE_SMP_REQUEST, .revision = 0
+};
+
 __attribute__((used, section(".limine_requests_start")))
 static volatile LIMINE_REQUESTS_START_MARKER;
 
@@ -87,6 +93,16 @@ const handoff_t *handoff_get(void) {
     g_handoff.cmdline = NULL;
     if (kfile_req.response && kfile_req.response->kernel_file)
         g_handoff.cmdline = kfile_req.response->kernel_file->cmdline;
+
+    /* SMP info from Limine */
+    g_handoff.bsp_lapic_id = 0;
+    g_handoff.cpu_count = 1;
+    g_handoff.cpus = NULL;
+    if (smp_req.response) {
+        g_handoff.bsp_lapic_id = smp_req.response->bsp_lapic_id;
+        g_handoff.cpu_count = (uint32_t)smp_req.response->cpu_count;
+        g_handoff.cpus = (handoff_cpu_info_t **)smp_req.response->cpus;
+    }
 
     g_handoff.valid = true;
     g_ready = true;

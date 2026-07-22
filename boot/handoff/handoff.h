@@ -35,6 +35,14 @@ enum {
     HAND_MEM_FRAMEBUFFER,
 };
 
+typedef struct handoff_cpu_info {
+    uint32_t  processor_id;
+    uint32_t  lapic_id;
+    uint64_t  reserved;
+    void    (*goto_address)(struct handoff_cpu_info *);
+    uint64_t  extra_argument;
+} handoff_cpu_info_t;
+
 typedef struct {
     hand_framebuffer_t   fb;
     uint64_t             hhdm_offset;
@@ -42,6 +50,10 @@ typedef struct {
     uint64_t             memmap_count;
     const char          *cmdline; /* Limine kernel cmdline → boot-args */
     bool                 valid;
+    /* SMP info */
+    uint32_t             bsp_lapic_id;
+    uint32_t             cpu_count;
+    handoff_cpu_info_t **cpus;
 } handoff_t;
 
 /* Parse bootloader requests once and return the unified handoff. */
