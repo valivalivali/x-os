@@ -40,8 +40,8 @@ SRC_DIRS     := boot kernel userspace
 # Exclude Limine, ring-3 userspace sources, generated blobs, and bsd/ from normal kernel build.
 # bsd/ files are handled separately with FreeBSD compat flags.
 # kernel/bsd/syscalls.c is also handled separately (needs BSD include paths).
-CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/*' -not -path './kernel/bsd/*' 2>/dev/null)
-SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.S' 2>/dev/null)
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/*' -not -path './kernel/bsd/*' -not -path './third_party/*' 2>/dev/null)
+SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -path './third_party/*' -not -name '*_blob.S' 2>/dev/null)
 
 # FreeBSD network stack source files
 BSD_CFILES   := $(shell find bsd -type f -name '*.c' -not -path 'bsd/compat/*' 2>/dev/null)
@@ -116,30 +116,119 @@ CMDS_ELF       := $(BUILD_DIR)/userspace/cmds/cmds.elf
 CMDS_BLOB_C    := kernel/proc/cmds_elf_blob.c
 CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
 
-# Context menu service
-MENU_ELF       := $(BUILD_DIR)/userspace/services/menu/menu.elf
-MENU_BLOB_C    := kernel/proc/menu_elf_blob.c
-MENU_BLOB_O    := $(OBJ_DIR)/kernel/proc/menu_elf_blob.o
-# Menu is now built with Rust + egui (no SVG)
-MENU_RUST_LIB  := $(BUILD_DIR)/userspace/services/menu/libxos_context_menu.a
-
-# Terminal app (egui on xos_egui_platform)
+# Terminal app (LVGL software-rendered)
 TERMINAL_ELF      := $(BUILD_DIR)/userspace/apps/terminal/terminal.elf
 TERMINAL_BLOB_C   := kernel/proc/terminal_elf_blob.c
 TERMINAL_BLOB_O   := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
-TERMINAL_RUST_LIB := $(BUILD_DIR)/userspace/apps/terminal/libxos_terminal.a
 
-# GPU rendering backend + platform layer for egui apps
-EGUI_VIRGL_LIB   := $(BUILD_DIR)/third_party/egui_virgl_backend/libegui_virgl_backend.a
-EGUI_PLATFORM_LIB := $(BUILD_DIR)/userspace/lib/egui_platform/libxos_egui_platform.rlib
-
-# Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(MENU_BLOB_O) $(TERMINAL_BLOB_O)
-
-# ---- newlib paths --------------------------------------------------------
+# ---- newlib paths (needed early for LVGL_CFLAGS) -------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
 NEWLIB_CFLAGS  := -I$(NEWLIB_PREFIX)/include
 NEWLIB_LIBS    := $(NEWLIB_PREFIX)/lib/libc.a $(NEWLIB_PREFIX)/lib/libm.a
+
+# ---- LVGL static library -------------------------------------------------
+LVGL_DIR        := third_party/lvgl
+LVGL_A          := $(BUILD_DIR)/lvgl/liblvgl.a
+
+# LVGL source files — only what we need for X OS
+# Excludes: libs, drivers, platform-specific draw backends, unused OSAL,
+#           unused widgets, unused fonts, clib stdlib (we use builtin)
+LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' \
+  -not -path '*/libs/barcode/*' \
+  -not -path '*/libs/bmp/*' \
+  -not -path '*/libs/ffmpeg/*' \
+  -not -path '*/libs/freetype/*' \
+  -not -path '*/libs/frogfs/*' \
+  -not -path '*/libs/FT800-FT813/*' \
+  -not -path '*/libs/gltf/*' \
+  -not -path '*/libs/gif/*' \
+  -not -path '*/libs/gstreamer/*' \
+  -not -path '*/libs/libjpeg_turbo/*' \
+  -not -path '*/libs/libpng/*' \
+  -not -path '*/libs/libwebp/*' \
+  -not -path '*/libs/lodepng/*' \
+  -not -path '*/libs/lz4/*' \
+  -not -path '*/libs/nanovg/*' \
+  -not -path '*/libs/qrcode/*' \
+  -not -path '*/libs/rlottie/*' \
+  -not -path '*/libs/rle/*' \
+  -not -path '*/libs/svg/*' \
+  -not -path '*/libs/thorvg/*' \
+  -not -path '*/libs/tiny_ttf/*' \
+  -not -path '*/libs/vg_lite_driver/*' \
+  -not -path '*/drivers/*' \
+  -not -path '*/draw/d2s/*' \
+  -not -path '*/draw/nema_gfx/*' \
+  -not -path '*/draw/nxp/*' \
+  -not -path '*/draw/renesas/*' \
+  -not -path '*/draw/sdl/*' \
+  -not -path '*/draw/vg_lite/*' \
+  -not -path '*/draw/dma2d/*' \
+  -not -path '*/draw/opengles/*' \
+  -not -path '*/draw/eve/*' \
+  -not -path '*/draw/nanovg/*' \
+  -not -path '*/draw/ppa/*' \
+  -not -path '*/osal/lv_pthread*' \
+  -not -path '*/osal/lv_freertos*' \
+  -not -path '*/osal/lv_cmsis*' \
+  -not -path '*/osal/lv_rtthread*' \
+  -not -path '*/osal/lv_windows*' \
+  -not -path '*/osal/lv_mqx*' \
+  -not -path '*/osal/lv_sdl2*' \
+  -not -path '*/widgets/property/*' \
+  -not -path '*/widgets/objx_templ/*' \
+  -not -path '*/widgets/chart/*' \
+  -not -path '*/widgets/calendar/*' \
+  -not -path '*/widgets/led/*' \
+  -not -path '*/widgets/scale/*' \
+  -not -path '*/widgets/table/*' \
+  -not -path '*/widgets/tileview/*' \
+  -not -path '*/widgets/ime/*' \
+  -not -path '*/widgets/gif/*' \
+  -not -path '*/widgets/lottie/*' \
+  -not -path '*/stdlib/clib/*' \
+  -not -path '*/stdlib/micropython/*' \
+  -not -path '*/stdlib/rtthread/*' \
+  -not -path '*/font/lv_font_montserrat_8.c' \
+  -not -path '*/font/lv_font_montserrat_10.c' \
+  -not -path '*/font/lv_font_montserrat_18.c' \
+  -not -path '*/font/lv_font_montserrat_20.c' \
+  -not -path '*/font/lv_font_montserrat_22.c' \
+  -not -path '*/font/lv_font_montserrat_24.c' \
+  -not -path '*/font/lv_font_montserrat_26.c' \
+  -not -path '*/font/lv_font_montserrat_28.c' \
+  -not -path '*/font/lv_font_montserrat_28_compressed.c' \
+  -not -path '*/font/lv_font_montserrat_30.c' \
+  -not -path '*/font/lv_font_montserrat_32.c' \
+  -not -path '*/font/lv_font_montserrat_34.c' \
+  -not -path '*/font/lv_font_montserrat_36.c' \
+  -not -path '*/font/lv_font_montserrat_38.c' \
+  -not -path '*/font/lv_font_montserrat_40.c' \
+  -not -path '*/font/lv_font_montserrat_42.c' \
+  -not -path '*/font/lv_font_montserrat_44.c' \
+  -not -path '*/font/lv_font_montserrat_46.c' \
+  -not -path '*/font/lv_font_montserrat_48.c' \
+  -not -path '*/font/lv_font_dejavu*' \
+  -not -path '*/font/lv_font_source_han*' \
+  -not -path '*/font/lv_font_unscii*' \
+  2>/dev/null)
+
+LVGL_OBJS := $(patsubst $(LVGL_DIR)/%.c,$(BUILD_DIR)/lvgl/%.o,$(LVGL_SRCS))
+
+LVGL_CFLAGS := \
+  --target=x86_64-unknown-none-elf \
+  -ffreestanding -fno-stack-protector -fno-stack-check \
+  -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone \
+  -mno-sse -mno-sse2 -mno-mmx \
+  -O2 -pipe -std=gnu11 -Wno-all \
+  -DLV_CONF_INCLUDE_SIMPLE \
+  -I$(LVGL_DIR) -I$(LVGL_DIR)/src \
+  -I. -I$(LIMINE_DIR) \
+  -isystem $(NEWLIB_PREFIX)/include \
+  -MMD -MP
+
+# Add generated blob objects explicitly to kernel link
+OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(TERMINAL_BLOB_O)
 
 # ---- libc++ static library ------------------------------------------------
 LIBCXX_CONFIG     := userspace/lib/libcxx_config
@@ -196,7 +285,7 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 
 QEMU_BASE  := -M q35 -m 512M -smp 1 -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
 
-.PHONY: all run run-uefi clean distclean setup limine cmds thorvg zlib libcxx-src
+.PHONY: all run run-uefi clean distclean setup limine cmds thorvg zlib lvgl libcxx-src
 
 all: $(ISO)
 
@@ -472,73 +561,45 @@ $(ZLIB_A): $(ZLIB_OBJS)
 	$(LLVM_AR) rcs $@ $(ZLIB_OBJS)
 	@echo ">> built $@"
 
-# ---- context menu service (Rust + egui) -----------------------------------
-menu: $(MENU_ELF)
+# ---- LVGL static library --------------------------------------------------
+lvgl: $(LVGL_A)
 
-# Build the Rust staticlib for the context menu (GPU backend)
-$(MENU_RUST_LIB): userspace/services/menu/Cargo.toml userspace/services/menu/src/lib.rs $(EGUI_VIRGL_LIB)
+# Ensure lv_conf.h is in the submodule dir (can't commit to upstream LVGL)
+$(LVGL_DIR)/lv_conf.h: lv_conf.h
+	cp $< $@
+
+$(BUILD_DIR)/lvgl/%.o: $(LVGL_DIR)/%.c $(LVGL_DIR)/lv_conf.h
 	@mkdir -p $(dir $@)
-	cd userspace/services/menu && CARGO_TARGET_DIR="$(CURDIR)/userspace/services/menu/target" cargo build --release --target x86_64-unknown-none
-	cp userspace/services/menu/target/x86_64-unknown-none/release/libxos_context_menu.a $@
-	@echo ">> built $@"
+	$(CC) $(LVGL_CFLAGS) -c $< -o $@
 
-$(MENU_ELF): userspace/services/menu/shim.c userspace/services/menu/start.S $(MENU_RUST_LIB) $(EGUI_VIRGL_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/services/menu/menu.ld
+$(LVGL_A): $(LVGL_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/services/menu/start.S -o $(BUILD_DIR)/userspace/services/menu/start.o
-	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -c userspace/services/menu/shim.c -o $(BUILD_DIR)/userspace/services/menu/shim.o
-	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o
-	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o
-	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/services/menu/menu.ld \
-	  $(BUILD_DIR)/userspace/services/menu/start.o \
-	  $(BUILD_DIR)/userspace/services/menu/shim.o \
-	  $(BUILD_DIR)/userspace/services/menu/menu_syscalls.o \
-	  $(BUILD_DIR)/userspace/services/menu/menu_xos_syscall.o \
-	  $(MENU_RUST_LIB) $(EGUI_VIRGL_LIB) $(NEWLIB_LIBS) \
-	  -o $@
-	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
-	@echo ">> linked $@"
+	$(LLVM_AR) rcs $@ $(LVGL_OBJS)
+	@echo ">> built $@ ($(words $(LVGL_OBJS)) objects)"
 
-$(MENU_BLOB_C): $(MENU_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menu_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menu_elf_data = menu_elf_bytes;', 'size_t menu_elf_len = sizeof(menu_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(MENU_BLOB_O): $(MENU_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# ---- egui GPU backend + platform layer (Rust) ----------------------------
-egui-gpu: $(EGUI_VIRGL_LIB)
-
-$(EGUI_VIRGL_LIB): third_party/egui_virgl_backend/Cargo.toml third_party/egui_virgl_backend/src/lib.rs third_party/egui_virgl_backend/src/runtime.rs third_party/egui_software_backend/src/lib.rs
-	@mkdir -p $(dir $@)
-	# Force a local target dir — some environments redirect CARGO_TARGET_DIR
-	# to a cache, which left make linking a stale .a (old VirGL draw path).
-	cd third_party/egui_virgl_backend && CARGO_TARGET_DIR="$(CURDIR)/third_party/egui_virgl_backend/target" cargo build --release --target x86_64-unknown-none
-	cp third_party/egui_virgl_backend/target/x86_64-unknown-none/release/libegui_virgl_backend.a $@
-	@echo ">> built $@"
-
-# ---- terminal app (Rust + egui_platform) ---------------------------------
+# ---- terminal app (LVGL software-rendered) -------------------------------
 terminal: $(TERMINAL_ELF)
 
-$(TERMINAL_RUST_LIB): userspace/apps/terminal/Cargo.toml userspace/apps/terminal/src/lib.rs userspace/lib/egui_platform/src/lib.rs $(EGUI_VIRGL_LIB)
-	@mkdir -p $(dir $@)
-	cd userspace/apps/terminal && CARGO_TARGET_DIR="$(CURDIR)/userspace/apps/terminal/target" cargo build --release --target x86_64-unknown-none
-	cp userspace/apps/terminal/target/x86_64-unknown-none/release/libxos_terminal.a $@
-	@echo ">> built $@"
-
-$(TERMINAL_ELF): userspace/apps/terminal/shim.c userspace/apps/terminal/start.S $(TERMINAL_RUST_LIB) $(EGUI_VIRGL_LIB) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/apps/terminal/terminal.ld
+$(TERMINAL_ELF): userspace/apps/terminal/main.c userspace/apps/terminal/start.S userspace/lib/lvgl_drv/xos_lvgl_drv.c userspace/lib/lvgl_drv/xos_lvgl_drv.h $(LVGL_A) userspace/lib/wm/wm.h userspace/runtime/syscall.c userspace/libc/syscalls.c userspace/apps/terminal/terminal.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/apps/terminal/start.S -o $(BUILD_DIR)/userspace/apps/terminal/start.o
-	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -Iuserspace/apps/terminal -c userspace/apps/terminal/shim.c -o $(BUILD_DIR)/userspace/apps/terminal/shim.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 \
+	  -Ithird_party/lvgl -Ithird_party/lvgl/src \
+	  -Iuserspace/lib/lvgl_drv -Iuserspace/lib/wm \
+	  -c userspace/apps/terminal/main.c -o $(BUILD_DIR)/userspace/apps/terminal/main.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 \
+	  -Ithird_party/lvgl -Ithird_party/lvgl/src \
+	  -Iuserspace/lib/lvgl_drv -Iuserspace/lib/wm \
+	  -c userspace/lib/lvgl_drv/xos_lvgl_drv.c -o $(BUILD_DIR)/userspace/apps/terminal/drv.o
 	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/apps/terminal/term_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/apps/terminal/term_xos_syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/apps/terminal/terminal.ld \
 	  $(BUILD_DIR)/userspace/apps/terminal/start.o \
-	  $(BUILD_DIR)/userspace/apps/terminal/shim.o \
+	  $(BUILD_DIR)/userspace/apps/terminal/main.o \
+	  $(BUILD_DIR)/userspace/apps/terminal/drv.o \
 	  $(BUILD_DIR)/userspace/apps/terminal/term_syscalls.o \
 	  $(BUILD_DIR)/userspace/apps/terminal/term_xos_syscall.o \
-	  $(TERMINAL_RUST_LIB) $(EGUI_VIRGL_LIB) $(NEWLIB_LIBS) \
+	  $(LVGL_A) $(NEWLIB_LIBS) \
 	  -o $@
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"

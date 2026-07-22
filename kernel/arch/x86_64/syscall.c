@@ -189,8 +189,6 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     extern size_t zsh_elf_len;
     extern const uint8_t *cmds_elf_data;
     extern size_t cmds_elf_len;
-    extern const uint8_t *menu_elf_data;
-    extern size_t menu_elf_len;
     extern const uint8_t *terminal_elf_data;
     extern size_t terminal_elf_len;
     const uint8_t *data = NULL;
@@ -200,7 +198,6 @@ static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
     else if (index == 2) { data = dock_elf_data; len = dock_elf_len; }
     else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
     else if (index == 5) { data = cmds_elf_data; len = cmds_elf_len; }
-    else if (index == 6) { data = menu_elf_data; len = menu_elf_len; }
     else if (index == 7) { data = terminal_elf_data; len = terminal_elf_len; }
     else return 0;
     if (!ubuf) return len;

@@ -171,7 +171,6 @@ void init_main(void) {
     spawn_blob(1, "menubar");
     spawn_blob(2, "dock");
     /* Terminal before zsh so SHELL_BRIDGE is registered when the shell looks it up. */
-    spawn_blob(6, "menu");
     spawn_blob(7, "terminal");
     spawn_blob(4, "zsh");
 

@@ -1,0 +1,288 @@
+#include "xos_lvgl_drv.h"
+#include "wm.h"
+#include "kernel/include/syscall.h"
+#include "kernel/include/ipc.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- Internal state ---------------------------------------------------- */
+
+static xos_lvgl_ctx_t *g_ctx = NULL;
+
+/* Mouse state for LVGL indev */
+static int32_t  s_mouse_x = 0;
+static int32_t  s_mouse_y = 0;
+static bool     s_mouse_pressed = false;
+static int32_t  s_mouse_wheel = 0;
+
+/* Keyboard state for LVGL indev */
+static uint32_t s_last_key = 0;
+static bool     s_key_pressed = false;
+
+/* IPC port for receiving compositor events */
+static port_handle_t s_ipc_port = PORT_NULL;
+
+/* Optional key event hook (set by terminal app) */
+static xos_key_hook_t s_key_hook = NULL;
+
+void xos_lvgl_set_key_hook(xos_key_hook_t hook) {
+    s_key_hook = hook;
+}
+
+/* ---- Display flush callback -------------------------------------------- */
+
+static void xos_flush_cb(lv_display_t *disp, const lv_area_t *area,
+                         uint8_t *px_map)
+{
+    xos_lvgl_ctx_t *ctx = (xos_lvgl_ctx_t *)lv_display_get_user_data(disp);
+    if (!ctx || !ctx->surface_buf) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    int32_t w = area->x2 - area->x1 + 1;
+    int32_t h = area->y2 - area->y1 + 1;
+
+    /* LVGL renders in XRGB8888 (32-bit). Copy the dirty area to the
+     * compositor surface buffer. */
+    uint32_t *src = (uint32_t *)px_map;
+    uint32_t *dst = ctx->surface_buf;
+    int32_t surf_stride = ctx->width;
+
+    for (int32_t y = 0; y < h; y++) {
+        uint32_t *s = src + y * w;
+        uint32_t *d = dst + (area->y1 + y) * surf_stride + area->x1;
+        memcpy(d, s, (size_t)w * 4);
+    }
+
+    /* Notify compositor of dirty rect */
+    wm_dirty_msg_t dm;
+    memset(&dm, 0, sizeof(dm));
+    dm.type = WM_SURFACE_DIRTY;
+    dm.surface_idx = ctx->surface_idx;
+    dm.x = (uint32_t)area->x1;
+    dm.y = (uint32_t)area->y1;
+    dm.w = (uint32_t)w;
+    dm.h = (uint32_t)h;
+    dm.flags = 0;
+
+    ipc_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = IPC_MSG_EVENT;
+    msg.sender_pid = syscall0(SYS_PROC_PID);
+    msg.payload_len = sizeof(dm);
+    memcpy(msg.payload, &dm, sizeof(dm));
+
+    port_handle_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+    if (cp) sys_port_send(cp, &msg);
+
+    lv_display_flush_ready(disp);
+}
+
+/* ---- Mouse indev read callback ----------------------------------------- */
+
+static void xos_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    data->point.x = s_mouse_x;
+    data->point.y = s_mouse_y;
+    data->state = s_mouse_pressed ? LV_INDEV_STATE_PRESSED
+                                  : LV_INDEV_STATE_RELEASED;
+    if (s_mouse_wheel != 0) {
+        data->enc_diff = s_mouse_wheel;
+        s_mouse_wheel = 0;
+    } else {
+        data->enc_diff = 0;
+    }
+}
+
+/* ---- Keyboard indev read callback -------------------------------------- */
+
+static void xos_key_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    data->key = s_last_key;
+    data->state = s_key_pressed ? LV_INDEV_STATE_PRESSED
+                                : LV_INDEV_STATE_RELEASED;
+}
+
+/* ---- Compositor surface creation --------------------------------------- */
+
+static int create_compositor_surface(xos_lvgl_ctx_t *ctx,
+                                     int32_t x, int32_t y,
+                                     int32_t w, int32_t h,
+                                     uint32_t flags, const char *title)
+{
+    s_ipc_port = sys_port_create();
+    if (!s_ipc_port) return -1;
+
+    wm_create_msg_t cm;
+    memset(&cm, 0, sizeof(cm));
+    cm.type = WM_CREATE_SURFACE;
+    cm.x = x;
+    cm.y = y;
+    cm.w = (uint32_t)w;
+    cm.h = (uint32_t)h;
+    cm.flags = flags;
+    cm.owner_pid = (uint32_t)syscall0(SYS_PROC_PID);
+    cm.reply_port = s_ipc_port;
+    if (title) {
+        for (int i = 0; title[i] && i < 31; i++)
+            cm.title[i] = title[i];
+    }
+
+    ipc_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = IPC_MSG_REQUEST;
+    msg.sender_pid = syscall0(SYS_PROC_PID);
+    msg.payload_len = sizeof(cm);
+    memcpy(msg.payload, &cm, sizeof(cm));
+
+    /* Look up composer port */
+    port_handle_t cp = 0;
+    for (int r = 0; r < 500 && !cp; r++) {
+        cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+        if (!cp) syscall0(SYS_YIELD);
+    }
+    if (!cp || !sys_port_send(cp, &msg)) return -1;
+
+    /* Wait for surface ready reply */
+    ipc_msg_t re;
+    int got = 0;
+    for (int r = 0; r < 300 && !got; r++) {
+        if (sys_port_recv(s_ipc_port, &re, 0)) {
+            got = 1;
+            break;
+        }
+        syscall0(SYS_YIELD);
+    }
+    if (!got) return -1;
+
+    wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
+    ctx->surface_buf = (uint32_t *)srm->buf_vaddr;
+    ctx->surface_idx = srm->surface_idx;
+    return 0;
+}
+
+/* ---- Public API -------------------------------------------------------- */
+
+int xos_lvgl_init(xos_lvgl_ctx_t *ctx,
+                  int32_t x, int32_t y, int32_t w, int32_t h,
+                  uint32_t wm_flags, const char *title)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->width = w;
+    ctx->height = h;
+    g_ctx = ctx;
+
+    /* Create compositor surface */
+    if (create_compositor_surface(ctx, x, y, w, h, wm_flags, title) < 0)
+        return -1;
+
+    /* Initialize LVGL core */
+    lv_init();
+
+    /* Allocate draw buffers — 1/2 screen each for double buffering */
+    size_t buf_size = (size_t)w * h * 4 / 2;
+    ctx->draw_buf1 = malloc(buf_size);
+    ctx->draw_buf2 = malloc(buf_size);
+    if (!ctx->draw_buf1 || !ctx->draw_buf2) return -1;
+
+    /* Create LVGL display */
+    ctx->disp = lv_display_create(w, h);
+    lv_display_set_user_data(ctx->disp, ctx);
+    lv_display_set_buffers(ctx->disp,
+                           ctx->draw_buf1, ctx->draw_buf2,
+                           buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(ctx->disp, xos_flush_cb);
+
+    /* Create mouse indev */
+    ctx->mouse = lv_indev_create();
+    lv_indev_set_type(ctx->mouse, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(ctx->mouse, xos_mouse_read_cb);
+    lv_indev_set_user_data(ctx->mouse, ctx);
+
+    /* Create keyboard indev */
+    ctx->keyboard = lv_indev_create();
+    lv_indev_set_type(ctx->keyboard, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_read_cb(ctx->keyboard, xos_key_read_cb);
+    lv_indev_set_user_data(ctx->keyboard, ctx);
+
+    return 0;
+}
+
+void xos_lvgl_pump(xos_lvgl_ctx_t *ctx)
+{
+    /* Tick LVGL by 1ms (called ~every loop iteration) */
+    lv_tick_inc(1);
+
+    /* Process incoming IPC messages from compositor */
+    if (s_ipc_port) {
+        ipc_msg_t msg;
+        for (int i = 0; i < 8; i++) {
+            if (!sys_port_recv(s_ipc_port, &msg, 0))
+                break;
+            if (msg.payload_len < 4) continue;
+            uint32_t type = *(uint32_t *)msg.payload;
+            if (type == WM_MOUSE_EVENT) {
+                wm_mouse_event_msg_t *me = (wm_mouse_event_msg_t *)msg.payload;
+                xos_lvgl_mouse_event(ctx, me->x, me->y,
+                                     me->button, me->action);
+            } else if (type == WM_KEY_EVENT) {
+                wm_key_event_msg_t *ke = (wm_key_event_msg_t *)msg.payload;
+                xos_lvgl_key_event(ctx, ke->scancode, ke->ch,
+                                   ke->key, ke->action);
+            } else if (type == WM_WINDOW_CLOSE) {
+                ctx->closed = true;
+            }
+        }
+    }
+
+    /* Run LVGL timer handler (processes animations, refresh, etc.) */
+    lv_timer_handler();
+}
+
+void xos_lvgl_mouse_event(xos_lvgl_ctx_t *ctx,
+                          int32_t x, int32_t y,
+                          uint32_t button, uint32_t action)
+{
+    s_mouse_x = x;
+    s_mouse_y = y;
+    if (action == 1) {       /* down */
+        if (button == 1) s_mouse_pressed = true;
+    } else if (action == 2) { /* up */
+        if (button == 1) s_mouse_pressed = false;
+    } else if (action == 3) { /* wheel */
+        s_mouse_wheel += (int32_t)button;
+    }
+}
+
+void xos_lvgl_key_event(xos_lvgl_ctx_t *ctx,
+                        uint8_t scancode, char ch, uint16_t key,
+                        uint32_t action)
+{
+    /* Call user hook first (e.g. terminal intercepts keys for shell) */
+    if (s_key_hook) s_key_hook(scancode, ch, key, action);
+
+    /* Map to LVGL key codes */
+    if (ch >= 0x20 && ch < 0x7f) {
+        s_last_key = (uint32_t)ch;
+    } else if (key != 0) {
+        /* Map special keys — wm.h doesn't define KEY_* constants,
+         * so we use LVGL's key defines directly */
+        switch (key) {
+            case 0x01: s_last_key = LV_KEY_UP; break;
+            case 0x02: s_last_key = LV_KEY_DOWN; break;
+            case 0x03: s_last_key = LV_KEY_LEFT; break;
+            case 0x04: s_last_key = LV_KEY_RIGHT; break;
+            case 0x05: s_last_key = LV_KEY_ESC; break;
+            case 0x06: s_last_key = LV_KEY_ENTER; break;
+            case 0x07: s_last_key = LV_KEY_BACKSPACE; break;
+            case 0x08: s_last_key = LV_KEY_DEL; break;
+            case 0x09: s_last_key = LV_KEY_NEXT; break;
+            default:   s_last_key = key; break;
+        }
+    } else {
+        s_last_key = 0;
+    }
+
+    s_key_pressed = (action == 0);  /* 0=down, 1=up */
+}
