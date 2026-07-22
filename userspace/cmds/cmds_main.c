@@ -32,20 +32,6 @@
 /* When launched from the terminal shell, attach stdout/stderr to the bridge. */
 extern void set_shell_bridge(port_handle_t input_port, port_handle_t output_port);
 
-/* memmem is a GNU extension not available in newlib */
-static void *memmem(const void *haystack, size_t haystacklen,
-                    const void *needle, size_t needlelen) {
-    if (needlelen == 0) return (void *)haystack;
-    if (haystacklen < needlelen) return NULL;
-    const char *h = (const char *)haystack;
-    const char *n = (const char *)needle;
-    for (size_t i = 0; i <= haystacklen - needlelen; i++) {
-        if (h[i] == n[0] && memcmp(h + i, n, needlelen) == 0)
-            return (void *)(h + i);
-    }
-    return NULL;
-}
-
 /* -------------------------------------------------------------------------- */
 /* Dispatch table */
 

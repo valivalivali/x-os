@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <sys/times.h>
 #include <sys/utsname.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <termios.h>
 
@@ -933,9 +934,96 @@ int gethostname(char *name, size_t len) {
     return 0;
 }
 
+int uname(struct utsname *buf) __attribute__((weak));
+int uname(struct utsname *buf) {
+    if (!buf) return -1;
+    /* Manual string copies — avoid SSE/memcpy */
+    int i;
+    const char *s;
+    for (i = 0, s = "X-OS"; s[i] && i < 255; i++) buf->sysname[i] = s[i];
+    buf->sysname[i] = '\0';
+    for (i = 0, s = "x-os"; s[i] && i < 255; i++) buf->nodename[i] = s[i];
+    buf->nodename[i] = '\0';
+    for (i = 0, s = "1.0"; s[i] && i < 255; i++) buf->release[i] = s[i];
+    buf->release[i] = '\0';
+    for (i = 0, s = "X-OS 1.0"; s[i] && i < 255; i++) buf->version[i] = s[i];
+    buf->version[i] = '\0';
+    for (i = 0, s = "x86_64"; s[i] && i < 255; i++) buf->machine[i] = s[i];
+    buf->machine[i] = '\0';
+    return 0;
+}
+
 /* -------------------------------------------------------------------------- */
-/* POSIX socket wrappers — newlib doesn't provide these, so we define them
- * here using the X OS kernel syscall interface. */
+/* Directory operations — opendir/readdir/closedir using XFS sys_readdir */
+
+#define XFS_NAME_MAX 128
+
+typedef struct {
+    char     name[XFS_NAME_MAX];
+    uint32_t inode_block;
+    uint32_t size;
+    uint16_t flags;
+    uint16_t reserved;
+} xfs_dirent_raw_t;
+
+DIR *opendir(const char *path) __attribute__((weak));
+DIR *opendir(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    DIR *d = (DIR *)malloc(sizeof(DIR));
+    if (!d) { close(fd); return NULL; }
+    d->dd_fd = fd;
+    d->dd_loc = 0;
+    d->dd_size = 0;
+    d->dd_bufsize = sizeof(xfs_dirent_raw_t) * 64;
+    d->dd_buf = (char *)malloc(d->dd_bufsize);
+    if (!d->dd_buf) { free(d); close(fd); return NULL; }
+    d->dd_flags = 0;
+    return d;
+}
+
+struct dirent *readdir(DIR *d) __attribute__((weak));
+struct dirent *readdir(DIR *d) {
+    if (!d || d->dd_fd < 0) return NULL;
+    /* We read entries in bulk; dd_loc tracks position in the buffer */
+    if (d->dd_loc >= d->dd_size) {
+        int n = sys_readdir(d->dd_fd, d->dd_buf, 64);
+        if (n <= 0) return NULL;
+        d->dd_size = n * sizeof(xfs_dirent_raw_t);
+        d->dd_loc = 0;
+    }
+    xfs_dirent_raw_t *raw = (xfs_dirent_raw_t *)(d->dd_buf + d->dd_loc);
+    d->dd_loc += sizeof(xfs_dirent_raw_t);
+    /* Copy to static result (POSIX allows this) */
+    static struct dirent result;
+    result.d_fileno = raw->inode_block;
+    result.d_reclen = sizeof(struct dirent);
+    result.d_type = (raw->flags & 1) ? DT_DIR : DT_REG;
+    result.d_namlen = 0;
+    while (result.d_namlen < 255 && raw->name[result.d_namlen]) {
+        result.d_name[result.d_namlen] = raw->name[result.d_namlen];
+        result.d_namlen++;
+    }
+    result.d_name[result.d_namlen] = '\0';
+    return &result;
+}
+
+int closedir(DIR *d) __attribute__((weak));
+int closedir(DIR *d) {
+    if (!d) return -1;
+    if (d->dd_fd >= 0) close(d->dd_fd);
+    if (d->dd_buf) free(d->dd_buf);
+    free(d);
+    return 0;
+}
+
+void rewinddir(DIR *d) __attribute__((weak));
+void rewinddir(DIR *d) {
+    if (!d) return;
+    d->dd_loc = 0;
+    d->dd_size = 0;
+    lseek(d->dd_fd, 0, SEEK_SET);
+}
 
 /* Minimal sockaddr / sockaddr_in definitions (no newlib sys/socket.h) */
 struct xos_sockaddr {

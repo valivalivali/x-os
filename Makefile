@@ -184,7 +184,7 @@ LIBC_CFLAGS := \
   -mno-sse -mno-sse2 -mno-mmx \
   -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove \
   -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -I. -I$(LIMINE_DIR) $(NEWLIB_CFLAGS) \
+  -I. -Iuserspace/libc/include -I$(LIMINE_DIR) $(NEWLIB_CFLAGS) \
   -D_POSIX_TIMERS=1 -D_POSIX_MONOTONIC_CLOCK=1
 
 LIBC_LDFLAGS := \
