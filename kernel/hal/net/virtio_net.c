@@ -141,14 +141,18 @@ int virtio_net_send(const void *data, int len) {
     uint16_t flags[1] = { 0 };
     uint16_t desc_idx;
 
-    if (!virtqueue_add_buf(&g_txq, &desc_idx, bufs, lens, flags, 1))
+    if (!virtqueue_add_buf(&g_txq, &desc_idx, bufs, lens, flags, 1)) {
+        kprintf("[virtio-net] TX: virtqueue_add_buf failed\n");
         return -1;
+    }
 
     virtio_pci_notify_queue(&g_netdev, &g_txq);
 
     /* Wait for TX completion */
-    if (!virtio_pci_wait_for_queue(&g_netdev, &g_txq, 5000000))
+    if (!virtio_pci_wait_for_queue(&g_netdev, &g_txq, 5000000)) {
+        kprintf("[virtio-net] TX: wait_for_queue timeout (len=%d)\n", len);
         return -1;
+    }
 
     uint16_t used_idx;
     uint32_t used_len;

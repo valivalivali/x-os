@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2012 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995, 1997 Apple Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,407 +27,367 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)filedesc.h	8.1 (Berkeley) 6/2/93
  */
 
 #ifndef _SYS_FILEDESC_H_
-#define _SYS_FILEDESC_H_
+#define	_SYS_FILEDESC_H_
 
-#include <sys/appleapiopts.h>
+#include <sys/types.h>
+#include <sys/caprights.h>
+#include <sys/queue.h>
+#include <sys/event.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
+#include <sys/priority.h>
+#include <sys/seqc.h>
+#include <sys/sx.h>
+#include <sys/_smr.h>
+#include <sys/smr_types.h>
+
+#include <machine/_limits.h>
+
+struct filecaps {
+	cap_rights_t	 fc_rights;	/* per-descriptor capability rights */
+	u_long		*fc_ioctls;	/* per-descriptor allowed ioctls */
+	int16_t		 fc_nioctls;	/* fc_ioctls array size */
+	uint32_t	 fc_fcntls;	/* per-descriptor allowed fcntls */
+};
+
+struct filedescent {
+	struct file	*fde_file;	/* file structure for open file */
+	struct filecaps	 fde_caps;	/* per-descriptor rights */
+	uint8_t		 fde_flags;	/* per-process open file flags */
+	seqc_t		 fde_seqc;	/* keep file and caps in sync */
+};
+#define	fde_rights	fde_caps.fc_rights
+#define	fde_fcntls	fde_caps.fc_fcntls
+#define	fde_ioctls	fde_caps.fc_ioctls
+#define	fde_nioctls	fde_caps.fc_nioctls
+
+#ifdef _KERNEL
+static inline void
+fde_copy(struct filedescent *from, struct filedescent *to)
+{
+
+	to->fde_file = from->fde_file;
+	to->fde_caps = from->fde_caps;
+	to->fde_flags = from->fde_flags;
+}
+#endif
+
+struct fdescenttbl {
+	int	fdt_nfiles;		/* number of open files allocated */
+	struct	filedescent fdt_ofiles[0];	/* open files */
+};
+#define	fd_seqc(fdt, fd)	(&(fdt)->fdt_ofiles[(fd)].fde_seqc)
+
+#define NDSLOTTYPE	u_long
+
+/*
+ * This struct is copy-on-write and allocated from an SMR zone.
+ * All fields are constant after initialization apart from the reference count.
+ * The ABI root directory is initialized as the root directory and changed
+ * during process transiting to or from non-native ABI.
+ *
+ * Check pwd_* routines for usage.
+ */
+struct pwd {
+	u_int		pwd_refcount;
+	struct	vnode	*pwd_cdir;	/* current directory */
+	struct	vnode	*pwd_rdir;	/* root directory */
+	struct	vnode	*pwd_jdir;	/* jail root directory */
+	struct	vnode	*pwd_adir;	/* abi root directory */
+};
+typedef SMR_POINTER(struct pwd *) smrpwd_t;
+
+struct pwddesc {
+	struct mtx	pd_lock;	/* protects members of this struct */
+	smrpwd_t	pd_pwd;		/* directories */
+	u_int		pd_refcount;
+	u_short		pd_cmask;	/* mask for file creation */
+};
 
 /*
  * This structure is used for the management of descriptors.  It may be
  * shared by multiple processes.
- *
- * A process is initially started out with NDFILE descriptors [XXXstored within
- * this structureXXX], selected to be enough for typical applications based on
- * the historical limit of 20 open files (and the usage of descriptors by
- * shells).  If these descriptors are exhausted, a larger descriptor table
- * may be allocated, up to a process' resource limit; [XXXthe internal arrays
- * are then unusedXXX].  The initial expansion is set to NDEXTENT; each time
- * it runs out, it is doubled until the resource limit is reached. NDEXTENT
- * should be selected to be the biggest multiple of OFILESIZE (see below)
- * that will fit in a power-of-two sized piece of memory.
  */
-#define NDFILE          25              /* 125 bytes */
-#define NDEXTENT        50              /* 250 bytes in 256-byte alloc. */
-
-#ifdef XNU_KERNEL_PRIVATE
-
-#include <sys/kernel_types.h>
-#include <kern/locks.h>
-
-struct klist;
-struct kqwllist;
-struct ucred;
-
-__options_decl(filedesc_flags_t, uint8_t, {
-	/*
-	 * process was chrooted... keep track even
-	 * if we're force unmounted and unable to
-	 * take a vnode_ref on fd_rdir during a fork
-	 */
-	FD_CHROOT                     = 0x01,
-
-	/*
-	 * process has created a kqworkloop that
-	 * requires manual cleanup on exit
-	 */
-	FD_WORKLOOP                   = 0x02,
-
-#if CONFIG_PROC_RESOURCE_LIMITS
-	/* process has exceeded fd_nfiles soft limit */
-	FD_ABOVE_SOFT_LIMIT           = 0x04,
-	/* process has exceeded fd_nfiles hard limit */
-	FD_ABOVE_HARD_LIMIT           = 0x08,
-	KQWL_ABOVE_SOFT_LIMIT         = 0x10,
-	KQWL_ABOVE_HARD_LIMIT         = 0x20,
-#endif /* CONFIG_PROC_RESOURCE_LIMITS */
-});
-
-#define FILEDESC_FORK_INHERITED_MASK (FD_CHROOT)
-
 struct filedesc {
-	lck_mtx_t           fd_lock;        /* (L) lock to protect fdesc */
-	uint8_t             fd_fpdrainwait; /* (L) has drain waiters */
-	filedesc_flags_t    fd_flags;       /* (L) filedesc flags */
-	u_short             fd_cmask;       /* (L) mask for file creation */
-	int                 fd_nfiles;      /* (L) number of open fdesc slots allocated */
-	int                 fd_afterlast;   /* (L) high-water mark of fd_ofiles */
-	int                 fd_freefile;    /* (L) approx. next free file */
-#if CONFIG_PROC_RESOURCE_LIMITS
-#define FD_LIMIT_SENTINEL ((int) (-1))
-	int                 fd_nfiles_open;
-	int                 fd_nfiles_soft_limit; /* (L) fd_nfiles soft limit to trigger guard. */
-	int                 fd_nfiles_hard_limit; /* (L) fd_nfiles hard limit to terminate. */
-
-#define KQWL_LIMIT_SENTINEL ((int) (-1))
-	int                 num_kqwls;           /* Number of kqwls in the fd_kqhash */
-	int                 kqwl_dyn_soft_limit; /* (L) soft limit for dynamic kqueue */
-	int                 kqwl_dyn_hard_limit; /* (L) hard limit for dynamic kqueue */
-#endif /* CONFIG_PROC_RESOURCE_LIMITS */
-
-	int                 fd_knlistsize;  /* (L) size of knlist */
-	int                 unused_padding;/* Due to alignment */
-	struct fileproc   **XNU_PTRAUTH_SIGNED_PTR("filedesc.fd_ofiles") fd_ofiles; /* (L) file structures for open files */
-	char               *fd_ofileflags;  /* (L) per-process open file flags */
-
-	struct  klist      *fd_knlist;      /* (L) list of attached knotes */
-
-	struct  kqworkq    *fd_wqkqueue;    /* (L) the workq kqueue */
-	struct  vnode      *fd_cdir;        /* (L) current directory */
-	struct  vnode      *fd_rdir;        /* (L) root directory */
-	lck_rw_t            fd_dirs_lock;   /* keeps fd_cdir and fd_rdir stable across a lookup */
-
-	lck_mtx_t           fd_kqhashlock;  /* (Q) lock for dynamic kqueue hash */
-	u_long              fd_kqhashmask;  /* (Q) size of dynamic kqueue hash */
-	struct  kqwllist   *fd_kqhash;      /* (Q) hash table for dynamic kqueues */
-
-	lck_mtx_t           fd_knhashlock;  /* (N) lock for hash table for attached knotes */
-	u_long              fd_knhashmask;  /* (N) size of knhash */
-	struct  klist      *fd_knhash;      /* (N) hash table for attached knotes */
+	struct	fdescenttbl *fd_files;	/* open files table */
+	NDSLOTTYPE *fd_map;		/* bitmap of free fds */
+	int	fd_freefile;		/* approx. next free file */
+	int	fd_refcnt;		/* thread reference count */
+	int	fd_holdcnt;		/* hold count on structure + mutex */
+	struct	sx fd_sx;		/* protects members of this struct */
+	struct	kqlist fd_kqlist;	/* list of kqueues on this filedesc */
+	int	fd_holdleaderscount;	/* block fdfree() for shared close() */
+	int	fd_holdleaderswakeup;	/* fdfree() needs wakeup */
 };
 
-#define fdt_flag_test(fdt, flag)        (((fdt)->fd_flags & (flag)) != 0)
-#define fdt_flag_set(fdt, flag)         ((void)((fdt)->fd_flags |= (flag)))
-#define fdt_flag_clear(fdt, flag)       ((void)((fdt)->fd_flags &= ~(flag)))
-
-#if CONFIG_PROC_RESOURCE_LIMITS
-#define fd_above_soft_limit_notified(fdp)                 fdt_flag_test(fdp, FD_ABOVE_SOFT_LIMIT)
-#define fd_above_hard_limit_notified(fdp)                 fdt_flag_test(fdp, FD_ABOVE_HARD_LIMIT)
-#define fd_above_soft_limit_send_notification(fdp)      fdt_flag_set(fdp, FD_ABOVE_SOFT_LIMIT)
-#define fd_above_hard_limit_send_notification(fdp)      fdt_flag_set(fdp, FD_ABOVE_HARD_LIMIT)
-
-#define kqwl_above_soft_limit_notified(fdp)              fdt_flag_test(fdp, KQWL_ABOVE_SOFT_LIMIT)
-#define kqwl_above_hard_limit_notified(fdp)              fdt_flag_test(fdp, KQWL_ABOVE_HARD_LIMIT)
-#define kqwl_above_soft_limit_send_notification(fdp)     fdt_flag_set(fdp, KQWL_ABOVE_SOFT_LIMIT)
-#define kqwl_above_hard_limit_send_notification(fdp)     fdt_flag_set(fdp, KQWL_ABOVE_HARD_LIMIT)
-#endif /* CONFIG_PROC_RESOURCE_LIMITS */
+/*
+ * Structure to keep track of (process leader, struct fildedesc) tuples.
+ * Each process has a pointer to such a structure when detailed tracking
+ * is needed, e.g., when rfork(RFPROC | RFMEM) causes a file descriptor
+ * table to be shared by processes having different "p_leader" pointers
+ * and thus distinct POSIX style locks.
+ *
+ * fdl_refcount and fdl_holdcount are protected by struct filedesc mtx.
+ */
+struct filedesc_to_leader {
+	int		fdl_refcount;	/* references from struct proc */
+	int		fdl_holdcount;	/* temporary hold during closef */
+	int		fdl_wakeup;	/* fdfree() waits on closef() */
+	struct proc	*fdl_leader;	/* owner of POSIX locks */
+	/* Circular list: */
+	struct filedesc_to_leader *fdl_prev;
+	struct filedesc_to_leader *fdl_next;
+};
+#define	fd_nfiles	fd_files->fdt_nfiles
+#define	fd_ofiles	fd_files->fdt_ofiles
 
 /*
  * Per-process open flags.
  */
-#define UF_RESERVED     0x04            /* open pending / in progress */
-#define UF_CLOSING      0x08            /* close in progress */
-#define UF_RESVWAIT     0x10            /* close in progress */
-#define UF_INHERIT      0x20            /* "inherit-on-exec" */
+#define	UF_EXCLOSE	0x01		/* auto-close on exec */
+#define	UF_RESOLVE_BENEATH 0x02		/* lookups must be beneath this dir */
+#define	UF_FOCLOSE	0x04		/* auto-close on fork */
+
+#ifdef _KERNEL
+
+/* Lock a paths descriptor table. */
+#define	PWDDESC_LOCK(pdp)	(&(pdp)->pd_lock)
+#define	PWDDESC_LOCK_INIT(pdp) \
+    mtx_init(PWDDESC_LOCK(pdp), "pwddesc", NULL, MTX_DEF)
+#define	PWDDESC_LOCK_DESTROY(pdp)	mtx_destroy(PWDDESC_LOCK(pdp))
+#define	PWDDESC_XLOCK(pdp)	mtx_lock(PWDDESC_LOCK(pdp))
+#define	PWDDESC_XUNLOCK(pdp)	mtx_unlock(PWDDESC_LOCK(pdp))
+#define	PWDDESC_LOCK_ASSERT(pdp, what) \
+    mtx_assert(PWDDESC_LOCK(pdp), (what))
+#define	PWDDESC_ASSERT_XLOCKED(pdp) \
+    PWDDESC_LOCK_ASSERT((pdp), MA_OWNED)
+#define	PWDDESC_ASSERT_UNLOCKED(pdp) \
+    PWDDESC_LOCK_ASSERT((pdp), MA_NOTOWNED)
+
+#define	PWDDESC_XLOCKED_LOAD_PWD(pdp)	({					\
+	struct pwddesc *_pdp = (pdp);						\
+	struct pwd *_pwd;							\
+	_pwd = smr_serialized_load(&(_pdp)->pd_pwd,				\
+	    (PWDDESC_ASSERT_XLOCKED(_pdp), true));				\
+	_pwd;									\
+})
+
+/* Lock a file descriptor table. */
+#define	FILEDESC_LOCK_INIT(fdp)	sx_init(&(fdp)->fd_sx, "filedesc structure")
+#define	FILEDESC_LOCK_DESTROY(fdp)	sx_destroy(&(fdp)->fd_sx)
+#define	FILEDESC_LOCK(fdp)	(&(fdp)->fd_sx)
+#define	FILEDESC_XLOCK(fdp)	sx_xlock(&(fdp)->fd_sx)
+#define	FILEDESC_XUNLOCK(fdp)	sx_xunlock(&(fdp)->fd_sx)
+#define	FILEDESC_SLOCK(fdp)	sx_slock(&(fdp)->fd_sx)
+#define	FILEDESC_SUNLOCK(fdp)	sx_sunlock(&(fdp)->fd_sx)
+
+#define	FILEDESC_LOCK_ASSERT(fdp)	sx_assert(&(fdp)->fd_sx, SX_LOCKED | \
+					    SX_NOTRECURSED)
+#define	FILEDESC_XLOCK_ASSERT(fdp)	sx_assert(&(fdp)->fd_sx, SX_XLOCKED | \
+					    SX_NOTRECURSED)
+#define	FILEDESC_UNLOCK_ASSERT(fdp)	sx_assert(&(fdp)->fd_sx, SX_UNLOCKED)
+
+#define	FILEDESC_IS_ONLY_USER(fdp)	({					\
+	struct filedesc *_fdp = (fdp);						\
+	MPASS(curproc->p_fd == _fdp);						\
+	(curproc->p_numthreads == 1 && refcount_load(&_fdp->fd_refcnt) == 1);	\
+})
+
+#else
 
 /*
- * Storage required per open file descriptor.
+ * Accessor for libkvm et al.
  */
-#define OFILESIZE (sizeof(struct file *) + sizeof(char))
+#define	PWDDESC_KVM_LOAD_PWD(pdp)	({					\
+	struct pwddesc *_pdp = (pdp);						\
+	struct pwd *_pwd;							\
+	_pwd = smr_kvm_load(&(_pdp)->pd_pwd);					\
+	_pwd;									\
+})
 
-/*!
- * @function fdt_available
- *
- * @brief
- * Returns whether the file descritor table can accomodate
- * for @c n new entries.
- *
- * @discussion
- * The answer is only valid so long as the @c proc_fdlock() is held by the
- * caller.
- */
-extern bool
-fdt_available_locked(proc_t p, int n);
+#endif
 
-/*!
- * @struct fdt_iterator
- *
- * @brief
- * Type used to iterate a file descriptor table.
- */
-struct fdt_iterator {
-	int              fdti_fd;
-	struct fileproc *fdti_fp;
+#ifdef _KERNEL
+
+#include <machine/atomic.h>
+
+/* Operation types for kern_dup(). */
+enum {
+	FDDUP_NORMAL,		/* dup() behavior. */
+	FDDUP_FCNTL,		/* fcntl()-style errors. */
+	FDDUP_FIXED,		/* Force fixed allocation. */
+	FDDUP_LASTMODE,
 };
 
-/*!
- * @function fdt_next
- *
- * @brief
- * Seek the iterator forward.
- *
- * @discussion
- * The @c proc_fdlock() should be held by the caller.
- *
- * @param p
- * The process for which the file descriptor table is being iterated.
- *
- * @param fd
- * The current file file descriptor to scan from (exclusive).
- *
- * @param only_settled
- * When true, only fileprocs with @c UF_RESERVED set are returned.
- * If false, fileprocs that are in flux (@c UF_RESERVED is set) are returned.
- *
- * @returns
- * The next iterator position.
- * If @c fdti_fp is NULL, the iteration is done.
- */
-extern struct fdt_iterator
-fdt_next(proc_t p, int fd, bool only_settled);
+/* Flags for kern_dup(). */
+#define	FDDUP_FLAG_CLOEXEC	0x1	/* Atomically set UF_EXCLOSE. */
+#define	FDDUP_FLAG_CLOFORK	0x2	/* Atomically set UF_FOCLOSE. */
 
-/*!
- * @function fdt_next
- *
- * @brief
- * Seek the iterator backwards.
- *
- * @discussion
- * The @c proc_fdlock() should be held by the caller.
- *
- * @param p
- * The process for which the file descriptor table is being iterated.
- *
- * @param fd
- * The current file file descriptor to scan from (exclusive).
- *
- * @param only_settled
- * When true, only fileprocs with @c UF_RESERVED set are returned.
- * If false, fileprocs that are in flux (@c UF_RESERVED is set) are returned.
- *
- * @returns
- * The next iterator position.
- * If @c fdti_fp is NULL, the iteration is done.
- */
-extern struct fdt_iterator
-fdt_prev(proc_t p, int fd, bool only_settled);
+/* For backward compatibility. */
+#define	falloc(td, resultfp, resultfd, flags) \
+	falloc_caps(td, resultfp, resultfd, flags, NULL)
 
-/*!
- * @def fdt_foreach
- *
- * @brief
- * Convenience macro around @c fdt_next() to enumerates fileprocs in a process
- * file descriptor table.
- *
- * @discussion
- * The @c proc_fdlock() should be held by the caller.
- *
- * @param fp
- * The iteration variable.
- *
- * @param p
- * The process for which the file descriptor table is being iterated.
- */
-#define fdt_foreach(fp, p) \
-	for (struct fdt_iterator __fdt_it = fdt_next(p, -1, true); \
-	    ((fp) = __fdt_it.fdti_fp); \
-	    __fdt_it = fdt_next(p, __fdt_it.fdti_fd, true))
+struct mount;
+struct thread;
 
-/*!
- * @def fdt_foreach_fd
- *
- * @brief
- * When in an @c fdt_foreach() loop, return the current file descriptor
- * being inspected.
- */
-#define fdt_foreach_fd()  __fdt_it.fdti_fd
+static __inline void
+filecaps_init(struct filecaps *fcaps)
+{
 
-/*!
- * @function fdt_init
- *
- * @brief
- * Initializers a proc file descriptor table.
- *
- * @warning
- * The proc that is passed is supposed to have been zeroed out,
- * as this function is used to setup @c kernelproc's file descriptor table
- * and some fields are already initialized when fdt_init() is called.
- */
-extern void
-fdt_init(proc_t p);
+        bzero(fcaps, sizeof(*fcaps));
+        fcaps->fc_nioctls = -1;
+}
+bool	filecaps_copy(const struct filecaps *src, struct filecaps *dst,
+	    bool locked);
+void	filecaps_move(struct filecaps *src, struct filecaps *dst);
+void	filecaps_free(struct filecaps *fcaps);
 
-/*!
- * @function fdt_destroy
- *
- * @brief
- * Destroys locks from the file descriptor table.
- *
- * @description
- * This function destroys the file descriptor table locks.
- *
- * This cannot be done while the process this table belongs
- * to can be looked up.
- */
-extern void
-fdt_destroy(proc_t p);
+int	closef(struct file *fp, struct thread *td);
+void	closef_nothread(struct file *fp);
+int	descrip_check_write_mp(struct filedesc *fdp, struct mount *mp);
+int	dupfdopen(struct thread *td, struct filedesc *fdp, int dfd, int mode,
+	    int openerror, int *indxp);
+int	falloc_caps(struct thread *td, struct file **resultfp, int *resultfd,
+	    int flags, struct filecaps *fcaps);
+void	falloc_abort(struct thread *td, struct file *fp);
+int	_falloc_noinstall(struct thread *td, struct file **resultfp, u_int n);
+#define	falloc_noinstall(td, resultfp) _falloc_noinstall(td, resultfp, 1)
+void	_finstall(struct filedesc *fdp, struct file *fp, int fd, int flags,
+	    struct filecaps *fcaps);
+int	finstall(struct thread *td, struct file *fp, int *resultfd, int flags,
+	    struct filecaps *fcaps);
+int	finstall_refed(struct thread *td, struct file *fp, int *resultfd, int flags,
+	    struct filecaps *fcaps);
+int	fdalloc(struct thread *td, int minfd, int *result);
+int	fdallocn(struct thread *td, int minfd, int *fds, int n);
+int	fdcheckstd(struct thread *td);
+void	fdclose(struct thread *td, struct file *fp, int idx);
+void	fdcloseexec(struct thread *td);
+void	fdsetugidsafety(struct thread *td);
+struct	filedesc *fdcopy(struct filedesc *fdp, struct proc *p1);
+void	fdunshare(struct thread *td);
+void	fdescfree(struct thread *td);
+int	fdlastfile(struct filedesc *fdp);
+int	fdlastfile_single(struct filedesc *fdp);
+struct	filedesc *fdinit(void);
+struct	filedesc *fdshare(struct filedesc *fdp);
+struct filedesc_to_leader *
+	filedesc_to_leader_alloc(struct filedesc_to_leader *old,
+	    struct filedesc *fdp, struct proc *leader);
+struct filedesc_to_leader *
+	filedesc_to_leader_share(struct filedesc_to_leader *fdtol,
+	    struct filedesc *fdp);
+int	getvnode(struct thread *td, int fd, const cap_rights_t *rightsp,
+	    struct file **fpp);
+int	getvnode_path(struct thread *td, int fd, const cap_rights_t *rightsp,
+	    uint8_t *flagsp, struct file **fpp);
+void	mountcheckdirs(struct vnode *olddp, struct vnode *newdp);
 
-/*!
- * @function fdt_fork
- *
- * @brief
- * Clones a file descriptor table for the @c fork() system call.
- *
- * @discussion
- * This function internally takes and drops @c proc_fdlock().
- *
- * Files are copied directly, ignoring the new resource limits for the process
- * that's being copied into.  Since the descriptor references are just
- * additional references, this does not count against the number of open files
- * on the system.
- *
- * The struct filedesc includes the current working directory, and the current
- * root directory, if the process is chroot'ed.
- *
- * If the exec was called by a thread using a per thread current working
- * directory, we inherit the working directory from the thread making the call,
- * rather than from the process.
- *
- * In the case of a failure to obtain a reference, for most cases, the file
- * entry will be silently dropped.  There's an exception for the case of
- * a chroot dir, since a failure to to obtain a reference there would constitute
- * an "escape" from the chroot environment, which must not be allowed.
- *
- * @param child_fdt
- * The child process file descriptor table.
- *
- * @param parent_p
- * The parent process to clone the file descriptor table from.
- *
- * @param uth_cdir
- * The vnode for the current thread's current working directory if it is
- * different from the parent process one.
- *
- * @param in_exec
- * The duplication of fdt is happening for exec
- *
- * @returns
- * 0            Success
- * EPERM        Unable to acquire a reference to the current chroot directory
- * ENOMEM       Not enough memory to perform the clone operation
- */
-extern int
-fdt_fork(struct filedesc *child_fdt, proc_t parent_p, struct vnode *uth_cdir, bool in_exec);
-
-/*!
- * @function fdt_exec
- *
- * @brief
- * Perform close-on-exec processing for all files in a process
- * that are either marked as close-on-exec.
- *
- * @description
- * Also handles the case (via posix_spawn()) where -all- files except those
- * marked with "inherit" as treated as close-on-exec.
- *
- * This function internally takes and drops proc_fdlock()
- * But assumes tables don't grow/change while unlocked.
- *
- * @param p
- * The process whose file descriptor table is being filrered.
- *
- * @param posix_spawn_flags
- * A set of @c POSIX_SPAWN_* flags.
- *
- * @param thread
- * new thread
- *
- * @param in_exec
- * If the process is in exec
- */
-extern void
-fdt_exec(proc_t p, struct ucred *p_cred, short posix_spawn_flags, thread_t thread, bool in_exec);
-
-/*!
- * @function fdt_invalidate
- *
- * @brief
- * Invalidates a proc file descriptor table.
- *
- * @discussion
- * Closes all open files in the file descriptor table,
- * empties hash tables, etc...
- *
- * However, the fileproc arrays stay allocated to still allow external lookups.
- * These get cleaned up by @c fdt_destroy().
- *
- * This function internally takes and drops proc_fdlock().
- */
-extern void
-fdt_invalidate(proc_t p);
+int	fget_cap_noref(struct filedesc *fdp, int fd,
+	    const cap_rights_t *needrightsp, struct file **fpp,
+	    struct filecaps *havecapsp);
+int	fget_cap(struct thread *td, int fd, const cap_rights_t *needrightsp,
+	    uint8_t *flagsp, struct file **fpp, struct filecaps *havecapsp);
+/* Return a referenced file from an unlocked descriptor. */
+int	fget_unlocked(struct thread *td, int fd,
+	    const cap_rights_t *needrightsp, struct file **fpp);
+int	fget_unlocked_flags(struct thread *td, int fd,
+	    const cap_rights_t *needrightsp, uint8_t *flagsp,
+	    struct file **fpp);
+/* Return a file pointer without a ref. FILEDESC_IS_ONLY_USER must be true.  */
+int	fget_only_user(struct filedesc *fdp, int fd,
+	    const cap_rights_t *needrightsp, struct file **fpp);
+#define	fput_only_user(fdp, fp)	({					\
+	MPASS(FILEDESC_IS_ONLY_USER(fdp));				\
+	MPASS(refcount_load(&fp->f_count) > 0);				\
+})
 
 /*
- * Kernel global variables and routines.
+ * Look up a file description without requiring a lock.  In general the result
+ * may be immediately invalidated after the function returns, the caller must
+ * handle this.
  */
-extern int      dupfdopen(proc_t p, int indx, int dfd, int mode, int error);
-extern int      fdalloc(proc_t p, int want, int *result);
-extern void     fdrelse(struct proc * p, int fd);
-#define         fdfile(p, fd)                                   \
-	                (&(p)->p_fd.fd_ofiles[(fd)])
-#define         fdflags(p, fd)                                  \
-	                (&(p)->p_fd.fd_ofileflags[(fd)])
+static inline struct file *
+fget_noref_unlocked(struct filedesc *fdp, int fd)
+{
+	if (__predict_false(
+	    (u_int)fd >= (u_int)atomic_load_int(&fdp->fd_nfiles)))
+		return (NULL);
 
-typedef void (*fp_initfn_t)(struct fileproc *, void *ctx);
-extern int      falloc_withinit(
-	proc_t                  p,
-	struct ucred           *p_cred,
-	struct vfs_context     *ctx,
-	struct fileproc       **resultfp,
-	int                    *resultfd,
-	fp_initfn_t             fp_init,
-	void                   *initarg);
+	return (atomic_load_ptr(&fdp->fd_ofiles[fd].fde_file));
+}
 
-#define falloc(p, rfp, rfd)  ({ \
-	struct proc *__p = (p);                                                 \
-	falloc_withinit(__p, current_cached_proc_cred(__p),                     \
-	    vfs_context_current(), rfp, rfd, NULL, NULL);                       \
-})
+/* Requires a FILEDESC_{S,X}LOCK held and returns without a ref. */
+static __inline struct file *
+fget_noref(struct filedesc *fdp, int fd)
+{
 
-#define falloc_exec(p, ctx, rfp, rfd)  ({ \
-	struct vfs_context *__c = (ctx);                                        \
-	falloc_withinit(p, vfs_context_ucred(__c), __c, rfp, rfd, NULL, NULL);  \
-})
+	FILEDESC_LOCK_ASSERT(fdp);
 
-#if CONFIG_PROC_RESOURCE_LIMITS
-/* The proc_fdlock has to be held by caller for duration of the call */
-void fd_check_limit_exceeded(struct filedesc *fdp);
+	if (__predict_false((u_int)fd >= (u_int)fdp->fd_nfiles))
+		return (NULL);
 
-/* The kqhash_lock has to be held by caller for duration of the call */
-void kqworkloop_check_limit_exceeded(struct filedesc *fdp);
-#endif /* CONFIG_PROC_RESOURCE_LIMITS */
+	return (fdp->fd_ofiles[fd].fde_file);
+}
 
-#endif /* XNU_KERNEL_PRIVATE */
+static __inline struct filedescent *
+fdeget_noref(struct filedesc *fdp, int fd)
+{
+	struct filedescent *fde;
+
+	FILEDESC_LOCK_ASSERT(fdp);
+
+	if (__predict_false((u_int)fd >= (u_int)fdp->fd_nfiles))
+		return (NULL);
+
+	fde = &fdp->fd_ofiles[fd];
+	if (__predict_false(fde->fde_file == NULL))
+		return (NULL);
+
+	return (fde);
+}
+
+#ifdef CAPABILITIES
+static __inline bool
+fd_modified(struct filedesc *fdp, int fd, seqc_t seqc)
+{
+
+	return (!seqc_consistent(fd_seqc(fdp->fd_files, fd), seqc));
+}
+#endif
+
+int	proc_nfiles(struct proc *p);
+
+/* cdir/rdir/jdir manipulation functions. */
+struct pwddesc *pdcopy(struct pwddesc *pdp);
+void	pdescfree(struct thread *td);
+struct pwddesc *pdinit(struct pwddesc *pdp, bool keeplock);
+struct pwddesc *pdshare(struct pwddesc *pdp);
+void	pdunshare(struct thread *td);
+
+void	pwd_altroot(struct thread *td, struct vnode *altroot_vp);
+void	pwd_chdir(struct thread *td, struct vnode *vp);
+int	pwd_chroot(struct thread *td, struct vnode *vp);
+int	pwd_chroot_chdir(struct thread *td, struct vnode *vp);
+void	pwd_ensure_dirs(void);
+void	pwd_set_rootvnode(void);
+
+struct pwd *pwd_hold_pwddesc(struct pwddesc *pdp);
+bool	pwd_hold_smr(struct pwd *pwd);
+struct pwd *pwd_hold_proc(struct proc *p);
+struct pwd *pwd_hold(struct thread *td);
+void	pwd_drop(struct pwd *pwd);
+static inline void
+pwd_set(struct pwddesc *pdp, struct pwd *newpwd)
+{
+	smr_serialized_store(&pdp->pd_pwd, newpwd,
+	    (PWDDESC_ASSERT_XLOCKED(pdp), true));
+}
+#define	pwd_get_smr()	vfs_smr_entered_load(&curproc->p_pd->pd_pwd)
+
+#endif /* _KERNEL */
 
 #endif /* !_SYS_FILEDESC_H_ */

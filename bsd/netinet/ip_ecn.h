@@ -1,31 +1,8 @@
-/*
- * Copyright (c) 2000-2013, 2015 Apple Inc. All rights reserved.
+/*	$KAME: ip_ecn.h,v 1.8 2002/01/07 11:34:47 kjc Exp $	*/
+
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (C) 1999 WIDE Project.
  * All rights reserved.
  *
@@ -54,17 +31,23 @@
  * SUCH DAMAGE.
  *
  */
-/*
- * ECN consideration on tunnel ingress/egress operation.
- * http://www.aciri.org/floyd/papers/draft-ipsec-ecn-00.txt
- */
-#include <sys/appleapiopts.h>
 
-#ifdef BSD_KERNEL_PRIVATE
-#define ECN_NORMAL              1       /* ECN normal mode */
-#define ECN_COMPATIBILITY       0       /* ECN comptability mode */
-#define ECN_NOCARE              (-1)    /* Ignore ECN. Use caution with this mode. */
+#ifndef _NETINET_IP_ECN_H_
+#define _NETINET_IP_ECN_H_
 
-extern void ip_ecn_ingress(int, u_int8_t *, const u_int8_t *);
-extern int ip_ecn_egress(int, const u_int8_t *, u_int8_t *);
-#endif /* BSD_KERNEL_PRIVATE */
+#ifdef _KERNEL
+#define ECN_COMPLETE	2	/* ECN normal mode with security log */
+#define ECN_ALLOWED	1	/* ECN normal mode */
+#define ECN_FORBIDDEN	0	/* ECN compatibility mode */
+#define ECN_NOCARE	(-1)	/* no consideration to ECN */
+
+/* ip[6]_ecn_egress return values */
+#define ECN_DROP	0	/* caller MUST drop the packet */
+#define ECN_SUCCESS	1	/* success */
+#define ECN_WARN	2	/* caller MAY log */
+#define ECN_ALARM	3	/* caller SHOULD log and MAY raise alarm */
+
+extern void ip_ecn_ingress(int, uint8_t *, const uint8_t *);
+extern int ip_ecn_egress(int, const uint8_t *, uint8_t *);
+#endif
+#endif

@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2006 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1982, 1986, 1988, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,118 +27,44 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)reboot.h	8.3 (Berkeley) 12/13/94
  */
 
 #ifndef _SYS_REBOOT_H_
-#define _SYS_REBOOT_H_
-
-#include <sys/appleapiopts.h>
-#include <sys/cdefs.h>
-#include <stdint.h>
-#include <uuid/uuid.h>
+#define	_SYS_REBOOT_H_
 
 /*
- * Arguments to reboot system call.
+ * Arguments to reboot system call.  These are passed to
+ * the boot program and on to init.
  */
+#define	RB_AUTOBOOT	0	/* flags for system auto-booting itself */
 
-#ifdef __APPLE_API_PRIVATE
-#define RB_AUTOBOOT     0       /* flags for system auto-booting itself */
+#define	RB_ASKNAME	0x001	/* force prompt of device of root filesystem */
+#define	RB_SINGLE	0x002	/* reboot to single user only */
+#define	RB_NOSYNC	0x004	/* dont sync before reboot */
+#define	RB_HALT		0x008	/* don't reboot, just halt */
+#define	RB_INITNAME	0x010	/* Unused placeholder to specify init path */
+#define	RB_DFLTROOT	0x020	/* use compiled-in rootdev */
+#define	RB_KDB		0x040	/* give control to kernel debugger */
+#define	RB_RDONLY	0x080	/* mount root fs read-only */
+#define	RB_DUMP		0x100	/* dump kernel memory before reboot */
+#define	RB_MINIROOT	0x200	/* Unused placeholder */
+#define	RB_VERBOSE	0x800	/* print all potentially useful info */
+#define	RB_SERIAL	0x1000	/* use serial port as console */
+#define	RB_CDROM	0x2000	/* use cdrom as root */
+#define	RB_POWEROFF	0x4000	/* turn the power off if possible */
+#define	RB_GDB		0x8000	/* use GDB remote debugger instead of DDB */
+#define	RB_MUTE		0x10000	/* start up with the console muted */
+#define	RB_SELFTEST	0x20000	/* unused placeholder */
+#define	RB_RESERVED1	0x40000	/* reserved for internal use of boot blocks */
+#define	RB_RESERVED2	0x80000	/* reserved for internal use of boot blocks */
+#define	RB_PAUSE	0x100000 /* pause after each output line during probe */
+#define	RB_REROOT	0x200000 /* unmount the rootfs and mount it again */
+#define	RB_POWERCYCLE	0x400000 /* Power cycle if possible */
+#define	RB_MUTEMSGS	0x800000 /* start up with console muted after banner */
+#define	RB_KEXEC	0x1000000 /* Boot new kernel using kexec */
+#define	RB_PROBE	0x10000000	/* Probe multiple consoles */
+#define	RB_MULTIPLE	0x20000000	/* use multiple consoles */
 
-#define RB_ASKNAME      0x01    /* ask for file name to reboot from */
-#define RB_SINGLE       0x02    /* reboot to single user only */
-#define RB_NOSYNC       0x04    /* dont sync before reboot */
-#define RB_HALT         0x08    /* don't reboot, just halt */
-#define RB_INITNAME     0x10    /* name given for /etc/init */
-#define RB_DFLTROOT     0x20    /* use compiled-in rootdev */
-#define RB_ALTBOOT      0x40    /* use /boot.old vs /boot */
-#define RB_UNIPROC      0x80    /* don't start slaves */
-#define RB_SAFEBOOT     0x100   /* booting safe */
-#define RB_UPSDELAY 0x200   /* Delays restart by 5 minutes */
-#define RB_QUICK        0x400   /* quick and ungraceful reboot with file system caches flushed*/
-#define RB_PANIC        0x800   /* panic the kernel */
-#define RB_PANIC_ZPRINT 0x1000   /* add zprint info to panic string */
-#define RB_PANIC_FORCERESET 0x2000   /* do force-reset panic */
+#define	RB_BOOTINFO	0x80000000	/* have `struct bootinfo *' arg */
 
-__BEGIN_DECLS
-__options_closed_decl(panic_with_data_flags, unsigned int, {
-	PANIC_WITH_DATA_FLAGS_NONE = 0,
-	PANIC_WITH_DATA_FLAGS_EXCLAVE_STACKSHOT,
-	PANIC_WITH_DATA_FLAGS_MAX,
-});
-
-#ifndef KERNEL
-/* userspace reboot control */
-int usrctl(uint32_t flags);
-/* The normal reboot syscall. */
-int reboot(int howto);
-/* Used with RB_PANIC to panic the kernel from userspace with a message.
- * Requires an entitlement on Release. */
-int reboot_np(int howto, const char *message);
-
-/* Used to panic the kernel from user space and add additional data to
- * the paniclog.
- */
-int panic_with_data(uuid_t uuid, void *addr, uint32_t len, uint32_t flags, const char *msg);
-#endif /* KERNEL */
-__END_DECLS
-
-#endif /* __APPLE_API_PRIVATE */
-
-#ifdef __APPLE_API_OBSOLETE
-/*
- * Constants for converting boot-style device number to type,
- * adaptor (uba, mba, etc), unit number and partition number.
- * Type (== major device number) is in the low byte
- * for backward compatibility.  Except for that of the "magic
- * number", each mask applies to the shifted value.
- * Format:
- *	 (4) (4) (4) (4)  (8)     (8)
- *	--------------------------------
- *	|MA | AD| CT| UN| PART  | TYPE |
- *	--------------------------------
- */
-#define B_ADAPTORSHIFT  24
-#define B_ADAPTORMASK   0x0f
-#define B_ADAPTOR(val)          (((val) >> B_ADAPTORSHIFT) & B_ADAPTORMASK)
-#define B_CONTROLLERSHIFT       20
-#define B_CONTROLLERMASK        0xf
-#define B_CONTROLLER(val)       (((val)>>B_CONTROLLERSHIFT) & B_CONTROLLERMASK)
-#define B_UNITSHIFT     16
-#define B_UNITMASK      0xff
-#define B_UNIT(val)             (((val) >> B_UNITSHIFT) & B_UNITMASK)
-#define B_PARTITIONSHIFT 8
-#define B_PARTITIONMASK 0xff
-#define B_PARTITION(val)        (((val) >> B_PARTITIONSHIFT) & B_PARTITIONMASK)
-#define B_TYPESHIFT     0
-#define B_TYPEMASK      0xff
-#define B_TYPE(val)             (((val) >> B_TYPESHIFT) & B_TYPEMASK)
-#define B_MAGICMASK     0xf0000000
-#define B_DEVMAGIC      0xa0000000
-
-#define MAKEBOOTDEV(type, adaptor, controller, unit, partition) \
-	(((type) << B_TYPESHIFT) | ((adaptor) << B_ADAPTORSHIFT) | \
-	((controller) << B_CONTROLLERSHIFT) | ((unit) << B_UNITSHIFT) | \
-	((partition) << B_PARTITIONSHIFT) | B_DEVMAGIC)
-
-#endif /* __APPLE_API_OBSOLETE */
-
-#ifdef XNU_KERNEL_PRIVATE
-
-__BEGIN_DECLS
-int     reboot_kernel(int, char *);
-__END_DECLS
-
-#define PROC_SHUTDOWN_LOG "/var/log/kernel-shutdown.log"
-
-#endif /* XNU_KERNEL_PRIVATE */
-
-#if KERNEL_PRIVATE
-__BEGIN_DECLS
-int get_system_inshutdown(void);
-int get_system_inuserspacereboot(void);
-__END_DECLS
-#endif /* KERNEL_PRIVATE */
-
-#endif  /* _SYS_REBOOT_H_ */
+#endif

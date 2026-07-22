@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2002 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,202 +27,398 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)signalvar.h	8.3 (Berkeley) 1/4/94
  */
 
-#ifndef _SYS_SIGNALVAR_H_               /* tmp for user.h */
-#define _SYS_SIGNALVAR_H_
+#ifndef _SYS_SIGNALVAR_H_
+#define	_SYS_SIGNALVAR_H_
 
-#include <sys/appleapiopts.h>
-
-#ifdef BSD_KERNEL_PRIVATE
-
-#include <stdatomic.h>
-
-/* signal flags */
-#define SAS_OLDMASK     0x01            /* need to restore mask before pause */
-#define SAS_ALTSTACK    0x02            /* have alternate signal stack */
+#include <sys/queue.h>
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
+#include <sys/signal.h>
 
 /*
- * Additional signal action values, used only temporarily/internally; these
- * values should be non-intersecting with values defined in signal.h, e.g.:
- * SIG_IGN, SIG_DFL, SIG_ERR, SIG_IGN.
+ * Kernel signal definitions and data structures.
  */
-#define KERN_SIG_CATCH  CAST_USER_ADDR_T(2)
-#define KERN_SIG_HOLD   CAST_USER_ADDR_T(3)
-#define KERN_SIG_WAIT   CAST_USER_ADDR_T(4)
 
-/* Values for ps_sigreturn_validation */
-#define PS_SIGRETURN_VALIDATION_DEFAULT 0x0u
-#define PS_SIGRETURN_VALIDATION_ENABLED 0x1u
-#define PS_SIGRETURN_VALIDATION_DISABLED 0x2u
+/*
+ * Logical process signal actions and state, needed only within the process
+ * The mapping between sigacts and proc structures is 1:1 except for rfork()
+ * processes masquerading as threads which use one structure for the whole
+ * group.  All members are locked by the included mutex.  The reference count
+ * and mutex must be last for the bcopy in sigacts_copy() to work.
+ */
+struct sigacts {
+	sig_t	ps_sigact[_SIG_MAXSIG];	/* Disposition of signals. */
+	sigset_t ps_catchmask[_SIG_MAXSIG];	/* Signals to be blocked. */
+	sigset_t ps_sigonstack;		/* Signals to take on sigstack. */
+	sigset_t ps_sigintr;		/* Signals that interrupt syscalls. */
+	sigset_t ps_sigreset;		/* Signals that reset when caught. */
+	sigset_t ps_signodefer;		/* Signals not masked while handled. */
+	sigset_t ps_siginfo;		/* Signals that want SA_SIGINFO args. */
+	sigset_t ps_sigignore;		/* Signals being ignored. */
+	sigset_t ps_sigcatch;		/* Signals being caught by user. */
+	sigset_t ps_freebsd4;		/* Signals using freebsd4 ucontext. */
+	sigset_t ps_osigset;		/* Signals using <= 3.x osigset_t. */
+	sigset_t ps_usertramp;		/* SunOS compat; libc sigtramp. XXX */
+	int	ps_flag;
+	u_int	ps_refcnt;
+	struct mtx ps_mtx;
+};
+
+#define	PS_NOCLDWAIT	0x0001	/* No zombies if child dies */
+#define	PS_NOCLDSTOP	0x0002	/* No SIGCHLD when children stop. */
+#define	PS_CLDSIGIGN	0x0004	/* The SIGCHLD handler is SIG_IGN. */
+
+#ifdef _KERNEL
+
+#ifdef COMPAT_43
+typedef struct {
+	struct osigcontext si_sc;
+	int		si_signo;
+	int		si_code;
+	union sigval	si_value;
+} osiginfo_t;
+
+struct osigaction {
+	union {
+		void    (*__sa_handler)(int);
+		void    (*__sa_sigaction)(int, osiginfo_t *, void *);
+	} __sigaction_u;		/* signal handler */
+	osigset_t	sa_mask;	/* signal mask to apply */
+	int		sa_flags;	/* see signal options below */
+};
+
+typedef void __osiginfohandler_t(int, osiginfo_t *, void *);
+#endif /* COMPAT_43 */
+
+/* additional signal action values, used only temporarily/internally */
+#define	SIG_CATCH	((__sighandler_t *)2)
+/* #define SIG_HOLD        ((__sighandler_t *)3) See signal.h */
 
 /*
  * get signal action for process and signal; currently only for current process
  */
-#define SIGACTION(p, sig)       ({ p->p_sigacts.ps_sigact[(sig)]; })
-#define SIGTRAMP(p, sig)        ({ p->p_sigacts.ps_trampact[(sig)]; })
+#define	SIGACTION(p, sig)	(p->p_sigacts->ps_sigact[_SIG_IDX(sig)])
+
+#endif /* _KERNEL */
 
 /*
- *	Check for per-process and per thread signals.
+ * sigset_t manipulation macros.
  */
-#define SHOULDissignal(p, uthreadp) \
-	 (((uthreadp)->uu_siglist)      \
-	  & ~((((uthreadp)->uu_sigmask) \
-	       | (((p)->p_lflag & P_LTRACED) ? 0 : (p)->p_sigignore)) \
-	      & ~sigcantmask))
+#define	SIGADDSET(set, signo)						\
+	((set).__bits[_SIG_WORD(signo)] |= _SIG_BIT(signo))
 
-/*
- *	Check for signals and per-thread signals.
- *  Use in trap() and syscall() before
- *	exiting kernel.
- */
-#define CHECK_SIGNALS(p, thread, uthreadp)      \
-	(!thread_should_halt(thread)    \
-	 && (SHOULDissignal(p,uthreadp)))
+#define	SIGDELSET(set, signo)						\
+	((set).__bits[_SIG_WORD(signo)] &= ~_SIG_BIT(signo))
 
-/*
- * Signal properties and actions.
- * The array below categorizes the signals and their default actions
- * according to the following properties:
- */
-#define SA_KILL         0x01            /* terminates process by default */
-#define SA_CORE         0x02            /* ditto and coredumps */
-#define SA_STOP         0x04            /* suspend process */
-#define SA_TTYSTOP      0x08            /* ditto, from tty */
-#define SA_IGNORE       0x10            /* ignore by default */
-#define SA_CONT         0x20            /* continue if suspended */
-#define SA_CANTMASK     0x40            /* non-maskable, catchable */
+#define	SIGEMPTYSET(set)						\
+	do {								\
+		int __i;						\
+		for (__i = 0; __i < _SIG_WORDS; __i++)			\
+			(set).__bits[__i] = 0;				\
+	} while (0)
 
-#ifdef  SIGPROP
-int sigprop[NSIG] = {
-	0,                      /* unused */
-	SA_KILL,                /* SIGHUP */
-	SA_KILL,                /* SIGINT */
-	SA_KILL | SA_CORE,        /* SIGQUIT */
-	SA_KILL | SA_CORE,        /* SIGILL */
-	SA_KILL | SA_CORE,        /* SIGTRAP */
-	SA_KILL | SA_CORE,        /* SIGABRT */
-	SA_KILL | SA_CORE,        /* SIGEMT */
-	SA_KILL | SA_CORE,        /* SIGFPE */
-	SA_KILL,                /* SIGKILL */
-	SA_KILL | SA_CORE,        /* SIGBUS */
-	SA_KILL | SA_CORE,        /* SIGSEGV */
-	SA_KILL | SA_CORE,        /* SIGSYS */
-	SA_KILL,                /* SIGPIPE */
-	SA_KILL,                /* SIGALRM */
-	SA_KILL,                /* SIGTERM */
-	SA_IGNORE,              /* SIGURG */
-	SA_STOP,                /* SIGSTOP */
-	SA_STOP | SA_TTYSTOP,     /* SIGTSTP */
-	SA_IGNORE | SA_CONT,      /* SIGCONT */
-	SA_IGNORE,              /* SIGCHLD */
-	SA_STOP | SA_TTYSTOP,     /* SIGTTIN */
-	SA_STOP | SA_TTYSTOP,     /* SIGTTOU */
-	SA_IGNORE,              /* SIGIO */
-	SA_KILL,                /* SIGXCPU */
-	SA_KILL,                /* SIGXFSZ */
-	SA_KILL,                /* SIGVTALRM */
-	SA_KILL,                /* SIGPROF */
-	SA_IGNORE,              /* SIGWINCH  */
-	SA_IGNORE,              /* SIGINFO */
-	SA_KILL,                /* SIGUSR1 */
-	SA_KILL,                /* SIGUSR2 */
+#define	SIGFILLSET(set)							\
+	do {								\
+		int __i;						\
+		for (__i = 0; __i < _SIG_WORDS; __i++)			\
+			(set).__bits[__i] = ~0U;			\
+	} while (0)
+
+#define	SIGISMEMBER(set, signo)						\
+	((set).__bits[_SIG_WORD(signo)] & _SIG_BIT(signo))
+
+#define	SIGISEMPTY(set)		(__sigisempty(&(set)))
+#define	SIGNOTEMPTY(set)	(!__sigisempty(&(set)))
+
+#define	SIGSETEQ(set1, set2)	(__sigseteq(&(set1), &(set2)))
+#define	SIGSETNEQ(set1, set2)	(!__sigseteq(&(set1), &(set2)))
+
+#define	SIGSETOR(set1, set2)						\
+	do {								\
+		int __i;						\
+		for (__i = 0; __i < _SIG_WORDS; __i++)			\
+			(set1).__bits[__i] |= (set2).__bits[__i];	\
+	} while (0)
+
+#define	SIGSETAND(set1, set2)						\
+	do {								\
+		int __i;						\
+		for (__i = 0; __i < _SIG_WORDS; __i++)			\
+			(set1).__bits[__i] &= (set2).__bits[__i];	\
+	} while (0)
+
+#define	SIGSETNAND(set1, set2)						\
+	do {								\
+		int __i;						\
+		for (__i = 0; __i < _SIG_WORDS; __i++)			\
+			(set1).__bits[__i] &= ~(set2).__bits[__i];	\
+	} while (0)
+
+#define	SIGSETLO(set1, set2)	((set1).__bits[0] = (set2).__bits[0])
+#define	SIGSETOLD(set, oset)	((set).__bits[0] = (oset))
+
+#define	SIG_CANTMASK(set)						\
+	SIGDELSET(set, SIGKILL), SIGDELSET(set, SIGSTOP)
+
+#define	SIG_STOPSIGMASK(set)						\
+	SIGDELSET(set, SIGSTOP), SIGDELSET(set, SIGTSTP),		\
+	SIGDELSET(set, SIGTTIN), SIGDELSET(set, SIGTTOU)
+
+#define	SIG_CONTSIGMASK(set)						\
+	SIGDELSET(set, SIGCONT)
+
+#define	sigcantmask	(sigmask(SIGKILL) | sigmask(SIGSTOP))
+
+#define	SIG2OSIG(sig, osig)	(osig = (sig).__bits[0])
+#define	OSIG2SIG(osig, sig)	SIGEMPTYSET(sig); (sig).__bits[0] = osig
+
+static __inline int
+__sigisempty(sigset_t *set)
+{
+	int i;
+
+	for (i = 0; i < _SIG_WORDS; i++) {
+		if (set->__bits[i])
+			return (0);
+	}
+	return (1);
+}
+
+static __inline int
+__sigseteq(sigset_t *set1, sigset_t *set2)
+{
+	int i;
+
+	for (i = 0; i < _SIG_WORDS; i++) {
+		if (set1->__bits[i] != set2->__bits[i])
+			return (0);
+	}
+	return (1);
+}
+
+#ifdef COMPAT_FREEBSD6
+struct osigevent {
+	int	sigev_notify;		/* Notification type */
+	union {
+		int	__sigev_signo;	/* Signal number */
+		int	__sigev_notify_kqueue;
+	} __sigev_u;
+	union sigval sigev_value;	/* Signal value */
 };
-
-#define contsigmask     (sigmask(SIGCONT))
-#define stopsigmask     (sigmask(SIGSTOP) | sigmask(SIGTSTP) | \
-	                    sigmask(SIGTTIN) | sigmask(SIGTTOU))
-
-#endif /* SIGPROP */
-
-#define sigcantmask     (sigmask(SIGKILL) | sigmask(SIGSTOP))
-
-#define SIGRESTRICTMASK (sigmask(SIGILL) | sigmask(SIGTRAP) | sigmask(SIGABRT) | \
-	                 sigmask(SIGFPE) | sigmask(SIGBUS)  | sigmask(SIGSEGV) | \
-	                 sigmask(SIGSYS))
-
-/*
- * Machine-independent functions:
- */
-
-#if DEVELOPMENT || DEBUG
-extern bool no_sigsys;
-#define send_sigsys (!no_sigsys)
-#else
-#define send_sigsys 1
 #endif
 
+typedef struct ksiginfo {
+	TAILQ_ENTRY(ksiginfo)	ksi_link;
+	siginfo_t		ksi_info;
+	int			ksi_flags;
+	struct sigqueue		*ksi_sigq;
+} ksiginfo_t;
 
-void    execsigs(struct proc *p, thread_t thread);
-void    gsignal(int pgid, int sig);
-int     issignal_locked(struct proc *p);
-int     CURSIG(struct proc *p);
-int clear_procsiglist(struct proc *p, int bit, int in_signalstart);
-int set_procsigmask(struct proc *p, int bit);
-void    postsig_locked(int sig);
-void    siginit(struct proc *p);
-void    trapsignal(struct proc *p, int sig, unsigned code);
-void    pt_setrunnable(struct proc *p);
-int     hassigprop(int sig, int prop);
-int setsigvec(proc_t, thread_t, int signum, struct __kern_sigaction *, boolean_t in_sigstart);
+#define	ksi_signo	ksi_info.si_signo
+#define	ksi_errno	ksi_info.si_errno
+#define	ksi_code	ksi_info.si_code
+#define	ksi_pid		ksi_info.si_pid
+#define	ksi_uid		ksi_info.si_uid
+#define	ksi_status      ksi_info.si_status
+#define	ksi_addr        ksi_info.si_addr
+#define	ksi_value	ksi_info.si_value
+#define	ksi_band	ksi_info.si_band
+#define	ksi_trapno	ksi_info.si_trapno
+#define	ksi_overrun	ksi_info.si_overrun
+#define	ksi_timerid	ksi_info.si_timerid
+#define	ksi_mqd		ksi_info.si_mqd
 
-struct os_reason;
+/* bits for ksi_flags */
+#define	KSI_TRAP	0x01	/* Generated by trap. */
+#define	KSI_EXT		0x02	/* Externally managed ksi. */
+#define	KSI_INS		0x04	/* Directly insert ksi, not the copy */
+#define	KSI_SIGQ	0x08	/* Generated by sigqueue, might ret EAGAIN. */
+#define	KSI_HEAD	0x10	/* Insert into head, not tail. */
+#define	KSI_PTRACE	0x20	/* Generated by ptrace. */
+#define	KSI_EXCEPT	0x40	/* Generated by an exception. */
+#define	KSI_COPYMASK	(KSI_TRAP | KSI_SIGQ | KSI_PTRACE)
+
+#define	KSI_ONQ(ksi)	((ksi)->ksi_sigq != NULL)
+
+typedef struct sigqueue {
+	sigset_t	sq_signals;	/* All pending signals. */
+	sigset_t	sq_kill;	/* Legacy depth 1 queue. */
+	sigset_t	sq_ptrace;	/* Depth 1 queue for ptrace(2). */
+	TAILQ_HEAD(, ksiginfo)	sq_list;/* Queued signal info. */
+	struct proc	*sq_proc;
+	int		sq_flags;
+} sigqueue_t;
+
+/* Flags for ksi_flags */
+#define	SQ_INIT	0x01
+
 /*
- * Machine-dependent functions:
+ * Fast_sigblock
  */
-void    sendsig(struct proc *, /*sig_t*/ user_addr_t  action, int sig,
-    int returnmask, uint32_t code, sigset_t siginfo);
+#define	SIGFASTBLOCK_SETPTR	1
+#define	SIGFASTBLOCK_UNBLOCK	2
+#define	SIGFASTBLOCK_UNSETPTR	3
 
-void    psignal(struct proc *p, int sig);
-void    psignal_with_reason(struct proc *p, int sig, struct os_reason *signal_reason);
-void    psignal_locked(struct proc *, int);
-void    psignal_try_thread(proc_t, thread_t, int signum);
-void    psignal_try_thread_with_reason(proc_t, thread_t, int, struct os_reason*);
-void    psignal_try_thread_with_reason_locked(proc_t, thread_t, int, struct os_reason*);
-void    psignal_thread_with_reason(proc_t, thread_t, int, struct os_reason*);
-void    psignal_uthread(thread_t, int);
-void    pgsignal(struct pgrp *pgrp, int sig, int checkctty);
-void    tty_pgsignal_locked(struct tty * tp, int sig, int checkctty);
-void    threadsignal(thread_t sig_actthread, int signum,
-    mach_exception_code_t code, boolean_t set_exitreason);
-int     thread_issignal(proc_t p, thread_t th, sigset_t mask);
-void    psignal_vfork(struct proc *p, task_t new_task, thread_t thread,
-    int signum);
-void    psignal_vfork_with_reason(proc_t p, task_t new_task, thread_t thread,
-    int signum, struct os_reason *signal_reason);
-void    signal_setast(thread_t sig_actthread);
-void    pgsigio(pid_t pgid, int signalnum);
+#define	SIGFASTBLOCK_PEND	0x1
+#define	SIGFASTBLOCK_FLAGS	0xf
+#define	SIGFASTBLOCK_INC	0x10
 
-void sig_lock_to_exit(struct proc *p);
-int sig_try_locked(struct proc *p);
+#ifndef _KERNEL
+int __sys_sigfastblock(int cmd, void *ptr);
+#endif
 
-#endif  /* BSD_KERNEL_PRIVATE */
+#ifdef _KERNEL
+extern bool sigfastblock_fetch_always;
+extern bool pt_attach_transparent;
 
-#if defined(KERNEL_PRIVATE)
-/* Forward-declare these for consumers of the SDK that don't know about BSD types */
+/* Return nonzero if process p has an unmasked pending signal. */
+#define	SIGPENDING(td)							\
+	((!SIGISEMPTY((td)->td_siglist) &&				\
+	    !sigsetmasked(&(td)->td_siglist, &(td)->td_sigmask)) ||	\
+	 (!SIGISEMPTY((td)->td_proc->p_siglist) &&			\
+	    !sigsetmasked(&(td)->td_proc->p_siglist, &(td)->td_sigmask)))
+/*
+ * Return the value of the pseudo-expression ((*set & ~*mask) == 0).  This
+ * is an optimized version of SIGISEMPTY() on a temporary variable
+ * containing SIGSETNAND(*set, *mask).
+ */
+static __inline bool
+sigsetmasked(sigset_t *set, sigset_t *mask)
+{
+	int i;
+
+	for (i = 0; i < _SIG_WORDS; i++) {
+		if (set->__bits[i] & ~mask->__bits[i])
+			return (false);
+	}
+	return (true);
+}
+
+#define	ksiginfo_init(ksi)			\
+do {						\
+	bzero(ksi, sizeof(ksiginfo_t));		\
+} while (0)
+
+#define	ksiginfo_init_trap(ksi)			\
+do {						\
+	ksiginfo_t *kp = ksi;			\
+	bzero(kp, sizeof(ksiginfo_t));		\
+	kp->ksi_flags |= KSI_TRAP;		\
+} while (0)
+
+static __inline void
+ksiginfo_copy(ksiginfo_t *src, ksiginfo_t *dst)
+{
+	(dst)->ksi_info = src->ksi_info;
+	(dst)->ksi_flags = (src->ksi_flags & KSI_COPYMASK);
+}
+
+static __inline void
+ksiginfo_set_sigev(ksiginfo_t *dst, struct sigevent *sigev)
+{
+	dst->ksi_signo = sigev->sigev_signo;
+	dst->ksi_value = sigev->sigev_value;
+}
+
+struct pgrp;
 struct proc;
+struct sigio;
 struct thread;
-struct os_reason;
-void    psignal_sigkill_with_reason(struct proc *p, struct os_reason *signal_reason);
-void    psignal_sigkill_try_thread_with_reason(struct proc *p, struct thread *thread, struct os_reason *signal_reason);
-#endif /* defined(KERNEL_PRIVATE) */
 
-#ifdef XNU_KERNEL_PRIVATE
+/*
+ * Lock the pointers for a sigio object in the underlying objects of
+ * a file descriptor.
+ */
+#define	SIGIO_LOCK()	mtx_lock(&sigio_lock)
+#define	SIGIO_TRYLOCK()	mtx_trylock(&sigio_lock)
+#define	SIGIO_UNLOCK()	mtx_unlock(&sigio_lock)
+#define	SIGIO_LOCKED()	mtx_owned(&sigio_lock)
+#define	SIGIO_ASSERT_LOCKED() mtx_assert(&sigio_lock, MA_OWNED)
 
-/* Functions exported to Mach as well */
+extern struct mtx	sigio_lock;
 
-#define COREDUMP_IGNORE_ULIMIT  0x0001 /* Ignore the process's core file ulimit. */
-#define COREDUMP_FULLFSYNC      0x0002 /* Run F_FULLFSYNC on the core file's vnode */
+/* Flags for kern_sigprocmask(). */
+#define	SIGPROCMASK_OLD		0x0001
+#define	SIGPROCMASK_PROC_LOCKED	0x0002
+#define	SIGPROCMASK_PS_LOCKED	0x0004
+#define	SIGPROCMASK_FASTBLK	0x0008
 
-cpu_type_t process_cpu_type(struct proc * core_proc);
-cpu_type_t process_cpu_subtype(struct proc * core_proc);
-int     is_coredump_eligible(struct proc *);
-int     coredump(struct proc *p, uint32_t reserve_mb, int coredump_flags);
-void set_thread_exit_reason(void *th, void *reason, boolean_t proc_locked);
+/*
+ * Modes for sigdeferstop().  Manages behaviour of
+ * thread_suspend_check() in the region delimited by
+ * sigdeferstop()/sigallowstop().  Must be restored to
+ * SIGDEFERSTOP_OFF before returning to userspace.
+ */
+#define	SIGDEFERSTOP_NOP	0 /* continue doing whatever is done now */
+#define	SIGDEFERSTOP_OFF	1 /* stop ignoring STOPs */
+#define	SIGDEFERSTOP_SILENT	2 /* silently ignore STOPs */
+#define	SIGDEFERSTOP_EINTR	3 /* ignore STOPs, return EINTR */
+#define	SIGDEFERSTOP_ERESTART	4 /* ignore STOPs, return ERESTART */
 
-#endif  /* XNU_KERNEL_PRIVATE */
+#define	SIGDEFERSTOP_VAL_NCHG	(-1) /* placeholder indicating no state change */
+int	sigdeferstop_impl(int mode);
+void	sigallowstop_impl(int prev);
 
+static inline int
+sigdeferstop(int mode)
+{
 
-#endif  /* !_SYS_SIGNALVAR_H_ */
+	if (__predict_false(mode == SIGDEFERSTOP_NOP))
+		return (SIGDEFERSTOP_VAL_NCHG);
+	return (sigdeferstop_impl(mode));
+}
+
+static inline void
+sigallowstop(int prev)
+{
+
+	if (__predict_true(prev == SIGDEFERSTOP_VAL_NCHG))
+		return;
+	sigallowstop_impl(prev);
+}
+
+int	cursig(struct thread *td);
+void	execsigs(struct proc *p);
+void	killproc(struct proc *p, const char *why);
+ksiginfo_t *ksiginfo_alloc(int mwait);
+void	ksiginfo_free(ksiginfo_t *ksi);
+int	pksignal(struct proc *p, int sig, ksiginfo_t *ksi);
+void	pgsigio(struct sigio **sigiop, int sig, int checkctty);
+void	pgsignal(struct pgrp *pgrp, int sig, int checkctty, ksiginfo_t *ksi);
+int	postsig(int sig);
+void	kern_psignal(struct proc *p, int sig);
+int	ptracestop(struct thread *td, int sig, ksiginfo_t *si);
+void	sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *retmask);
+struct sigacts *sigacts_alloc(void);
+void	sigacts_copy(struct sigacts *dest, struct sigacts *src);
+void	sigacts_free(struct sigacts *ps);
+struct sigacts *sigacts_hold(struct sigacts *ps);
+int	sigacts_shared(struct sigacts *ps);
+int	sig_ast_checksusp(struct thread *td);
+int	sig_ast_needsigchk(struct thread *td);
+void	sig_drop_caught(struct proc *p);
+void	sigexit(struct thread *td, int sig);
+int	sigev_findtd(struct proc *p, struct sigevent *sigev, struct thread **);
+void	sigfastblock_clear(struct thread *td);
+void	sigfastblock_fetch(struct thread *td);
+int	sig_intr(void);
+bool	sig_do_core(int);
+void	siginit(struct proc *p);
+void	signotify(struct thread *td);
+void	sigqueue_delete(struct sigqueue *queue, int sig);
+void	sigqueue_delete_proc(struct proc *p, int sig);
+void	sigqueue_flush(struct sigqueue *queue);
+void	sigqueue_init(struct sigqueue *queue, struct proc *p);
+void	sigqueue_take(ksiginfo_t *ksi);
+void	tdksignal(struct thread *td, int sig, ksiginfo_t *ksi);
+int	tdsendsignal(struct proc *p, struct thread *td, int sig,
+	   ksiginfo_t *ksi);
+void	tdsigcleanup(struct thread *td);
+void	tdsignal(struct thread *td, int sig);
+void	trapsignal(struct thread *td, ksiginfo_t *ksi);
+
+#endif /* _KERNEL */
+
+#endif /* !_SYS_SIGNALVAR_H_ */

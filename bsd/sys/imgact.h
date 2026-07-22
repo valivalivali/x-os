@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2004-2005, 2011 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1993, David Greenman
  * All rights reserved.
  *
@@ -37,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,118 +28,106 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/*
- * NOTICE: This file was modified by SPARTA, Inc. in 2005 to introduce
- * support for mandatory and extensible security protections.  This notice
- * is included in support of clause 2.2 (b) of the Apple Public License,
- * Version 2.0.
- */
+
 #ifndef _SYS_IMGACT_H_
-#define _SYS_IMGACT_H_
+#define	_SYS_IMGACT_H_
 
-#define IMG_SHSIZE      512     /* largest shell interpreter, in bytes */
+#include <sys/_uio.h>
 
-struct label;
-struct proc;
-struct nameidata;
+#include <vm/vm.h>
 
-struct image_params {
-	user_addr_t     ip_user_fname;          /* argument */
-	user_addr_t     ip_user_argv;           /* argument */
-	user_addr_t     ip_user_envv;           /* argument */
-	int             ip_seg;                 /* segment for arguments */
-	struct vnode    *ip_vp;                 /* file */
-	struct vnode_attr       *ip_vattr;      /* run file attributes */
-	struct vnode_attr       *ip_origvattr;  /* invocation file attributes */
-	cpu_type_t      ip_origcputype;         /* cputype of invocation file */
-	cpu_subtype_t   ip_origcpusubtype;      /* subtype of invocation file */
-	char            *ip_vdata;              /* file data (up to one page) */
-	int             ip_flags;               /* image flags */
-	int             ip_argc;                /* argument count */
-	int             ip_envc;                /* environment count */
-	int             ip_applec;              /* apple vector count */
+#define MAXSHELLCMDLEN	PAGE_SIZE
 
-	char            *ip_startargv;          /* argument vector beginning */
-	char            *ip_endargv;    /* end of argv/start of envv */
-	char            *ip_endenvv;    /* end of envv/start of applev */
+struct ucred;
 
-	char            *ip_strings;            /* base address for strings */
-	char            *ip_strendp;            /* current end pointer */
-
-	char            *ip_subsystem_root_path;        /* filepath for the subsystem root */
-
-	int             ip_argspace;    /* remaining space of NCARGS limit (argv+envv) */
-	int             ip_strspace;            /* remaining total string space */
-
-	user_size_t     ip_arch_offset;         /* subfile offset in ip_vp */
-	user_size_t     ip_arch_size;           /* subfile length in ip_vp */
-	char            ip_interp_buffer[IMG_SHSIZE];   /* interpreter buffer space */
-	int             ip_interp_sugid_fd;             /* fd for sugid script */
-
-	/* Next two fields are for support of architecture translation... */
-	struct vfs_context      *ip_vfs_context;        /* VFS context */
-	struct nameidata *ip_ndp;               /* current nameidata */
-	thread_t        ip_new_thread;          /* thread for spawn */
-
-	struct label    *ip_execlabelp;         /* label of the executable */
-	struct label    *ip_scriptlabelp;       /* label of the script */
-	struct vnode    *ip_scriptvp;           /* script */
-	unsigned int    ip_csflags;             /* code signing flags */
-	int             ip_mac_return;          /* return code from mac policy checks */
-	void            *ip_px_sa;              /* posix_spawn attrs */
-	void            *ip_px_sfa;             /* posix_spawn file actions */
-	void            *ip_px_spa;             /* posix_spawn port actions */
-	vm_map_t        ip_free_map;            /* map to free once iocount is dropped on vnode */
-	struct ip_px_smpx_s {
-		void        *array;
-		void        *data;
-		uint64_t    datalen;
-	}               ip_px_smpx;             /* MAC-specific spawn attrs. */
-	void            *ip_px_persona;         /* persona args */
-	void            *ip_px_pcred_info;      /* posix cred args */
-	void            *ip_cs_error;           /* codesigning error reason */
-	char            *ip_inherited_shared_region_id;  /* inherited shared region id for ptr auth */
-
-	uint64_t ip_dyld_fsid;
-	uint64_t ip_dyld_fsobjid;
-	uint64_t ip_inherited_jop_pid;
-	unsigned int    ip_flags2;              /* extended image flags */
+struct image_args {
+	char *buf;		/* pointer to string buffer */
+	void *bufkva;		/* cookie for string buffer KVA */
+	char *begin_argv;	/* beginning of argv in buf */
+	char *begin_envv;	/* (interal use only) beginning of envv in buf,
+				 * access with exec_args_get_begin_envv(). */
+	char *endp;		/* current `end' pointer of arg & env strings */
+	char *fname;            /* pointer to filename of executable (system space) */
+	char *fname_buf;	/* pointer to optional malloc(M_TEMP) buffer */
+	int stringspace;	/* space left in arg & env buffer */
+	int argc;		/* count of argument strings */
+	int envc;		/* count of environment strings */
+	int fd;			/* file descriptor of the executable */
 };
 
-/*
- * Image flags
- */
-#define IMGPF_NONE              0x00000000      /* No flags */
-#define IMGPF_INTERPRET         0x00000001      /* Interpreter invoked */
-#define IMGPF_RESERVED          0x00000002
-#define IMGPF_WAS_64BIT_ADDR    0x00000004      /* exec from a 64Bit address space */
-#define IMGPF_IS_64BIT_ADDR     0x00000008      /* exec to a 64Bit address space */
-#define IMGPF_SPAWN             0x00000010      /* spawn (without setexec) */
-#define IMGPF_DISABLE_ASLR      0x00000020      /* disable ASLR */
-#define IMGPF_ALLOW_DATA_EXEC   0x00000040      /* forcibly disallow data execution */
-#if XNU_TARGET_OS_OSX
-#define IMGPF_3P_PLUGINS        0x00000080      /* this platform binary might load third party plugins */
-#endif /* XNU_TARGET_OS_OSX */
-#define IMGPF_EXEC              0x00000100      /* exec */
-#define IMGPF_HIGH_BITS_ASLR    0x00000200      /* randomize high bits of ASLR slide */
-#define IMGPF_IS_64BIT_DATA     0x00000400      /* exec to a 64Bit register state */
-#define IMGPF_DRIVER            0x00000800      /* exec of a driver binary (no LC_MAIN) */
-#define IMGPF_RESLIDE           0x00001000      /* reslide the shared cache */
-#define IMGPF_PLUGIN_HOST_DISABLE_A_KEYS  0x00002000     /* process hosts plugins, disable ptr auth A keys */
-#define IMGPF_HW_TPRO           0x00004000      /* HW support for read-only/read-write trusted paths  */
-#define IMGPF_HARDENED_HEAP     0x00008000      /* enable hardened-heap for the process */
-#define IMGPF_ROSETTA           0x10000000      /* load rosetta runtime */
-#define IMGPF_ALT_ROSETTA       0x20000000      /* load alternative rosetta runtime */
-#define IMGPF_NOJOP             0x80000000
+struct image_params {
+	struct proc *proc;		/* our process */
+	struct thread *td;
+	struct label *execlabel;	/* optional exec label */
+	struct vnode *vp;		/* pointer to vnode of file to exec */
+	struct vm_object *object;	/* The vm object for this vp */
+	struct vattr *attr;		/* attributes of file */
+	const char *image_header;	/* header of file to exec */
+	unsigned long entry_addr;	/* entry address of target executable */
+	unsigned long reloc_base;	/* load address of image */
+	unsigned long et_dyn_addr;	/* PIE load base */
+	char *interpreter_name;		/* name of the interpreter */
+	void *auxargs;			/* ELF Auxinfo structure pointer */
+	struct sf_buf *firstpage;	/* first page that we mapped */
+	void *ps_strings;		/* pointer to ps_string (user space) */
+	struct image_args *args;	/* system call arguments */
+	struct sysentvec *sysent;	/* system entry vector */
+	void *argv;			/* pointer to argv (user space) */
+	void *envv;			/* pointer to envv (user space) */
+	char *execpath;
+	void *execpathp;
+	char *freepath;
+	void *canary;
+	int canarylen;
+	void *pagesizes;
+	int pagesizeslen;
+	vm_prot_t stack_prot;
+	u_long stack_sz;
+	struct ucred *newcred;		/* new credentials if changing */
+#define IMGACT_SHELL	0x1
+#define IMGACT_BINMISC	0x2
+#define IMGACT_INTERP_ELF 0x4		/* only used within the ELF activator */
+	unsigned char interpreted;	/* mask of interpreters that have run */
+	bool credential_setid;		/* true if becoming setid */
+	bool vmspace_destroyed;		/* we've blown away original vm space */
+	bool opened;			/* we have opened executable vnode */
+	bool textset;
+	u_int map_flags;
+#define IMGP_ASLR_SHARED_PAGE	0x1
+	uint32_t imgp_flags;
+	struct vnode *interpreter_vp;	/* vnode of the interpreter */
+};
 
-#if __x86_64__
-/*
- * Simulator binary flags
- */
-#define IMGPF2_SB_MASK                          0x00000003      /* Space for IMGPF2_SB tristate */
-#define IMGPF2_SB_DEFAULT                       0x00000000      /* Default value, did not check if it is a simulator binary */
-#define IMGPF2_SB_TRUE                          0x00000001      /* Binary is a simulator binary */
-#define IMGPF2_SB_FALSE                         0x00000002      /* Binary is not a simulator binary */
-#endif /* __x86_64__ */
+#ifdef _KERNEL
+struct sysentvec;
+struct thread;
+struct vmspace;
 
-#endif  /* !_SYS_IMGACT */
+int	exec_alloc_args(struct image_args *);
+int	exec_args_add_arg(struct image_args *args, const char *argp,
+	    enum uio_seg segflg);
+int	exec_args_add_env(struct image_args *args, const char *envp,
+	    enum uio_seg segflg);
+int	exec_args_add_fname(struct image_args *args, const char *fname,
+	    enum uio_seg segflg);
+int	exec_args_adjust_args(struct image_args *args, size_t consume,
+	    ssize_t extend);
+char	*exec_args_get_begin_envv(struct image_args *args);
+int	exec_check_permissions(struct image_params *);
+void	exec_cleanup(struct thread *td, struct vmspace *);
+int	exec_copyout_strings(struct image_params *, uintptr_t *);
+void	exec_free_args(struct image_args *);
+int	exec_map_stack(struct image_params *);
+int	exec_new_vmspace(struct image_params *, struct sysentvec *);
+void	exec_setregs(struct thread *, struct image_params *, uintptr_t);
+int	exec_shell_imgact(struct image_params *);
+int	exec_copyin_args(struct image_args *, const char *, char **, char **);
+int	pre_execve(struct thread *td, struct vmspace **oldvmspace);
+void	post_execve(struct thread *td, int error, struct vmspace *oldvmspace);
+bool	execve_block(struct thread *td, struct proc *p);
+void	execve_block_wait(struct thread *td, struct proc *p);
+void	execve_unblock(struct thread *td, struct proc *p);
+void	execve_block_pass(struct thread *td);
+#endif
+
+#endif /* !_SYS_IMGACT_H_ */

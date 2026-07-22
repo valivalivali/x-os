@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2021 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1982, 1986, 1991, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -43,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -62,194 +32,360 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)types.h	8.4 (Berkeley) 1/21/94
  */
 
 #ifndef _SYS_TYPES_H_
-#define _SYS_TYPES_H_
+#define	_SYS_TYPES_H_
 
-#include <sys/appleapiopts.h>
-
-#ifndef __ASSEMBLER__
 #include <sys/cdefs.h>
 
 /* Machine type dependent parameters. */
-#include <machine/types.h>
-#include <sys/_types.h>
-
 #include <machine/endian.h>
+#include <sys/_types.h>
+#include <sys/_offsetof.h>
 
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#include <sys/_types/_u_char.h>
-#include <sys/_types/_u_short.h>
-#include <sys/_types/_u_int.h>
-#ifndef _U_LONG
-typedef unsigned long           u_long;
-#define _U_LONG
+#include <sys/_pthreadtypes.h>
+
+#if __BSD_VISIBLE
+typedef	unsigned char	u_char;
+typedef	unsigned short	u_short;
+typedef	unsigned int	u_int;
+typedef	unsigned long	u_long;
+#ifndef _KERNEL
+typedef	unsigned short	ushort;		/* Sys V compatibility */
+typedef	unsigned int	uint;		/* Sys V compatibility */
 #endif
-typedef unsigned short          ushort;         /* Sys V compatibility */
-#ifndef __DARWIN_UINT
-typedef unsigned int            uint;           /* Sys V compatibility */
-#define __DARWIN_UINT
-#endif
 #endif
 
-typedef u_int64_t               u_quad_t;       /* quads */
-typedef int64_t                 quad_t;
-typedef quad_t *                qaddr_t;
-
-#include <sys/_types/_caddr_t.h>        /* core address */
-
-typedef int32_t                 daddr_t;        /* disk address */
-
-#include <sys/_types/_dev_t.h>                  /* device number */
-
-typedef u_int32_t               fixpt_t;        /* fixed point number */
-
-#include <sys/_types/_blkcnt_t.h>
-#include <sys/_types/_blksize_t.h>
-#include <sys/_types/_gid_t.h>
-#include <sys/_types/_in_addr_t.h>
-#include <sys/_types/_in_port_t.h>
-#include <sys/_types/_ino_t.h>
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#include <sys/_types/_ino64_t.h>                        /* 64bit inode number */
-#endif /* !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE) */
-
-#include <sys/_types/_key_t.h>
-#include <sys/_types/_mode_t.h>
-#include <sys/_types/_nlink_t.h>
-#include <sys/_types/_id_t.h>
-#include <sys/_types/_pid_t.h>
-#include <sys/_types/_off_t.h>
-
-typedef int32_t                 segsz_t;        /* segment size */
-typedef int32_t                 swblk_t;        /* swap offset */
-
-#include <sys/_types/_uid_t.h>
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-/* Major, minor numbers, dev_t's. */
-#if defined(__cplusplus)
 /*
- * These lowercase macros tend to match member functions in some C++ code,
- * so for C++, we must use inline functions instead.
+ * XXX POSIX sized integrals that should appear only in <sys/stdint.h>.
  */
+#include <sys/_stdint.h>
 
-static inline __int32_t
-major(__uint32_t _x)
+typedef __uint8_t	u_int8_t;	/* unsigned integrals (deprecated) */
+typedef __uint16_t	u_int16_t;
+typedef __uint32_t	u_int32_t;
+typedef __uint64_t	u_int64_t;
+
+typedef	__uint64_t	u_quad_t;	/* quads (deprecated) */
+typedef	__int64_t	quad_t;
+typedef	quad_t *	qaddr_t;
+
+typedef	char *		caddr_t;	/* core address */
+typedef	const char *	c_caddr_t;	/* core address, pointer to const */
+
+#ifndef _BLKSIZE_T_DECLARED
+typedef	__blksize_t	blksize_t;
+#define	_BLKSIZE_T_DECLARED
+#endif
+
+typedef	__cpuwhich_t	cpuwhich_t;
+typedef	__cpulevel_t	cpulevel_t;
+typedef	__cpusetid_t	cpusetid_t;
+
+#ifndef _BLKCNT_T_DECLARED
+typedef	__blkcnt_t	blkcnt_t;
+#define	_BLKCNT_T_DECLARED
+#endif
+
+#ifndef _CLOCK_T_DECLARED
+typedef	__clock_t	clock_t;
+#define	_CLOCK_T_DECLARED
+#endif
+
+#ifndef _CLOCKID_T_DECLARED
+typedef	__clockid_t	clockid_t;
+#define	_CLOCKID_T_DECLARED
+#endif
+
+typedef	__critical_t	critical_t;	/* Critical section value */
+typedef	__daddr_t	daddr_t;	/* disk address */
+
+#ifndef _DEV_T_DECLARED
+typedef	__dev_t		dev_t;		/* device number or struct cdev */
+#define	_DEV_T_DECLARED
+#endif
+
+#ifndef _FFLAGS_T_DECLARED
+typedef	__fflags_t	fflags_t;	/* file flags */
+#define	_FFLAGS_T_DECLARED
+#endif
+
+typedef	__fixpt_t	fixpt_t;	/* fixed point number */
+
+#ifndef _FSBLKCNT_T_DECLARED		/* for statvfs() */
+typedef	__fsblkcnt_t	fsblkcnt_t;
+typedef	__fsfilcnt_t	fsfilcnt_t;
+#define	_FSBLKCNT_T_DECLARED
+#endif
+
+#ifndef _GID_T_DECLARED
+typedef	__gid_t		gid_t;		/* group id */
+#define	_GID_T_DECLARED
+#endif
+
+#ifndef _IN_ADDR_T_DECLARED
+typedef	__uint32_t	in_addr_t;	/* base type for internet address */
+#define	_IN_ADDR_T_DECLARED
+#endif
+
+#ifndef _IN_PORT_T_DECLARED
+typedef	__uint16_t	in_port_t;
+#define	_IN_PORT_T_DECLARED
+#endif
+
+#ifndef _ID_T_DECLARED
+typedef	__id_t		id_t;		/* can hold a uid_t or pid_t */
+#define	_ID_T_DECLARED
+#endif
+
+#ifndef _INO_T_DECLARED
+typedef	__ino_t		ino_t;		/* inode number */
+#define	_INO_T_DECLARED
+#endif
+
+#ifndef _KEY_T_DECLARED
+typedef	__key_t		key_t;		/* IPC key (for Sys V IPC) */
+#define	_KEY_T_DECLARED
+#endif
+
+#ifndef _LWPID_T_DECLARED
+typedef	__lwpid_t	lwpid_t;	/* Thread ID (a.k.a. LWP) */
+#define	_LWPID_T_DECLARED
+#endif
+
+#ifndef _MODE_T_DECLARED
+typedef	__mode_t	mode_t;		/* permissions */
+#define	_MODE_T_DECLARED
+#endif
+
+#ifndef _ACCMODE_T_DECLARED
+typedef	__accmode_t	accmode_t;	/* access permissions */
+#define	_ACCMODE_T_DECLARED
+#endif
+
+#ifndef _NLINK_T_DECLARED
+typedef	__nlink_t	nlink_t;	/* link count */
+#define	_NLINK_T_DECLARED
+#endif
+
+#ifndef _OFF_T_DECLARED
+typedef	__off_t		off_t;		/* file offset */
+#define	_OFF_T_DECLARED
+#endif
+
+#ifndef _OFF64_T_DECLARED
+typedef	__off64_t	off64_t;	/* file offset (alias) */
+#define	_OFF64_T_DECLARED
+#endif
+
+#ifndef _PID_T_DECLARED
+typedef	__pid_t		pid_t;		/* process id */
+#define	_PID_T_DECLARED
+#endif
+
+typedef	__register_t	register_t;
+
+#ifndef _RLIM_T_DECLARED
+typedef	__rlim_t	rlim_t;		/* resource limit */
+#define	_RLIM_T_DECLARED
+#endif
+
+typedef	__sbintime_t	sbintime_t;
+
+typedef	__segsz_t	segsz_t;	/* segment size (in pages) */
+
+#ifndef _SIZE_T_DECLARED
+typedef	__size_t	size_t;
+#define	_SIZE_T_DECLARED
+#endif
+
+#ifndef _SSIZE_T_DECLARED
+typedef	__ssize_t	ssize_t;
+#define	_SSIZE_T_DECLARED
+#endif
+
+#ifndef _SUSECONDS_T_DECLARED
+typedef	__suseconds_t	suseconds_t;	/* microseconds (signed) */
+#define	_SUSECONDS_T_DECLARED
+#endif
+
+#ifndef _TIME_T_DECLARED
+typedef	__time_t	time_t;
+#define	_TIME_T_DECLARED
+#endif
+
+#ifndef _TIMER_T_DECLARED
+typedef	__timer_t	timer_t;
+#define	_TIMER_T_DECLARED
+#endif
+
+#ifndef _MQD_T_DECLARED
+typedef	__mqd_t	mqd_t;
+#define	_MQD_T_DECLARED
+#endif
+
+typedef	__u_register_t	u_register_t;
+
+#ifndef _UID_T_DECLARED
+typedef	__uid_t		uid_t;		/* user id */
+#define	_UID_T_DECLARED
+#endif
+
+#ifndef _USECONDS_T_DECLARED
+typedef	__useconds_t	useconds_t;	/* microseconds (unsigned) */
+#define	_USECONDS_T_DECLARED
+#endif
+
+#ifndef _CAP_IOCTL_T_DECLARED
+#define	_CAP_IOCTL_T_DECLARED
+typedef	unsigned long	cap_ioctl_t;
+#endif
+
+#ifndef _CAP_RIGHTS_T_DECLARED
+#define	_CAP_RIGHTS_T_DECLARED
+struct cap_rights;
+
+typedef	struct cap_rights	cap_rights_t;
+#endif
+
+/*
+ * Types suitable for exporting physical addresses, virtual addresses
+ * (pointers), and memory object sizes from the kernel independent of native
+ * word size.  These should be used in place of vm_paddr_t, (u)intptr_t, and
+ * size_t in structs which contain such types that are shared with userspace.
+ */
+typedef	__uint64_t	kpaddr_t;
+typedef	__uint64_t	kvaddr_t;
+typedef	__uint64_t	ksize_t;
+typedef	__int64_t	kssize_t;
+
+typedef	__vm_offset_t	vm_offset_t;
+typedef	__uint64_t	vm_ooffset_t;
+typedef	__vm_paddr_t	vm_paddr_t;
+typedef	__uint64_t	vm_pindex_t;
+typedef	__vm_size_t	vm_size_t;
+
+typedef __rman_res_t    rman_res_t;
+
+typedef __register_t	syscallarg_t;
+
+#ifdef _KERNEL
+typedef	unsigned int	boolean_t;
+typedef	struct _device	*device_t;
+typedef	__intfptr_t	intfptr_t;
+
+/*
+ * XXX this is fixed width for historical reasons.  It should have had type
+ * __int_fast32_t.  Fixed-width types should not be used unless binary
+ * compatibility is essential.  Least-width types should be used even less
+ * since they provide smaller benefits.
+ *
+ * XXX should be MD.
+ *
+ * XXX this is bogus in -current, but still used for spl*().
+ */
+typedef	__uint32_t	intrmask_t;	/* Interrupt mask (spl, xxx_imask...) */
+
+typedef	__uintfptr_t	uintfptr_t;
+typedef	__uint64_t	uoff_t;
+typedef	char		vm_memattr_t;	/* memory attribute codes */
+typedef	struct vm_page	*vm_page_t;
+
+#endif /* _KERNEL */
+
+#if	defined(_KERNEL) || defined(_STANDALONE)
+#if !defined(__bool_true_false_are_defined) && !defined(__cplusplus)
+#define	__bool_true_false_are_defined	1
+#if __STDC_VERSION__ < 202311L
+#define	false	0
+#define	true	1
+typedef	_Bool	bool;
+#endif /* __STDC_VERSION__ < 202311L */
+#endif /* !__bool_true_false_are_defined && !__cplusplus */
+#endif /* KERNEL || _STANDALONE */
+
+/*
+ * The following are all things that really shouldn't exist in this header,
+ * since its purpose is to provide typedefs, not miscellaneous doodads.
+ */
+#include <sys/bitcount.h>
+
+#if __BSD_VISIBLE
+
+#ifndef _STANDALONE
+#include <sys/select.h>
+#endif
+
+/*
+ * The major and minor numbers are encoded in dev_t as MMMmmmMm (where
+ * letters correspond to bytes).  The encoding of the lower 4 bytes is
+ * constrained by compatibility with 16-bit and 32-bit dev_t's.  The
+ * encoding of the upper 4 bytes is the least unnatural one consistent
+ * with this and other constraints.  Also, the decoding of the m bytes by
+ * minor() is unnatural to maximize compatibility subject to not discarding
+ * bits.  The upper m byte is shifted into the position of the lower M byte
+ * instead of shifting 3 upper m bytes to close the gap.  Compatibility for
+ * minor() is achieved iff the upper m byte is 0.
+ */
+#define	major(d)	__major(d)
+static __inline int
+__major(dev_t _d)
 {
-	return (__int32_t)(((__uint32_t)_x >> 24) & 0xff);
+	return (((_d >> 32) & 0xffffff00) | ((_d >> 8) & 0xff));
+}
+#define	minor(d)	__minor(d)
+static __inline int
+__minor(dev_t _d)
+{
+	return (((_d >> 24) & 0xff00) | (_d & 0xffff00ff));
+}
+#define	makedev(M, m)	__makedev((M), (m))
+static __inline dev_t
+__makedev(int _Major, int _Minor)
+{
+	return (((dev_t)(_Major & 0xffffff00) << 32) | ((_Major & 0xff) << 8) |
+	    ((dev_t)(_Minor & 0xff00) << 24) | (_Minor & 0xffff00ff));
 }
 
-static inline __int32_t
-minor(__uint32_t _x)
-{
-	return (__int32_t)((_x) & 0xffffff);
-}
-
-static inline dev_t
-makedev(__uint32_t _major, __uint32_t _minor)
-{
-	return (dev_t)(((_major) << 24) | (_minor));
-}
-
-#else   /* !__cplusplus */
-
-#define major(x)        ((int32_t)(((u_int32_t)(x) >> 24) & 0xff))
-#define minor(x)        ((int32_t)((x) & 0xffffff))
-#define makedev(x, y)    ((dev_t)(((x) << 24) | (y)))
-
-#endif  /* !__cplusplus */
-#endif  /* !_POSIX_C_SOURCE */
-
-#include <sys/_types/_clock_t.h>
-#include <sys/_types/_size_t.h>
-#include <sys/_types/_ssize_t.h>
-#include <sys/_types/_time_t.h>
-
-#include <sys/_types/_useconds_t.h>
-#include <sys/_types/_suseconds_t.h>
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#include <sys/_types/_rsize_t.h>
-#include <sys/_types/_errno_t.h>
+#if (defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 13))
+#define __enum_uint8_decl(name)	enum enum_ ## name ## _uint8 : uint8_t
+#define __enum_uint8(name)	enum enum_ ## name ## _uint8
+#else
+/*
+ * Note: there is no real size checking here, but the code below can be
+ * removed once we require GCC 13.
+ */
+#define __enum_uint8_decl(name)	enum __attribute__((packed)) enum_ ## name ## _uint8
+#define __enum_uint8(name)	enum __attribute__((packed)) enum_ ## name ## _uint8
 #endif
 
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
 /*
- * This code is present here in order to maintain historical backward
- * compatability, and is intended to be removed at some point in the
- * future; please include <sys/select.h> instead.
+ * These declarations belong elsewhere, but are repeated here and in
+ * <stdio.h> to give broken programs a better chance of working with
+ * 64-bit off_t's.
  */
-#include <sys/_types/_fd_def.h>
-
-#define NBBY            __DARWIN_NBBY           /* bits in a byte */
-#define NFDBITS         __DARWIN_NFDBITS        /* bits per mask */
-#define howmany(x, y)   __DARWIN_howmany(x, y)  /* # y's == x bits? */
-typedef __int32_t       fd_mask;
-
-/*
- * Select uses bit masks of file descriptors in longs.  These macros
- * manipulate such bit fields (the filesystem macros use chars).  The
- * extra protection here is to permit application redefinition above
- * the default size.
- */
-#include <sys/_types/_fd_setsize.h>
-#include <sys/_types/_fd_set.h>
-#include <sys/_types/_fd_clr.h>
-#include <sys/_types/_fd_zero.h>
-#include <sys/_types/_fd_isset.h>
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#include <sys/_types/_fd_copy.h>
-#endif  /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
-
-
-#if defined(__STDC__) && defined(KERNEL)
-/*
- * Forward structure declarations for function prototypes.  We include the
- * common structures that cross subsystem boundaries here; others are mostly
- * used in the same place that the structure is defined.
- */
-struct  proc;
-struct  pgrp;
-struct  ucred;
-struct  rusage;
-struct  file;
-struct  buf;
-struct  tty;
-struct  uio;
+#ifndef _KERNEL
+__BEGIN_DECLS
+#ifndef _FTRUNCATE_DECLARED
+#define	_FTRUNCATE_DECLARED
+int	 ftruncate(int, off_t);
 #endif
+#ifndef _LSEEK_DECLARED
+#define	_LSEEK_DECLARED
+off_t	 lseek(int, off_t, int);
+#endif
+#ifndef _MMAP_DECLARED
+#define	_MMAP_DECLARED
+void *	 mmap(void *, size_t, int, int, int, off_t);
+#endif
+#ifndef _TRUNCATE_DECLARED
+#define	_TRUNCATE_DECLARED
+int	 truncate(const char *, off_t);
+#endif
+__END_DECLS
+#endif /* !_KERNEL */
 
-#endif /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
-#endif /* __ASSEMBLER__ */
-
-#ifndef KERNEL
-
-#ifndef __POSIX_LIB__
-
-#include <sys/_pthread/_pthread_attr_t.h>
-#include <sys/_pthread/_pthread_cond_t.h>
-#include <sys/_pthread/_pthread_condattr_t.h>
-#include <sys/_pthread/_pthread_mutex_t.h>
-#include <sys/_pthread/_pthread_mutexattr_t.h>
-#include <sys/_pthread/_pthread_once_t.h>
-#include <sys/_pthread/_pthread_rwlock_t.h>
-#include <sys/_pthread/_pthread_rwlockattr_t.h>
-#include <sys/_pthread/_pthread_t.h>
-
-#endif /* __POSIX_LIB__ */
-
-#include <sys/_pthread/_pthread_key_t.h>
-
-#endif /* KERNEL */
-
-/* statvfs and fstatvfs */
-
-#include <sys/_types/_fsblkcnt_t.h>
-#include <sys/_types/_fsfilcnt_t.h>
+#endif /* __BSD_VISIBLE */
 
 #endif /* !_SYS_TYPES_H_ */

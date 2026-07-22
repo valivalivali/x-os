@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2005 Apple Computer, Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1984, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,51 +27,281 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ptrace.h	8.2 (Berkeley) 1/4/94
  */
 
-#ifndef _SYS_PTRACE_H_
-#define _SYS_PTRACE_H_
+#ifndef	_SYS_PTRACE_H_
+#define	_SYS_PTRACE_H_
 
-#include <sys/appleapiopts.h>
-#include <sys/cdefs.h>
-#include <sys/types.h>
+#include <sys/signal.h>
+#include <sys/param.h>
+#include <machine/reg.h>
 
-enum {
-	ePtAttachDeprecated __deprecated_enum_msg("PT_ATTACH is deprecated. See PT_ATTACHEXC") = 10
+#define	PT_TRACE_ME	0	/* child declares it's being traced */
+#define	PT_READ_I	1	/* read word in child's I space */
+#define	PT_READ_D	2	/* read word in child's D space */
+/* was	PT_READ_U	3	 * read word in child's user structure */
+#define	PT_WRITE_I	4	/* write word in child's I space */
+#define	PT_WRITE_D	5	/* write word in child's D space */
+/* was	PT_WRITE_U	6	 * write word in child's user structure */
+#define	PT_CONTINUE	7	/* continue the child */
+#define	PT_KILL		8	/* kill the child process */
+#define	PT_STEP		9	/* single step the child */
+
+#define	PT_ATTACH	10	/* trace some running process */
+#define	PT_DETACH	11	/* stop tracing a process */
+#define PT_IO		12	/* do I/O to/from stopped process. */
+#define	PT_LWPINFO	13	/* Info about the LWP that stopped. */
+#define PT_GETNUMLWPS	14	/* get total number of threads */
+#define PT_GETLWPLIST	15	/* get thread list */
+#define PT_CLEARSTEP	16	/* turn off single step */
+#define PT_SETSTEP	17	/* turn on single step */
+#define PT_SUSPEND	18	/* suspend a thread */
+#define PT_RESUME	19	/* resume a thread */
+
+#define	PT_TO_SCE	20
+#define	PT_TO_SCX	21
+#define	PT_SYSCALL	22
+
+#define	PT_FOLLOW_FORK	23
+#define	PT_LWP_EVENTS	24	/* report LWP birth and exit */
+
+#define	PT_GET_EVENT_MASK 25	/* get mask of optional events */
+#define	PT_SET_EVENT_MASK 26	/* set mask of optional events */
+
+#define	PT_GET_SC_ARGS	27	/* fetch syscall args */
+#define	PT_GET_SC_RET	28	/* fetch syscall results */
+
+#define PT_COREDUMP	29	/* create a coredump */
+
+#define PT_GETREGS      33	/* get general-purpose registers */
+#define PT_SETREGS      34	/* set general-purpose registers */
+#define PT_GETFPREGS    35	/* get floating-point registers */
+#define PT_SETFPREGS    36	/* set floating-point registers */
+#define PT_GETDBREGS    37	/* get debugging registers */
+#define PT_SETDBREGS    38	/* set debugging registers */
+
+#define	PT_VM_TIMESTAMP	40	/* Get VM version (timestamp) */
+#define	PT_VM_ENTRY	41	/* Get VM map (entry) */
+#define	PT_GETREGSET	42	/* Get a target register set */
+#define	PT_SETREGSET	43	/* Set a target register set */
+#define	PT_SC_REMOTE	44	/* Execute a syscall */
+#define	PT_SET_SC_RET	45	/* Set (fake) syscall results */
+#define	PT_GET_CHILDREN	46	/* Report children */
+
+#define PT_FIRSTMACH    64	/* for machine-specific requests */
+#define	PT_LASTMACH     127
+#include <machine/ptrace.h>	/* machine-specific requests, if any */
+
+#ifdef _KERNEL
+/* Space for ptrace commands not exposed directly to userspace. */
+#define	PTINTERNAL_FIRST	128
+#define	PTINTERNAL_LAST		191
+#define	PTLINUX_GET_SC_ARGS	(PTINTERNAL_FIRST + 0)
+#endif
+
+/* Events used with PT_GET_EVENT_MASK and PT_SET_EVENT_MASK */
+#define	PTRACE_EXEC	0x0001
+#define	PTRACE_SCE	0x0002
+#define	PTRACE_SCX	0x0004
+#define	PTRACE_SYSCALL	(PTRACE_SCE | PTRACE_SCX)
+#define	PTRACE_FORK	0x0008
+#define	PTRACE_LWP	0x0010
+#define	PTRACE_VFORK	0x0020
+
+#define	PTRACE_DEFAULT	(PTRACE_EXEC)
+
+struct ptrace_io_desc {
+	int	piod_op;	/* I/O operation */
+	void	*piod_offs;	/* child offset */
+	void	*piod_addr;	/* parent offset */
+	size_t	piod_len;	/* request length */
 };
 
+/*
+ * Operations in piod_op.
+ */
+#define PIOD_READ_D	1	/* Read from D space */
+#define PIOD_WRITE_D	2	/* Write to D space */
+#define PIOD_READ_I	3	/* Read from I space */
+#define PIOD_WRITE_I	4	/* Write to I space */
 
-#define PT_TRACE_ME     0       /* child declares it's being traced */
-#define PT_READ_I       1       /* read word in child's I space */
-#define PT_READ_D       2       /* read word in child's D space */
-#define PT_READ_U       3       /* read word in child's user structure */
-#define PT_WRITE_I      4       /* write word in child's I space */
-#define PT_WRITE_D      5       /* write word in child's D space */
-#define PT_WRITE_U      6       /* write word in child's user structure */
-#define PT_CONTINUE     7       /* continue the child */
-#define PT_KILL         8       /* kill the child process */
-#define PT_STEP         9       /* single step the child */
-#define PT_ATTACH       ePtAttachDeprecated     /* trace some running process */
-#define PT_DETACH       11      /* stop tracing a process */
-#define PT_SIGEXC       12      /* signals as exceptions for current_proc */
-#define PT_THUPDATE     13      /* signal for thread# */
-#define PT_ATTACHEXC    14      /* attach to running process with signal exception */
+/* Argument structure for PT_LWPINFO. */
+struct ptrace_lwpinfo {
+	lwpid_t	pl_lwpid;	/* LWP described. */
+	int	pl_event;	/* Event that stopped the LWP. */
+#define	PL_EVENT_NONE	0
+#define	PL_EVENT_SIGNAL	1
+	int	pl_flags;	/* LWP flags. */
+#define	PL_FLAG_SA	0x01	/* M:N thread */
+#define	PL_FLAG_BOUND	0x02	/* M:N bound thread */
+#define	PL_FLAG_SCE	0x04	/* syscall enter point */
+#define	PL_FLAG_SCX	0x08	/* syscall leave point */
+#define	PL_FLAG_EXEC	0x10	/* exec(2) succeeded */
+#define	PL_FLAG_SI	0x20	/* siginfo is valid */
+#define	PL_FLAG_FORKED	0x40	/* new child */
+#define	PL_FLAG_CHILD	0x80	/* I am from child */
+#define	PL_FLAG_BORN	0x100	/* new LWP */
+#define	PL_FLAG_EXITED	0x200	/* exiting LWP */
+#define	PL_FLAG_VFORKED	0x400	/* new child via vfork */
+#define	PL_FLAG_VFORK_DONE 0x800 /* vfork parent has resumed */
+	sigset_t	pl_sigmask;	/* LWP signal mask */
+	sigset_t	pl_siglist;	/* LWP pending signal */
+	struct __siginfo pl_siginfo;	/* siginfo for signal */
+	char		pl_tdname[MAXCOMLEN + 1]; /* LWP name */
+	pid_t		pl_child_pid;	/* New child pid */
+	u_int		pl_syscall_code;
+	u_int		pl_syscall_narg;
+};
 
-#define PT_FORCEQUOTA   30      /* Enforce quota for root */
-#define PT_DENY_ATTACH  31
+#if defined(_WANT_LWPINFO32) || (defined(_KERNEL) && defined(__LP64__))
+struct ptrace_lwpinfo32 {
+	lwpid_t	pl_lwpid;	/* LWP described. */
+	int	pl_event;	/* Event that stopped the LWP. */
+	int	pl_flags;	/* LWP flags. */
+	sigset_t	pl_sigmask;	/* LWP signal mask */
+	sigset_t	pl_siglist;	/* LWP pending signal */
+	struct __siginfo32 pl_siginfo;	/* siginfo for signal */
+	char		pl_tdname[MAXCOMLEN + 1]; /* LWP name. */
+	pid_t		pl_child_pid;	/* New child pid */
+	u_int		pl_syscall_code;
+	u_int		pl_syscall_narg;
+};
+#endif
 
-#define PT_FIRSTMACH    32      /* for machine-specific requests */
+/* Argument structure for PT_GET_SC_RET and PT_SET_SC_RET. */
+struct ptrace_sc_ret {
+	syscallarg_t	sr_retval[2];	/* Only valid if sr_error == 0. */
+	int		sr_error;
+};
+
+/* Argument structure for PT_VM_ENTRY. */
+struct ptrace_vm_entry {
+	int		pve_entry;	/* Entry number used for iteration. */
+	int		pve_timestamp;	/* Generation number of VM map. */
+	u_long		pve_start;	/* Start VA of range. */
+	u_long		pve_end;	/* End VA of range (incl). */
+	u_long		pve_offset;	/* Offset in backing object. */
+	u_int		pve_prot;	/* Protection of memory range. */
+	u_int		pve_pathlen;	/* Size of path. */
+	long		pve_fileid;	/* File ID. */
+	uint32_t	pve_fsid;	/* File system ID. */
+	char		*pve_path;	/* Path name of object. */
+};
+
+/* Argument structure for PT_COREDUMP */
+struct ptrace_coredump {
+	int		pc_fd;		/* File descriptor to write dump to. */
+	uint32_t	pc_flags;	/* Flags PC_* */
+	off_t		pc_limit;	/* Maximum size of the coredump,
+					   0 for no limit. */
+};
+
+/* Flags for PT_COREDUMP pc_flags */
+#define	PC_COMPRESS	0x00000001	/* Allow compression */
+#define	PC_ALL		0x00000002	/* Include non-dumpable entries */
+
+struct ptrace_sc_remote {
+	struct ptrace_sc_ret pscr_ret;
+	u_int	pscr_syscall;
+	u_int	pscr_nargs;
+	syscallarg_t	*pscr_args;
+};
+
+#define	PTCHLD_TRACED		0x00000001
+#define	PTCHLD_TRACED_BY_ME	0x00000002
+#define	PTCHLD_EXITED		0x00000004
+#define	PTCHLD_ORPHAN		0x00000008
+
+struct ptrace_child {
+	pid_t	pid;
+	int	flags;
+	uint64ptr_t rsrv[3];
+};
+
+#ifdef _KERNEL
+
+#include <sys/proc.h>
+
+struct thr_coredump_req {
+	struct vnode	*tc_vp;		/* vnode to write coredump to. */
+	off_t		tc_limit;	/* max coredump file size. */
+	int		tc_flags;	/* user flags */
+	int		tc_error;	/* request result */
+};
+
+struct thr_syscall_req {
+	struct ptrace_sc_ret ts_ret;
+	u_int	ts_nargs;
+	struct syscall_args ts_sa;
+};
+
+int	ptrace_set_pc(struct thread *_td, unsigned long _addr);
+int	ptrace_single_step(struct thread *_td);
+int	ptrace_clear_single_step(struct thread *_td);
+
+#ifdef __HAVE_PTRACE_MACHDEP
+int	cpu_ptrace(struct thread *_td, int _req, void *_addr, int _data);
+#endif
+
+/*
+ * These are prototypes for functions that implement some of the
+ * debugging functionality exported by procfs / linprocfs and by the
+ * ptrace(2) syscall.  They used to be part of procfs, but they don't
+ * really belong there.
+ */
+struct reg;
+struct fpreg;
+struct dbreg;
+struct uio;
+int	proc_read_regs(struct thread *_td, struct reg *_reg);
+int	proc_write_regs(struct thread *_td, struct reg *_reg);
+int	proc_read_fpregs(struct thread *_td, struct fpreg *_fpreg);
+int	proc_write_fpregs(struct thread *_td, struct fpreg *_fpreg);
+int	proc_read_dbregs(struct thread *_td, struct dbreg *_dbreg);
+int	proc_write_dbregs(struct thread *_td, struct dbreg *_dbreg);
+int	proc_sstep(struct thread *_td);
+
+#define	PRVM_BLOCK_EXEC		0x00000001
+#define	PRVM_CHECK_VISIBILITY	0x00000002
+#define	PRVM_CHECK_DEBUG	0x00000004
+
+#include <sys/_uio.h>
+struct vmspace;
+int	proc_vmspace_ref(struct thread *_td, struct proc *_p, int _flags,
+	    struct vmspace **_vmp);
+void	proc_vmspace_unref(struct thread *_td, struct proc *_p, int _flags,
+	    struct vmspace *_vm);
+ssize_t	vmspace_iop(struct thread *td, struct vmspace *vm, vm_offset_t va,
+	    void *buf, size_t len, enum uio_rw rw);
+int	proc_rwmem(struct proc *_p, struct uio *_uio, int _flags);
+ssize_t	proc_readmem(struct thread *_td, struct proc *_p, vm_offset_t _va,
+	    void *_buf, size_t _len);
+ssize_t	proc_writemem(struct thread *_td, struct proc *_p, vm_offset_t _va,
+	    void *_buf, size_t _len);
+#ifdef COMPAT_FREEBSD32
+struct reg32;
+struct fpreg32;
+struct dbreg32;
+int	proc_read_regs32(struct thread *_td, struct reg32 *_reg32);
+int	proc_write_regs32(struct thread *_td, struct reg32 *_reg32);
+int	proc_read_fpregs32(struct thread *_td, struct fpreg32 *_fpreg32);
+int	proc_write_fpregs32(struct thread *_td, struct fpreg32 *_fpreg32);
+int	proc_read_dbregs32(struct thread *_td, struct dbreg32 *_dbreg32);
+int	proc_write_dbregs32(struct thread *_td, struct dbreg32 *_dbreg32);
+#endif
+
+void	ptrace_unsuspend(struct proc *p);
+
+extern bool allow_ptrace;
+
+#else /* !_KERNEL */
+
+#include <sys/cdefs.h>
 
 __BEGIN_DECLS
-
-#ifndef KERNEL
-
-int     ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);
-
-#endif /* !KERNEL */
-
+int	ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);
 __END_DECLS
 
-#endif  /* !_SYS_PTRACE_H_ */
+#endif /* !_KERNEL */
+
+#endif	/* !_SYS_PTRACE_H_ */

@@ -1,35 +1,10 @@
-/*
- * Copyright (c) 2000-2021 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1998, 1999 Apple Computer, Inc. All Rights Reserved */
-/* Copyright (c) 1995, 1997 Apple Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1987, 1993
- *	The Regents of the University of California.  All rights reserved.
+ *	The Regents of the University of California.
+ * Copyright (c) 2005, 2009 Robert N. M. Watson
+ * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -39,11 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -58,143 +29,301 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)malloc.h	8.5 (Berkeley) 5/3/95
- */
-/*
- * NOTICE: This file was modified by SPARTA, Inc. in 2005 to introduce
- * support for mandatory and extensible security protections.  This notice
- * is included in support of clause 2.2 (b) of the Apple Public License,
- * Version 2.0.
  */
 
 #ifndef _SYS_MALLOC_H_
-#define _SYS_MALLOC_H_
+#define	_SYS_MALLOC_H_
 
-#include <sys/cdefs.h>
-#include <sys/appleapiopts.h>
-
-#ifdef KERNEL
-#ifdef XNU_KERNEL_PRIVATE
-#include <mach/vm_types.h>
-#include <kern/kalloc.h>
+#ifndef _STANDALONE
+#include <sys/param.h>
+#ifdef _KERNEL
+#include <sys/systm.h>
 #endif
+#include <sys/queue.h>
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
+#include <machine/_limits.h>
 
-__BEGIN_DECLS
+#define	MINALLOCSIZE	UMA_SMALLEST_UNIT
 
 /*
- * flags to malloc
+ * Flags to memory allocation functions.
  */
-#define M_WAITOK        0x0000
-#define M_NOWAIT        0x0001
-#define M_ZERO          0x0004          /* bzero the allocation */
-#define M_NULL          0x0008          /* return NULL if space is unavailable*/
+#define	M_NOWAIT	0x0001		/* do not block */
+#define	M_WAITOK	0x0002		/* ok to block */
+#define	M_NORECLAIM	0x0080		/* do not reclaim after failure */
+#define	M_ZERO		0x0100		/* bzero the allocation */
+#define	M_NOVM		0x0200		/* don't ask VM for pages */
+#define	M_USE_RESERVE	0x0400		/* can alloc out of reserve memory */
+#define	M_NODUMP	0x0800		/* don't dump pages in this allocation */
+#define	M_FIRSTFIT	0x1000		/* only for vmem, fast fit */
+#define	M_BESTFIT	0x2000		/* only for vmem, low fragmentation */
+#define	M_EXEC		0x4000		/* allocate executable space */
+#define	M_NEXTFIT	0x8000		/* only for vmem, follow cursor */
+#define	M_NEVERFREED 	0x10000		/* chunk will never get freed */
+#define	M_UNPROTECTED	0x20000		/* alloc out of unprotected memory */
 
-#ifdef XNU_KERNEL_PRIVATE
+#define	M_VERSION	2024073001
 
 /*
- * Types of memory to be allocated (not all are used by us)
+ * Two malloc type structures are present: malloc_type, which is used by a
+ * type owner to declare the type, and malloc_type_internal, which holds
+ * malloc-owned statistics and other ABI-sensitive fields, such as the set of
+ * malloc statistics indexed by the compile-time MAXCPU constant.
+ * Applications should avoid introducing dependence on the allocator private
+ * data layout and size.
+ *
+ * The malloc_type ks_next field is protected by malloc_mtx.  Other fields in
+ * malloc_type are static after initialization so unsynchronized.
+ *
+ * Statistics in malloc_type_stats are written only when holding a critical
+ * section and running on the CPU associated with the index into the stat
+ * array, but read lock-free resulting in possible (minor) races, which the
+ * monitoring app should take into account.
  */
-#define M_PCB           4       /* protocol control block */
-#define M_RTABLE        5       /* routing tables */
-#define M_IFADDR        9       /* interface address */
-#define M_SONAME        11      /* socket name */
-#define M_PGRP          17      /* process group header */
-#define M_FHANDLE       21      /* network file handle */
-#define M_VNODE         25      /* Dynamically allocated vnodes */
-#define M_CACHE         26      /* Dynamically allocated cache entries */
-#define M_DQUOT         27      /* UFS quota entries */
-#define M_PROC_UUID_POLICY      28      /* proc UUID policy entries */
-#define M_SHM           29      /* SVID compatible shared memory segments */
-#define M_LOCKF         40      /* Byte-range locking structures */
-#define M_PROC          41      /* Proc structures */
-#define M_NETADDR       49      /* Export host address structure */
-#define M_NFSSVC        50      /* NFS server structure */
-#define M_NFSD          52      /* NFS server daemon structure */
-#define M_IPMOPTS       53      /* internet multicast options */
-#define M_TTYS          65      /* allocated tty structures */
-#define M_OFILETABL     73      /* Open file descriptor table */
-#define M_TEMP          80      /* misc temporary data buffers */
-#define M_SECA          81      /* security associations, key management */
-#define M_UDFNODE       84      /* UDF inodes */
-#define M_UDFMNT        85      /* UDF mount structures */
-#define M_KQUEUE        94      /* kqueue system */
-#define M_KAUTH         100     /* kauth subsystem */
-#define M_SBUF          105     /* string buffers */
-#define M_SELECT        107     /* per-thread select memory */
-#define M_IP6MOPTS      113     /* IPv6 multicast options */
-#define M_IP6CGA        117
-#define M_NECP          118     /* General NECP policy data */
-#define M_FD_VN_DATA    122     /* Per fd vnode data */
-#define M_FD_DIRBUF     123     /* Directory entries' buffer */
-#define M_EVENTHANDLER  125     /* Eventhandler */
-#define M_LLTABLE       126     /* Link layer table */
-#define M_CFIL          128     /* Content Filter */
-#define M_TRACKER       129     /* Tracker socket management */
+struct malloc_type_stats {
+	uint64_t	mts_memalloced;	/* Bytes allocated on CPU. */
+	uint64_t	mts_memfreed;	/* Bytes freed on CPU. */
+	uint64_t	mts_numallocs;	/* Number of allocates on CPU. */
+	uint64_t	mts_numfrees;	/* number of frees on CPU. */
+	uint64_t	mts_size;	/* Bitmask of sizes allocated on CPU. */
+	uint64_t	_mts_reserved1;	/* Reserved field. */
+	uint64_t	_mts_reserved2;	/* Reserved field. */
+	uint64_t	_mts_reserved3;	/* Reserved field. */
+};
 
-ZONE_VIEW_DECLARE(ZV_NAMEI);
+_Static_assert(sizeof(struct malloc_type_stats) == 64,
+    "allocations come from pcpu_zone_64");
 
-#else /* XNU_KERNEL_PRIVATE */
+/*
+ * Index definitions for the mti_probes[] array.
+ */
+#define DTMALLOC_PROBE_MALLOC		0
+#define DTMALLOC_PROBE_FREE		1
+#define DTMALLOC_PROBE_MAX		2
 
-#define M_PCB           4       /* protocol control block (smb) */
-#define M_RTABLE        5       /* routing tables */
-#define M_IFADDR        9       /* interface address (IOFireWireIP)*/
-#define M_SONAME        11      /* socket name (smb) */
-#define M_LOCKF         40      /* Byte-range locking structures (msdos) */
-#define M_TEMP          80      /* misc temporary data buffers */
-#define M_UDFNODE       84      /* UDF inodes (udf)*/
-#define M_UDFMNT        85      /* UDF mount structures (udf)*/
-#define M_KAUTH         100     /* kauth subsystem (smb) */
+struct malloc_type_internal {
+	uint32_t	mti_probes[DTMALLOC_PROBE_MAX];
+					/* DTrace probe ID array. */
+	u_char		mti_zone;
+	struct malloc_type_stats	*mti_stats;
+	u_long		mti_spare[8];
+};
 
-#if XNU_PLATFORM_MacOSX
+/*
+ * Public data structure describing a malloc type.
+ */
+struct malloc_type {
+	struct malloc_type *ks_next;	/* Next in global chain. */
+	u_long		 ks_version;	/* Detect programmer error. */
+	const char	*ks_shortdesc;	/* Printable type name. */
+	struct malloc_type_internal ks_mti;
+};
 
-#define MALLOC(space, cast, size, type, flags) \
-	(space) = (cast)_MALLOC(size, type, flags)
+/*
+ * Statistics structure headers for user space.  The kern.malloc sysctl
+ * exposes a structure stream consisting of a stream header, then a series of
+ * malloc type headers and statistics structures (quantity maxcpus).  For
+ * convenience, the kernel will provide the current value of maxcpus at the
+ * head of the stream.
+ */
+#define	MALLOC_TYPE_STREAM_VERSION	0x00000001
+struct malloc_type_stream_header {
+	uint32_t	mtsh_version;	/* Stream format version. */
+	uint32_t	mtsh_maxcpus;	/* Value of MAXCPU for stream. */
+	uint32_t	mtsh_count;	/* Number of records. */
+	uint32_t	_mtsh_pad;	/* Pad/reserved field. */
+};
 
-#define FREE(addr, type) \
-	_FREE((void *)addr, type)
+#define	MALLOC_MAX_NAME	32
+struct malloc_type_header {
+	char				mth_name[MALLOC_MAX_NAME];
+};
 
-#define MALLOC_ZONE(space, cast, size, type, flags) \
-	(space) = (cast)_MALLOC_ZONE(size, type, flags)
+#ifdef _KERNEL
+#define	MALLOC_DEFINE(type, shortdesc, longdesc)			\
+	struct malloc_type type[1] = {					\
+		{							\
+			.ks_next = NULL,				\
+			.ks_version = M_VERSION,			\
+			.ks_shortdesc = shortdesc,			\
+		}							\
+	};								\
+	SYSINIT(type##_init, SI_SUB_KMEM, SI_ORDER_THIRD, malloc_init,	\
+	    type);							\
+	SYSUNINIT(type##_uninit, SI_SUB_KMEM, SI_ORDER_ANY,		\
+	    malloc_uninit, type)
 
-#define FREE_ZONE(addr, size, type) \
-	_FREE_ZONE((void *)addr, size, type)
+#define	MALLOC_DECLARE(type) \
+	extern struct malloc_type type[1]
 
-#if defined(KERNEL_PRIVATE)
-__deprecated_msg("Please use IOMallocType()/kalloc_type() instead")
-#endif
-extern void     *_MALLOC(
-	size_t          size,
-	int             type,
-	int             flags);
+MALLOC_DECLARE(M_CACHE);
+MALLOC_DECLARE(M_DEVBUF);
+MALLOC_DECLARE(M_PARGS);
+MALLOC_DECLARE(M_SESSION);
+MALLOC_DECLARE(M_SUBPROC);
+MALLOC_DECLARE(M_TEMP);
 
-#if defined(KERNEL_PRIVATE)
-__deprecated_msg("Please use IOFreeType()/kfree_type() instead")
-#endif
-extern void     _FREE(
-	void            *addr,
-	int             type);
+/*
+ * XXX this should be declared in <sys/uio.h>, but that tends to fail
+ * because <sys/uio.h> is included in a header before the source file
+ * has a chance to include <sys/malloc.h> to get MALLOC_DECLARE() defined.
+ */
+MALLOC_DECLARE(M_IOV);
 
-#if defined(KERNEL_PRIVATE)
-__deprecated_msg("Please use IOMallocType()/kalloc_type() instead")
-#endif
-extern void     *_MALLOC_ZONE(
-	size_t          size,
-	int             type,
-	int             flags);
+struct domainset;
+extern struct mtx malloc_mtx;
 
-#if defined(KERNEL_PRIVATE)
-__deprecated_msg("Please use IOFreeType()/kfree_type() instead")
-#endif
-extern void     _FREE_ZONE(
-	void            *elem,
-	size_t          size,
-	int             type);
+/*
+ * Function type used when iterating over the list of malloc types.
+ */
+typedef void malloc_type_list_func_t(struct malloc_type *, void *);
 
-#endif /* XNU_PLATFORM_MacOSX */
-#endif /* !XNU_KERNEL_PRIVATE */
+/* contigfree(9) is deprecated. */
+void	contigfree(void *addr, unsigned long, struct malloc_type *type);
+void	*contigmalloc(unsigned long size, struct malloc_type *type, int flags,
+	    vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
+	    vm_paddr_t boundary) __malloc_like __result_use_check
+	    __alloc_size(1) __alloc_align(6);
+void	*contigmalloc_domainset(unsigned long size, struct malloc_type *type,
+	    struct domainset *ds, int flags, vm_paddr_t low, vm_paddr_t high,
+	    unsigned long alignment, vm_paddr_t boundary)
+	    __malloc_like __result_use_check __alloc_size(1) __alloc_align(7);
+void	free(void *addr, struct malloc_type *type);
+void	zfree(void *addr, struct malloc_type *type);
+void	*malloc(size_t size, struct malloc_type *type, int flags) __malloc_like
+	    __result_use_check __alloc_size(1);
+/*
+ * Try to optimize malloc(..., ..., M_ZERO) allocations by doing zeroing in
+ * place if the size is known at compilation time.
+ *
+ * Passing the flag down requires malloc to blindly zero the entire object.
+ * In practice a lot of the zeroing can be avoided if most of the object
+ * gets explicitly initialized after the allocation. Letting the compiler
+ * zero in place gives it the opportunity to take advantage of this state.
+ *
+ * Note that the operation is only applicable if both flags and size are
+ * known at compilation time. If M_ZERO is passed but M_WAITOK is not, the
+ * allocation can fail and a NULL check is needed. However, if M_WAITOK is
+ * passed we know the allocation must succeed and the check can be elided.
+ *
+ *	_malloc_item = malloc(_size, type, (flags) &~ M_ZERO);
+ *	if (((flags) & M_WAITOK) != 0 || _malloc_item != NULL)
+ *		bzero(_malloc_item, _size);
+ *
+ * If the flag is set, the compiler knows the left side is always true,
+ * therefore the entire statement is true and the callsite is:
+ *
+ *	_malloc_item = malloc(_size, type, (flags) &~ M_ZERO);
+ *	bzero(_malloc_item, _size);
+ *
+ * If the flag is not set, the compiler knows the left size is always false
+ * and the NULL check is needed, therefore the callsite is:
+ *
+ * 	_malloc_item = malloc(_size, type, (flags) &~ M_ZERO);
+ *	if (_malloc_item != NULL)
+ *		bzero(_malloc_item, _size);			
+ *
+ * The implementation is a macro because of what appears to be a clang 6 bug:
+ * an inline function variant ended up being compiled to a mere malloc call
+ * regardless of argument. gcc generates expected code (like the above).
+ */
+#define	malloc(size, type, flags) ({					\
+	void *_malloc_item;						\
+	size_t _size = (size);						\
+	if (__builtin_constant_p(size) && __builtin_constant_p(flags) &&\
+	    ((flags) & M_ZERO) != 0) {					\
+		_malloc_item = malloc(_size, type, (flags) &~ M_ZERO);	\
+		if (((flags) & M_WAITOK) != 0 ||			\
+		    __predict_true(_malloc_item != NULL))		\
+			memset(_malloc_item, 0, _size);			\
+	} else {							\
+		_malloc_item = malloc(_size, type, flags);		\
+	}								\
+	_malloc_item;							\
+})
 
-__END_DECLS
+void	*malloc_domainset(size_t size, struct malloc_type *type,
+	    struct domainset *ds, int flags) __malloc_like __result_use_check
+	    __alloc_size(1);
+void	*mallocarray(size_t nmemb, size_t size, struct malloc_type *type,
+	    int flags) __malloc_like __result_use_check
+	    __alloc_size2(1, 2);
+void	*mallocarray_domainset(size_t nmemb, size_t size, struct malloc_type *type,
+	    struct domainset *ds, int flags) __malloc_like __result_use_check
+	    __alloc_size2(1, 2);
+void	*malloc_exec(size_t size, struct malloc_type *type, int flags) __malloc_like
+	    __result_use_check __alloc_size(1);
+void	*malloc_domainset_exec(size_t size, struct malloc_type *type,
+	    struct domainset *ds, int flags) __malloc_like __result_use_check
+	    __alloc_size(1);
+void	malloc_init(void *);
+void	malloc_type_allocated(struct malloc_type *type, unsigned long size);
+void	malloc_type_freed(struct malloc_type *type, unsigned long size);
+void	malloc_type_list(malloc_type_list_func_t *, void *);
+void	malloc_uninit(void *);
+size_t	malloc_size(size_t);
+size_t	malloc_usable_size(const void *);
+void	*realloc(void *addr, size_t size, struct malloc_type *type, int flags)
+	    __result_use_check __alloc_size(2);
+void	*reallocf(void *addr, size_t size, struct malloc_type *type, int flags)
+	    __result_use_check __alloc_size(2);
+void	*malloc_aligned(size_t size, size_t align, struct malloc_type *type,
+	    int flags) __malloc_like __result_use_check __alloc_size(1);
+void	*malloc_domainset_aligned(size_t size, size_t align,
+	    struct malloc_type *mtp, struct domainset *ds, int flags)
+	    __malloc_like __result_use_check __alloc_size(1);
 
-#endif  /* KERNEL */
-#endif  /* _SYS_MALLOC_H_ */
+struct malloc_type *malloc_desc2type(const char *desc);
+
+/*
+ * This is sqrt(SIZE_MAX+1), as s1*s2 <= SIZE_MAX
+ * if both s1 < MUL_NO_OVERFLOW and s2 < MUL_NO_OVERFLOW
+ */
+#define MUL_NO_OVERFLOW		(1UL << (sizeof(size_t) * 8 / 2))
+static inline bool
+WOULD_OVERFLOW(size_t nmemb, size_t size)
+{
+
+	return ((nmemb >= MUL_NO_OVERFLOW || size >= MUL_NO_OVERFLOW) &&
+	    nmemb > 0 && __SIZE_T_MAX / nmemb < size);
+}
+#undef MUL_NO_OVERFLOW
+#endif /* _KERNEL */
+
+#else
+/*
+ * The native stand malloc / free interface we're mapping to
+ */
+extern void Free(void *p, const char *file, int line);
+extern void *Malloc(size_t bytes, const char *file, int line);
+
+/*
+ * Minimal standalone malloc implementation / environment. None of the
+ * flags mean anything and there's no need declare malloc types.
+ * Define the simple alloc / free routines in terms of Malloc and
+ * Free. None of the kernel features that this stuff disables are needed.
+ */
+#define M_WAITOK 1
+#define M_ZERO 0
+#define M_NOWAIT 2
+#define MALLOC_DECLARE(x)
+
+#define kmem_zalloc(size, flags) ({					\
+	void *p = Malloc((size), __FILE__, __LINE__);			\
+	if (p == NULL && (flags &  M_WAITOK) != 0)			\
+		panic("Could not malloc %zd bytes with M_WAITOK from %s line %d", \
+		    (size_t)size, __FILE__, __LINE__);			\
+	p;								\
+})
+
+#define kmem_free(p, size) Free(p, __FILE__, __LINE__)
+
+/*
+ * ZFS mem.h define that's the OpenZFS porting layer way of saying
+ * M_WAITOK. Given the above, it will also be a nop.
+ */
+#define KM_SLEEP M_WAITOK
+#define KM_NOSLEEP M_NOWAIT
+#endif /* _STANDALONE */
+#endif /* !_SYS_MALLOC_H_ */

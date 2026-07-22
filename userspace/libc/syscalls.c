@@ -932,3 +932,148 @@ int gethostname(char *name, size_t len) {
     }
     return 0;
 }
+
+/* -------------------------------------------------------------------------- */
+/* POSIX socket wrappers — newlib doesn't provide these, so we define them
+ * here using the X OS kernel syscall interface. */
+
+/* Minimal sockaddr / sockaddr_in definitions (no newlib sys/socket.h) */
+struct xos_sockaddr {
+    unsigned short sa_family;
+    char sa_data[14];
+};
+
+struct xos_sockaddr_in {
+    unsigned short sin_family;
+    unsigned short sin_port;
+    unsigned int sin_addr;
+    unsigned char sin_zero[8];
+};
+
+int socket(int domain, int type, int protocol) {
+    int fd = sys_socket(domain, type, protocol);
+    if (fd < 0) {
+        errno = -fd;
+        return -1;
+    }
+    return fd;
+}
+
+int connect(int fd, const void *addr, int addrlen) {
+    int ret = sys_connect(fd, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int bind(int fd, const void *addr, int addrlen) {
+    int ret = sys_bind(fd, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int sendto(int fd, const void *buf, size_t len, int flags,
+           const void *addr, int addrlen) {
+    int ret = sys_sendto(fd, buf, len, flags, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return ret;
+}
+
+int recvfrom(int fd, void *buf, size_t len, int flags,
+             void *addr, int *addrlen) {
+    int ret = sys_recvfrom(fd, buf, len, flags, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return ret;
+}
+
+int send(int fd, const void *buf, size_t len, int flags) {
+    int ret = sys_send(fd, buf, len, flags);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return ret;
+}
+
+int recv(int fd, void *buf, size_t len, int flags) {
+    int ret = sys_recv(fd, buf, len, flags);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return ret;
+}
+
+int setsockopt(int fd, int level, int optname, const void *optval, int optlen) {
+    int ret = sys_setsockopt(fd, level, optname, optval, optlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
+    int ret = sys_getsockopt(fd, level, optname, optval, optlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int shutdown(int fd, int how) {
+    int ret = sys_shutdown(fd, how);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int getsockname(int fd, void *addr, int *addrlen) {
+    int ret = sys_getsockname(fd, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int getpeername(int fd, void *addr, int *addrlen) {
+    int ret = sys_getpeername(fd, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int listen(int fd, int backlog) {
+    int ret = sys_listen(fd, backlog);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return 0;
+}
+
+int accept(int fd, void *addr, int *addrlen) {
+    int ret = sys_accept(fd, addr, addrlen);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    return ret;
+}

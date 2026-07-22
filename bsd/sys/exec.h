@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2002 Apple Computer, Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -43,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *      This product includes software developed by the University of
- *      California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -62,21 +32,109 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)exec.h	8.3 (Berkeley) 1/21/94
  */
 
 #ifndef _SYS_EXEC_H_
 #define _SYS_EXEC_H_
 
-#include <sys/appleapiopts.h>
-
 /*
- * XXX at this point, this file only exists for backward compatability with
- * XXX software which includes <sys/exec.h> instead of the more correct
- * XXX <machine/exec.h> and/or need the inclusion of <sys/appleapiopts.h>
- * XXX as a side effect.
+ * Before ps_args existed, the following structure, found at the top of
+ * the user stack of each user process, was used by ps(1) to locate
+ * environment and argv strings.  Normally ps_argvstr points to the
+ * argv vector, and ps_nargvstr is the same as the program's argc. The
+ * fields ps_envstr and ps_nenvstr are the equivalent for the environment.
+ *
+ * Programs should now use setproctitle(3) to change ps output.
+ * setproctitle() always informs the kernel with sysctl and sets the
+ * pointers in ps_strings.  The kern.proc.args sysctl first tries p_args.
+ * If p_args is NULL, it then falls back to reading ps_strings and following
+ * the pointers.
  */
+struct ps_strings {
+	char	**ps_argvstr;	/* first of 0 or more argument strings */
+	unsigned int ps_nargvstr; /* the number of argument strings */
+	char	**ps_envstr;	/* first of 0 or more environment strings */
+	unsigned int ps_nenvstr; /* the number of environment strings */
+};
+
+struct image_params;
+
+struct execsw {
+	int (*ex_imgact)(struct image_params *);
+	const char *ex_name;
+};
+
 #include <machine/exec.h>
 
-#endif /* !_SYS_EXEC_H_ */
+#ifdef _KERNEL
+#include <sys/cdefs.h>
+
+/*
+ * Address of ps_strings structure (in user space).
+ * Prefer the kern.ps_strings or kern.proc.ps_strings sysctls to this constant.
+ */
+#define	PS_STRINGS	(USRSTACK - sizeof(struct ps_strings))
+#define	PROC_PS_STRINGS(p)	\
+	((p)->p_vmspace->vm_stacktop - (p)->p_sysent->sv_psstringssz)
+
+/*
+ * Address of signal trampoline (in user space).
+ * This assumes that the sigcode resides in the shared page.
+ */
+#define PROC_SIGCODE(p)		\
+	((p)->p_vmspace->vm_shp_base + (p)->p_sysent->sv_sigcode_offset)
+
+#define PROC_HAS_SHP(p)		\
+	((p)->p_sysent->sv_shared_page_obj != NULL)
+
+int exec_map_first_page(struct image_params *);        
+void exec_unmap_first_page(struct image_params *);       
+
+int exec_register(const struct execsw *);
+int exec_unregister(const struct execsw *);
+
+enum uio_seg;
+
+/*
+ * note: name##_mod cannot be const storage because the
+ * linker_file_sysinit() function modifies _file in the
+ * moduledata_t.
+ */
+
+#include <sys/module.h>
+
+#define EXEC_SET(name, execsw_arg) \
+	static int __CONCAT(name,_modevent)(module_t mod, int type, \
+	    void *data) \
+	{ \
+		struct execsw *exec = (struct execsw *)data; \
+		int error = 0; \
+		switch (type) { \
+		case MOD_LOAD: \
+			/* printf(#name " module loaded\n"); */ \
+			error = exec_register(exec); \
+			if (error) \
+				printf(__XSTRING(name) "register failed\n"); \
+			break; \
+		case MOD_UNLOAD: \
+			/* printf(#name " module unloaded\n"); */ \
+			error = exec_unregister(exec); \
+			if (error) \
+				printf(__XSTRING(name) " unregister failed\n");\
+			break; \
+		default: \
+			error = EOPNOTSUPP; \
+			break; \
+		} \
+		return error; \
+	} \
+	static moduledata_t __CONCAT(name,_mod) = { \
+		__XSTRING(name), \
+		__CONCAT(name,_modevent), \
+		(void *)& execsw_arg \
+	}; \
+	DECLARE_MODULE_TIED(name, __CONCAT(name,_mod), SI_SUB_EXEC, \
+	    SI_ORDER_ANY)
+#endif
+
+#endif

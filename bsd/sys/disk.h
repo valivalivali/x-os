@@ -1,278 +1,181 @@
-/*
- * Copyright (c) 1998-2025 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: Beerware
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
+ * ----------------------------------------------------------------------------
+ * "THE BEER-WARE LICENSE" (Revision 42):
+ * <phk@FreeBSD.ORG> wrote this file.  As long as you retain this notice you
+ * can do whatever you want with this stuff. If we meet some day, and you think
+ * this stuff is worth it, you can buy me a beer in return.   Poul-Henning Kamp
+ * ----------------------------------------------------------------------------
  *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
 #ifndef _SYS_DISK_H_
-#define _SYS_DISK_H_
+#define	_SYS_DISK_H_
 
-#include <stdint.h>
-#include <sys/ioctl.h>
+#include <sys/ioccom.h>
+#include <sys/kerneldump.h>
+#include <sys/types.h>
+#include <sys/disk_zone.h>
+#include <sys/socket.h>
+
+#ifdef _KERNEL
+
+void disk_err(struct bio *bp, const char *what, int blkdone, int nl);
+
+#endif
+
+#define	DIOCGSECTORSIZE	_IOR('d', 128, u_int)
+	/*
+	 * Get the sector size of the device in bytes.  The sector size is the
+	 * smallest unit of data which can be transferred from this device.
+	 * Usually this is a power of 2 but it might not be (i.e. CDROM audio).
+	 */
+
+#define	DIOCGMEDIASIZE	_IOR('d', 129, off_t)	/* Get media size in bytes */
+	/*
+	 * Get the size of the entire device in bytes.  This should be a
+	 * multiple of the sector size.
+	 */
+
+#define	DIOCGFWSECTORS	_IOR('d', 130, u_int)	/* Get firmware's sectorcount */
+	/*
+	 * Get the firmware's notion of number of sectors per track.  This
+	 * value is mostly used for compatibility with various ill designed
+	 * disk label formats.  Don't use it unless you have to.
+	 */
+
+#define	DIOCGFWHEADS	_IOR('d', 131, u_int)	/* Get firmware's headcount */
+	/*
+	 * Get the firmwares notion of number of heads per cylinder.  This
+	 * value is mostly used for compatibility with various ill designed
+	 * disk label formats.  Don't use it unless you have to.
+	 */
+
+#define	DIOCGFLUSH _IO('d', 135)		/* Flush write cache */
+	/*
+	 * Flush write cache of the device.
+	 */
+
+#define	DIOCGDELETE _IOW('d', 136, off_t[2])	/* Delete data */
+	/*
+	 * Mark data on the device as unused.
+	 */
+
+#define	DISK_IDENT_SIZE	256
+#define	DIOCGIDENT _IOR('d', 137, char[DISK_IDENT_SIZE])
+	/*-
+	 * Get the ident of the given provider. Ident is (most of the time)
+	 * a uniqe and fixed provider's identifier. Ident's properties are as
+	 * follow:
+	 * - ident value is preserved between reboots,
+	 * - provider can be detached/attached and ident is preserved,
+	 * - provider's name can change - ident can't,
+	 * - ident value should not be based on on-disk metadata; in other
+	 *   words copying whole data from one disk to another should not
+	 *   yield the same ident for the other disk,
+	 * - there could be more than one provider with the same ident, but
+	 *   only if they point at exactly the same physical storage, this is
+	 *   the case for multipathing for example,
+	 * - GEOM classes that consumes single providers and provide single
+	 *   providers, like geli, should just attach class name to the
+	 *   ident of the underlying provider,
+	 * - ident is an ASCII string (is printable),
+	 * - ident is optional and applications can't relay on its presence.
+	 */
+
+#define	DIOCGPROVIDERNAME _IOR('d', 138, char[MAXPATHLEN])
+	/*
+	 * Store the provider name, given a device path, in a buffer. The buffer
+	 * must be at least MAXPATHLEN bytes long.
+	 */
+
+#define	DIOCGSTRIPESIZE	_IOR('d', 139, off_t)	/* Get stripe size in bytes */
+	/*
+	 * Get the size of the device's optimal access block in bytes.
+	 * This should be a multiple of the sector size.
+	 */
+
+#define	DIOCGSTRIPEOFFSET _IOR('d', 140, off_t)	/* Get stripe offset in bytes */
+	/*
+	 * Get the offset of the first device's optimal access block in bytes.
+	 * This should be a multiple of the sector size.
+	 */
+
+#define	DIOCGPHYSPATH _IOR('d', 141, char[MAXPATHLEN])
+	/*
+	 * Get a string defining the physical path for a given provider.
+	 * This has similar rules to ident, but is intended to uniquely
+	 * identify the physical location of the device, not the current
+	 * occupant of that location.
+	 */
+
+struct diocgattr_arg {
+	char name[64];
+	int len;
+	union {
+		char str[DISK_IDENT_SIZE];
+		off_t off;
+		int i;
+		uint16_t u16;
+	} value;
+};
+#define	DIOCGATTR _IOWR('d', 142, struct diocgattr_arg)
+
+#define	DIOCZONECMD	_IOWR('d', 143, struct disk_zone_args)
+
+#ifndef WITHOUT_NETDUMP
+#include <net/if.h>
+#include <netinet/in.h>
+
+union kd_ip {
+	struct in_addr	in4;
+	struct in6_addr	in6;
+};
 
 /*
- * Definitions
+ * Sentinel values for kda_index.
  *
- * ioctl                                 description
- * ------------------------------------- ---------------------------------------
- * DKIOCEJECT                            eject media
- * DKIOCSYNCHRONIZE                      flush media
+ * If kda_index is KDA_REMOVE_ALL, all dump configurations are cleared.
  *
- * DKIOCFORMAT                           format media
- * DKIOCGETFORMATCAPACITIES              get media's formattable capacities
+ * If kda_index is KDA_REMOVE_DEV, all dump configurations for the specified
+ * device are cleared.
  *
- * DKIOCGETBLOCKSIZE                     get media's block size
- * DKIOCGETBLOCKCOUNT                    get media's block count
- * DKIOCGETFIRMWAREPATH                  get media's firmware path
+ * If kda_index is KDA_REMOVE, only the specified dump configuration for the
+ * given device is removed from the list of fallback dump configurations.
  *
- * DKIOCISFORMATTED                      is media formatted?
- * DKIOCISWRITABLE                       is media writable?
+ * If kda_index is KDA_APPEND, the dump configuration is added after all
+ * existing dump configurations.
  *
- * DKIOCREQUESTIDLE                      idle media
- * DKIOCUNMAP                            delete unused data
- *
- * DKIOCGETLOCATION                      get device's physical location
- *
- * DKIOCGETMAXBLOCKCOUNTREAD             get maximum block count for reads
- * DKIOCGETMAXBLOCKCOUNTWRITE            get maximum block count for writes
- * DKIOCGETMAXBYTECOUNTREAD              get maximum byte count for reads
- * DKIOCGETMAXBYTECOUNTWRITE             get maximum byte count for writes
- *
- * DKIOCGETMAXSEGMENTCOUNTREAD           get maximum segment count for reads
- * DKIOCGETMAXSEGMENTCOUNTWRITE          get maximum segment count for writes
- * DKIOCGETMAXSEGMENTBYTECOUNTREAD       get maximum segment byte count for reads
- * DKIOCGETMAXSEGMENTBYTECOUNTWRITE      get maximum segment byte count for writes
- *
- * DKIOCGETMINSEGMENTALIGNMENTBYTECOUNT  get minimum segment alignment in bytes
- * DKIOCGETMAXSEGMENTADDRESSABLEBITCOUNT get maximum segment width in bits
- *
- * DKIOCGETFEATURES                      get device's feature set
- * DKIOCGETPHYSICALBLOCKSIZE             get device's block size
- * DKIOCGETCOMMANDPOOLSIZE               get device's queue depth
- *
- * DKIOCGETPROVISIONSTATUS               get device's block provision status
- * DKIOCGETIOMINSATURATIONBYTECOUNT      get minimum byte count to saturate storage bandwidth
- *
- * DKIOCGETERRORDESCRIPTION              get description of any drive error
- *
- * DKIOCGETMAXSWAPWRITE                  get maximum swap file write per day in bytes
+ * Otherwise, the new configuration is inserted into the fallback dump list at
+ * index 'kda_index'.
  */
+#define	KDA_REMOVE		UINT8_MAX
+#define	KDA_REMOVE_ALL		(UINT8_MAX - 1)
+#define	KDA_REMOVE_DEV		(UINT8_MAX - 2)
+#define	KDA_APPEND		(UINT8_MAX - 3)
+struct diocskerneldump_arg {
+	uint8_t		 kda_index;
+	uint8_t		 kda_compression;
+	uint8_t		 kda_encryption;
+	uint8_t		 kda_key[KERNELDUMP_KEY_MAX_SIZE];
+	uint32_t	 kda_encryptedkeysize;
+	uint8_t		*kda_encryptedkey;
+	char		 kda_iface[IFNAMSIZ];
+	union kd_ip	 kda_server;
+	union kd_ip	 kda_client;
+	union kd_ip	 kda_gateway;
+	uint8_t		 kda_af;
+};
+#define	DIOCSKERNELDUMP _IOW('d', 145, struct diocskerneldump_arg)
+	/*
+	 * Enable/Disable the device for kernel core dumps.
+	 */
 
-#define DK_FEATURE_BARRIER                    0x00000002
-#define DK_FEATURE_PRIORITY                   0x00000004
-#define DK_FEATURE_UNMAP                      0x00000010
+#define	DIOCGKERNELDUMP _IOWR('d', 146, struct diocskerneldump_arg)
+	/*
+	 * Get current kernel netdump configuration details for a given index.
+	 */
+#endif
 
-#define DK_SYNCHRONIZE_OPTION_BARRIER         0x00000002
-
-typedef struct{
-	uint64_t               offset;
-	uint64_t               length;
-} dk_extent_t;
-
-typedef struct{
-	char                   path[128];
-} dk_firmware_path_t;
-
-typedef struct{
-	uint64_t               blockCount;
-	uint32_t               blockSize;
-
-	uint8_t                reserved0096[4];    /* reserved, clear to zero */
-} dk_format_capacity_t;
-
-typedef struct{
-	dk_format_capacity_t * capacities;
-	uint32_t               capacitiesCount;    /* use zero to probe count */
-
-#ifdef __LP64__
-	uint8_t                reserved0096[4];    /* reserved, clear to zero */
-#else /* !__LP64__ */
-	uint8_t                reserved0064[8];    /* reserved, clear to zero */
-#endif /* !__LP64__ */
-} dk_format_capacities_t;
-
-typedef struct{
-	uint64_t               offset;
-	uint64_t               length;
-
-	uint32_t               options;
-
-	uint8_t                reserved0160[4];    /* reserved, clear to zero */
-} dk_synchronize_t;
-
-typedef struct{
-	dk_extent_t *          extents;
-	uint32_t               extentsCount;
-
-	uint32_t               options;
-
-#ifndef __LP64__
-	uint8_t                reserved0096[4];    /* reserved, clear to zero */
-#endif /* !__LP64__ */
-} dk_unmap_t;
-
-typedef struct{
-	uint64_t           flags;
-	uint64_t           hotfile_size;           /* in bytes */
-	uint64_t           hibernate_minsize;
-	uint64_t           swapfile_pinning;
-
-	uint64_t           padding[4];
-} dk_corestorage_info_t;
-
-#define DK_CORESTORAGE_PIN_YOUR_METADATA        0x00000001
-#define DK_CORESTORAGE_ENABLE_HOTFILES          0x00000002
-#define DK_CORESTORAGE_PIN_YOUR_SWAPFILE        0x00000004
-
-#define DK_PROVISION_TYPE_MAPPED                0x00
-#define DK_PROVISION_TYPE_DEALLOCATED           0x01
-#define DK_PROVISION_TYPE_ANCHORED              0x02
-
-typedef struct{
-	uint64_t           offset;
-	uint64_t           length;
-	uint8_t            provisionType;
-	uint8_t            reserved[7];
-} dk_provision_extent_t;
-
-typedef struct{
-	uint64_t                offset;         /* input:        logical byte offset */
-	uint64_t                length;         /* input:        byte length, 0 for whole length */
-	uint64_t                options;        /*               reserved, clear to zero */
-	uint32_t                reserved;       /*               not used */
-	uint32_t                extentsCount;   /* input/output: count for extents */
-	dk_provision_extent_t * extents;        /* output:       provision extents */
-} dk_provision_status_t;
-
-typedef struct{
-	uint64_t               options;        /*               reserved, clear to zero */
-	uint64_t               reserved;       /*               reserved, clear to zero */
-	uint64_t               description_size;
-	char *                 description;
-} dk_error_description_t;
-
-#define DK_LOCATION_INTERNAL                   0x00000000
-#define DK_LOCATION_EXTERNAL                   0x00000001
-
-#define DKIOCEJECT                            _IO('d', 21)
-#define DKIOCSYNCHRONIZE                      _IOW('d', 22, dk_synchronize_t)
-
-#define DKIOCFORMAT                           _IOW('d', 26, dk_format_capacity_t)
-#define DKIOCGETFORMATCAPACITIES              _IOWR('d', 26, dk_format_capacities_t)
-
-#define DKIOCGETBLOCKSIZE                     _IOR('d', 24, uint32_t)
-#define DKIOCGETBLOCKCOUNT                    _IOR('d', 25, uint64_t)
-#define DKIOCGETFIRMWAREPATH                  _IOR('d', 28, dk_firmware_path_t)
-
-#define DKIOCISFORMATTED                      _IOR('d', 23, uint32_t)
-#define DKIOCISWRITABLE                       _IOR('d', 29, uint32_t)
-
-#define DKIOCREQUESTIDLE                      _IO('d', 30)
-#define DKIOCUNMAP                            _IOW('d', 31, dk_unmap_t)
-#define DKIOCCORESTORAGE                      _IOR('d', 32, dk_corestorage_info_t)
-
-#define DKIOCGETLOCATION                      _IOR('d', 33, uint64_t)
-
-#define DKIOCGETMAXBLOCKCOUNTREAD             _IOR('d', 64, uint64_t)
-#define DKIOCGETMAXBLOCKCOUNTWRITE            _IOR('d', 65, uint64_t)
-#define DKIOCGETMAXBYTECOUNTREAD              _IOR('d', 70, uint64_t)
-#define DKIOCGETMAXBYTECOUNTWRITE             _IOR('d', 71, uint64_t)
-
-#define DKIOCGETMAXSEGMENTCOUNTREAD           _IOR('d', 66, uint64_t)
-#define DKIOCGETMAXSEGMENTCOUNTWRITE          _IOR('d', 67, uint64_t)
-#define DKIOCGETMAXSEGMENTBYTECOUNTREAD       _IOR('d', 68, uint64_t)
-#define DKIOCGETMAXSEGMENTBYTECOUNTWRITE      _IOR('d', 69, uint64_t)
-
-#define DKIOCGETMINSEGMENTALIGNMENTBYTECOUNT  _IOR('d', 74, uint64_t)
-#define DKIOCGETMAXSEGMENTADDRESSABLEBITCOUNT _IOR('d', 75, uint64_t)
-
-#define DKIOCGETFEATURES                      _IOR('d', 76, uint32_t)
-#define DKIOCGETPHYSICALBLOCKSIZE             _IOR('d', 77, uint32_t)
-#define DKIOCGETCOMMANDPOOLSIZE               _IOR('d', 78, uint32_t)
-
-#define DKIOCGETPROVISIONSTATUS               _IOWR('d', 79, dk_provision_status_t)
-
-#define DKIOCGETERRORDESCRIPTION              _IOR('d', 80, dk_error_description_t)
-
-#define DKIOCSYNCHRONIZECACHE                 _IO('d', 22)
-
-#ifdef KERNEL
-#define DK_FEATURE_FORCE_UNIT_ACCESS          0x00000001
-
-#define DK_ENCRYPTION_TYPE_AES_CBC            1
-#define DK_ENCRYPTION_TYPE_AES_XEX            2
-#define DK_ENCRYPTION_TYPE_AES_XTS            3
-
-#define DK_TIER_MASK                          0xC0
-#define DK_TIER_SHIFT                         6
-
-#define DK_TIER_TO_PRIORITY(tier)             (((tier) << DK_TIER_SHIFT) | ~DK_TIER_MASK)
-#define DK_PRIORITY_TO_TIER(priority)         ((priority) >> DK_TIER_SHIFT)
-
-typedef struct{
-	uint64_t               offset;
-	uint64_t               length;
-
-	uint8_t                reserved0128[12];   /* reserved, clear to zero */
-
-	dev_t                  dev;
-} dk_physical_extent_t;
-
-typedef struct{
-	dk_extent_t *          extents;
-	uint32_t               extentsCount;
-
-	uint8_t                tier;
-
-#ifdef __LP64__
-	uint8_t                reserved0104[3];    /* reserved, clear to zero */
-#else /* !__LP64__ */
-	uint8_t                reserved0072[7];    /* reserved, clear to zero */
-#endif /* !__LP64__ */
-} dk_set_tier_t;
-
-#define DKIOCSETBLOCKSIZE                     _IOW('d', 24, uint32_t)
-#define DKIOCGETBSDUNIT                       _IOR('d', 27, uint32_t)
-#define DKIOCISSOLIDSTATE                     _IOR('d', 79, uint32_t)
-#define DKIOCISVIRTUAL                        _IOR('d', 72, uint32_t)
-#define DKIOCGETBASE                          _IOR('d', 73, uint64_t)
-#define DKIOCGETTHROTTLEMASK                  _IOR('d', 80, uint64_t)
-#define DKIOCLOCKPHYSICALEXTENTS              _IO('d', 81)
-#define DKIOCGETPHYSICALEXTENT                _IOWR('d', 82, dk_physical_extent_t)
-#define DKIOCUNLOCKPHYSICALEXTENTS            _IO('d', 83)
-#define DKIOCSETTIER                          _IOW('d', 85, dk_set_tier_t)
-#define DKIOCGETENCRYPTIONTYPE                _IOR('d', 86, uint32_t)
-#define DKIOCISLOWPOWERMODE                   _IOR('d', 87, uint32_t)
-#define DKIOCGETIOMINSATURATIONBYTECOUNT      _IOR('d', 88, uint32_t)
-#endif /* KERNEL */
-
-#ifdef PRIVATE
-/* See disk_private.h for additional ioctls */
-#ifndef MODULES_SUPPORTED
-#include <sys/disk_private.h>
-#endif /* !MODULES_SUPPORTED */
-#endif /* PRIVATE */
-
-#endif  /* _SYS_DISK_H_ */
+#endif /* _SYS_DISK_H_ */

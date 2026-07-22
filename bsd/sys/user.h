@@ -1,34 +1,10 @@
-/*
- * Copyright (c) 2000-2018 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995, 1997 Apple Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1982, 1986, 1989, 1991, 1993
- *	The Regents of the University of California.  All rights reserved.
+ *	The Regents of the University of California.
+ * Copyright (c) 2007 Robert N. M. Watson
+ * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -38,11 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,373 +29,741 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)user.h	8.2 (Berkeley) 9/23/93
  */
 
 #ifndef _SYS_USER_H_
 #define _SYS_USER_H_
 
-#include <sys/appleapiopts.h>
-struct waitq_set;
-#ifndef KERNEL
+#include <machine/pcb.h>
+#ifndef _KERNEL
 /* stuff that *used* to be included by user.h, or is now needed */
-#include <errno.h>
+#include <sys/errno.h>
+#include <sys/event.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/ucred.h>
 #include <sys/uio.h>
-#endif
-#ifdef XNU_KERNEL_PRIVATE
-#include <sys/resource.h>
+#include <sys/queue.h>
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
+#include <sys/proc.h>
+#include <vm/vm.h>		/* XXX */
+#include <vm/vm_param.h>	/* XXX */
+#include <vm/pmap.h>		/* XXX */
+#include <vm/vm_map.h>		/* XXX */
+#endif /* !_KERNEL */
+#ifndef _SYS_RESOURCEVAR_H_
 #include <sys/resourcevar.h>
-#include <sys/signal.h>
+#endif
+#ifndef _SYS_SIGNALVAR_H_
 #include <sys/signalvar.h>
 #endif
-#include <sys/vm.h>             /* XXX */
-#include <sys/sysctl.h>
-
-#ifdef KERNEL
-#ifdef BSD_KERNEL_PRIVATE
-#include <sys/pthread_internal.h> /* for uu_kwe entry */
-#include <sys/eventvar.h>
-#include <kern/btlog.h>
-#endif  /* BSD_KERNEL_PRIVATE */
-#ifdef __APPLE_API_PRIVATE
-#include <sys/eventvar.h>
-
-#if !defined(__LP64__) || defined(XNU_KERNEL_PRIVATE)
-/*
- * VFS context structure (part of uthread)
- */
-struct vfs_context {
-	thread_t        vc_thread;              /* pointer to Mach thread */
-	kauth_cred_t    vc_ucred;               /* per thread credential */
-};
-
-#endif /* !__LP64 || XNU_KERNEL_PRIVATE */
-
-#ifdef BSD_KERNEL_PRIVATE
-struct label;           /* MAC label dummy struct */
-
-#define MAXTHREADNAMESIZE 64
-/*
- *	Per-thread U area.
- */
-
-#if PROC_REF_DEBUG
-struct uthread_proc_ref_info {
-#define NUM_PROC_REFS_TO_TRACK 31
-	uint32_t        upri_pindex;
-	btref_t         upri_proc_stacks[NUM_PROC_REFS_TO_TRACK];
-	void    *       upri_proc_ps[NUM_PROC_REFS_TO_TRACK];
-};
-#endif /* PROC_REF_DEBUG */
-
-struct uthread {
-	/* syscall parameters, results and catches */
-	u_int64_t uu_arg[8]; /* arguments to current system call */
-	int uu_rval[2];
-	char uu_cursig; /* p_cursig for exc. */
-	/*
-	 * uu_workq_pthread_kill_allowed is not modified under a lock and thus
-	 * relies on single copy atomicity and cannot be changed to a bitfield.
-	 */
-	bool uu_workq_pthread_kill_allowed;
-	uint16_t syscall_code; /* current syscall code */
-
-	/* thread exception handling */
-	int     uu_exception;
-	mach_exception_code_t uu_code;  /* ``code'' to trap */
-	mach_exception_subcode_t uu_subcode;
-
-	/* support for syscalls which use continuations */
-	union {
-		struct _select_data {
-			u_int64_t abstime;
-			int count;
-			struct select_nocancel_args *args;  /* original syscall arguments */
-			int32_t *retval;                    /* place to store return val */
-		} uus_select_data;
-
-		struct kevent_ctx_s uus_kevent;
-
-		struct _kevent_register {
-			struct kevent_qos_s kev;            /* the kevent to maybe copy out */
-			thread_t handoff_thread;            /* thread we handed off to, has +1 */
-			struct kqworkloop *kqwl;
-			int eventout;                       /* number of events output */
-			user_addr_t ueventlist;             /* the user-address to copyout to */
-		} uus_kevent_register;                   /* saved for EVFILT_WORKLOOP wait */
-
-		struct _kauth {
-			user_addr_t message;                /* message in progress */
-		} uus_kauth;
-
-		struct ksyn_waitq_element uus_kwe;       /* user for pthread synch */
-
-		struct _waitid_data {
-			struct waitid_nocancel_args *args;  /* original syscall arguments */
-			int32_t *retval;                    /* place to store return val */
-		} uus_waitid_data;
-
-		struct _wait4_data {
-			struct wait4_nocancel_args *args;   /* original syscall arguments */
-			int32_t *retval;                    /* place to store return val */
-		} uus_wait4_data;
-
-		struct _workq_park_data {
-			uint64_t idle_stamp;
-			uint64_t workloop_params;
-			uint32_t fulfilled_snapshot;
-			uint32_t yields;
-			void *thread_request;                /* request being fulfilled, for tracing only */
-			uint32_t upcall_flags;
-			bool has_stack;
-			thread_qos_t qos;
-		} uus_workq_park_data;                   /* saved for parked workq threads */
-
-		struct _ulock_wait_data {
-			struct ull *ull;
-			thread_t owner_thread;
-			thread_t old_owner;
-			int32_t *retval;
-			uint flags;
-		} uus_ulock_wait_data;
-
-		struct _bsdthread_terminate {
-			user_addr_t      ulock_addr;
-			mach_port_name_t kport;
-		} uus_bsdthread_terminate;
-
-		struct _exec_data {
-			struct image_params *imgp;
-		} uus_exec_data;
-	} uu_save;
-
-	/* Persistent memory allocations across system calls */
-	struct _select {
-		/* bits to select on */
-		u_int32_t * XNU_PTRAUTH_SIGNED_PTR("uthread.uu_select.ibits") ibits;
-		u_int32_t * XNU_PTRAUTH_SIGNED_PTR("uthread.uu_select.obits") obits;
-		uint    nbytes; /* number of bytes in ibits and obits */
-	} uu_select;                    /* saved state for select() */
-
-	void * uu_userstate;
-	struct select_set *uu_selset;            /* waitq state cached across select calls */
-	int uu_flag;
-	sigset_t uu_siglist;                            /* signals pending for the thread */
-	sigset_t uu_sigwait;                            /*  sigwait on this thread*/
-	sigset_t uu_sigmask;                            /* signal mask for the thread */
-	sigset_t uu_oldmask;                            /* signal mask saved before sigpause */
-	user_addr_t uu_sigreturn_token;                 /* random token used to validate sigreturn arguments */
-	uint32_t uu_sigreturn_diversifier;              /* random diversifier used to validate user signed sigreturn pc/lr */
-	int uu_pending_sigreturn;                       /* Pending sigreturn count */
-
-	TAILQ_ENTRY(uthread) uu_list;       /* List of uthreads in proc */
-
-#if CONFIG_AUDIT
-	struct kaudit_record    *uu_ar;                 /* audit record */
+#ifndef _SYS_SOCKET_VAR_H_
+#include <sys/socket.h>
 #endif
-	struct task    *uu_aio_task;                    /* target task for async io */
+#include <sys/caprights.h>
 
+/*
+ * KERN_PROC subtype ops return arrays of selected proc structure entries:
+ *
+ * This struct includes several arrays of spare space, with different arrays
+ * for different standard C-types.  When adding new variables to this struct,
+ * the space for byte-aligned data should be taken from the ki_sparestring,
+ * pointers from ki_spareptrs, word-aligned data from ki_spareints, and
+ * doubleword-aligned data from ki_sparelongs.  Make sure the space for new
+ * variables come from the array which matches the size and alignment of
+ * those variables on ALL hardware platforms, and then adjust the appropriate
+ * KI_NSPARE_* value(s) to match.
+ *
+ * Always verify that sizeof(struct kinfo_proc) == KINFO_PROC_SIZE on all
+ * platforms after you have added new variables.  Note that if you change
+ * the value of KINFO_PROC_SIZE, then many userland programs will stop
+ * working until they are recompiled!
+ *
+ * Once you have added the new field, you will need to add code to initialize
+ * it in two places: function fill_kinfo_proc in sys/kern/kern_proc.c and
+ * function kvm_proclist in lib/libkvm/kvm_proc.c .
+ */
+#define	KI_NSPARE_INT	2
+#define	KI_NSPARE_LONG	12
+#define	KI_NSPARE_PTR	4
+
+#ifndef _KERNEL
+#ifndef KINFO_PROC_SIZE
+#error "Unknown architecture"
+#endif
+#endif /* !_KERNEL */
+
+#define	WMESGLEN	8		/* size of returned wchan message */
+#define	LOCKNAMELEN	8		/* size of returned lock name */
+#define	TDNAMLEN	16		/* size of returned thread name */
+#define	COMMLEN		19		/* size of returned ki_comm name */
+#define	KI_EMULNAMELEN	16		/* size of returned ki_emul */
+#define	KI_NGROUPS	16		/* number of groups in ki_groups */
+#define	LOGNAMELEN	17		/* size of returned ki_login */
+#define	LOGINCLASSLEN	17		/* size of returned ki_loginclass */
+
+#ifndef BURN_BRIDGES
+#define	OCOMMLEN	TDNAMLEN	
+#define	ki_ocomm	ki_tdname
+#endif
+
+/* Flags for the process credential. */
+#define	KI_CRF_CAPABILITY_MODE	0x00000001
+/*
+ * Steal a bit from ki_cr_flags to indicate that the cred had more than
+ * KI_NGROUPS groups.
+ */
+#define KI_CRF_GRP_OVERFLOW	0x80000000
+
+struct kinfo_proc {
+	int	ki_structsize;		/* size of this structure */
+	int	ki_layout;		/* reserved: layout identifier */
+	struct	pargs *ki_args;		/* address of command arguments */
+	struct	proc *ki_paddr;		/* address of proc */
+	struct	user *ki_addr;		/* kernel virtual addr of u-area */
+	struct	vnode *ki_tracep;	/* pointer to trace file */
+	struct	vnode *ki_textvp;	/* pointer to executable file */
+	struct	filedesc *ki_fd;	/* pointer to open file info */
+	struct	vmspace *ki_vmspace;	/* pointer to kernel vmspace struct */
+	const void *ki_wchan;		/* sleep address */
+	pid_t	ki_pid;			/* Process identifier */
+	pid_t	ki_ppid;		/* parent process id */
+	pid_t	ki_pgid;		/* process group id */
+	pid_t	ki_tpgid;		/* tty process group id */
+	pid_t	ki_sid;			/* Process session ID */
+	pid_t	ki_tsid;		/* Terminal session ID */
+	short	ki_jobc;		/* job control counter */
+	short	ki_spare_short1;	/* unused (just here for alignment) */
+	uint32_t ki_tdev_freebsd11;	/* controlling tty dev */
+	sigset_t ki_siglist;		/* Signals arrived but not delivered */
+	sigset_t ki_sigmask;		/* Current signal mask */
+	sigset_t ki_sigignore;		/* Signals being ignored */
+	sigset_t ki_sigcatch;		/* Signals being caught by user */
+	uid_t	ki_uid;			/* effective user id */
+	uid_t	ki_ruid;		/* Real user id */
+	uid_t	ki_svuid;		/* Saved effective user id */
+	gid_t	ki_rgid;		/* Real group id */
+	gid_t	ki_svgid;		/* Saved effective group id */
+	short	ki_ngroups;		/* number of groups */
+	short	ki_spare_short2;	/* unused (just here for alignment) */
+	gid_t	ki_groups[KI_NGROUPS];	/* groups */
+	vm_size_t ki_size;		/* virtual size */
+	segsz_t ki_rssize;		/* current resident set size in pages */
+	segsz_t ki_swrss;		/* resident set size before last swap */
+	segsz_t ki_tsize;		/* text size (pages) XXX */
+	segsz_t ki_dsize;		/* data size (pages) XXX */
+	segsz_t ki_ssize;		/* stack size (pages) */
+	u_short	ki_xstat;		/* Exit status for wait & stop signal */
+	u_short	ki_acflag;		/* Accounting flags */
+	fixpt_t	ki_pctcpu;	 	/* %cpu for process during ki_swtime */
+	u_int	ki_estcpu;	 	/* Time averaged value of ki_cpticks */
+	u_int	ki_slptime;	 	/* Time since last blocked */
+	u_int	ki_swtime;	 	/* Time swapped in or out */
+	u_int	ki_cow;			/* number of copy-on-write faults */
+	u_int64_t ki_runtime;		/* Real time in microsec */
+	struct	timeval ki_start;	/* starting time */
+	struct	timeval ki_childtime;	/* time used by process children */
+	long	ki_flag;		/* P_* flags */
+	long	ki_kiflag;		/* KI_* flags (below) */
+	int	ki_traceflag;		/* Kernel trace points */
+	char	ki_stat;		/* S* process status */
+	signed char ki_nice;		/* Process "nice" value */
+	char	ki_lock;		/* Process lock (prevent swap) count */
+	char	ki_rqindex;		/* Run queue index */
+	u_char	ki_oncpu_old;		/* Which cpu we are on (legacy) */
+	u_char	ki_lastcpu_old;		/* Last cpu we were on (legacy) */
+	char	ki_tdname[TDNAMLEN+1];	/* thread name */
+	char	ki_wmesg[WMESGLEN+1];	/* wchan message */
+	char	ki_login[LOGNAMELEN+1];	/* setlogin name */
+	char	ki_lockname[LOCKNAMELEN+1]; /* lock name */
+	char	ki_comm[COMMLEN+1];	/* command name */
+	char	ki_emul[KI_EMULNAMELEN+1];  /* emulation name */
+	char	ki_loginclass[LOGINCLASSLEN+1]; /* login class */
+	char	ki_moretdname[MAXCOMLEN-TDNAMLEN+1];	/* more thread name */
+	/*
+	 * When adding new variables, take space for char-strings from the
+	 * front of ki_sparestrings, and ints from the end of ki_spareints.
+	 * That way the spare room from both arrays will remain contiguous.
+	 */
+	char	ki_sparestrings[38];	/* spare string space */
+	int	ki_spareints[KI_NSPARE_INT];	/* spare room for growth */
+	pid_t	ki_reaper;		/* pid of reaper process */
+	pid_t	ki_reapsubtree;		/* reaper subtree id */
+	uint64_t ki_tdev;		/* controlling tty dev */
+	int	ki_oncpu;		/* Which cpu we are on */
+	int	ki_lastcpu;		/* Last cpu we were on */
+	int	ki_tracer;		/* Pid of tracing process */
+	int	ki_flag2;		/* P2_* flags */
+	int	ki_fibnum;		/* Default FIB number */
+	u_int	ki_cr_flags;		/* Credential flags */
+	int	ki_jid;			/* Process jail ID */
+	int	ki_numthreads;		/* number of threads in total */
+	lwpid_t	ki_tid;			/* thread id */
+	struct	priority ki_pri;	/* process priority */
+	struct	rusage ki_rusage;	/* process rusage statistics */
+	/* XXX - most fields in ki_rusage_ch are not (yet) filled in */
+	struct	rusage ki_rusage_ch;	/* rusage of children processes */
+	struct	pcb *ki_pcb;		/* kernel virtual addr of pcb */
+	void	*ki_kstack;		/* kernel virtual addr of stack */
+	void	*ki_udata;		/* User convenience pointer */
+	struct	thread *ki_tdaddr;	/* address of thread */
+	/*
+	 * When adding new variables, take space for pointers from the
+	 * front of ki_spareptrs, and longs from the end of ki_sparelongs.
+	 * That way the spare room from both arrays will remain contiguous.
+	 */
+	struct	pwddesc *ki_pd;	/* pointer to process paths info */
+	void	*ki_uerrmsg;		/* address of the ext err msg place */
+	void	*ki_spareptrs[KI_NSPARE_PTR];	/* spare room for growth */
+	long	ki_sparelongs[KI_NSPARE_LONG];	/* spare room for growth */
+	long	ki_sflag;		/* PS_* flags */
+	long	ki_tdflags;		/* kthread flag */
+};
+void fill_kinfo_proc(struct proc *, struct kinfo_proc *);
+/* XXX - the following two defines are temporary */
+#define	ki_childstime	ki_rusage_ch.ru_stime
+#define	ki_childutime	ki_rusage_ch.ru_utime
+
+/*
+ *  Legacy PS_ flag.  This moved to p_flag but is maintained for
+ *  compatibility.
+ */
+#define	PS_INMEM	0x00001		/* Loaded into memory, always true. */
+
+/* ki_sessflag values */
+#define	KI_CTTY		0x00000001	/* controlling tty vnode active */
+#define	KI_SLEADER	0x00000002	/* session leader */
+#define	KI_LOCKBLOCK	0x00000004	/* proc blocked on lock ki_lockname */
+
+/*
+ * This used to be the per-process structure containing data that
+ * isn't needed in core when the process is swapped out, but now it
+ * remains only for the benefit of a.out core dumps.
+ */
+struct user {
+	struct	pstats u_stats;		/* *p_stats */
+	struct	kinfo_proc u_kproc;	/* eproc */
+};
+
+/*
+ * The KERN_PROC_FILE sysctl allows a process to dump the file descriptor
+ * array of another process.
+ */
+#define	KF_ATTR_VALID	0x0001
+
+#define	KF_TYPE_NONE	0
+#define	KF_TYPE_VNODE	1
+#define	KF_TYPE_SOCKET	2
+#define	KF_TYPE_PIPE	3
+#define	KF_TYPE_FIFO	4
+#define	KF_TYPE_KQUEUE	5
+/* was	KF_TYPE_CRYPTO	6 */
+#define	KF_TYPE_MQUEUE	7
+#define	KF_TYPE_SHM	8
+#define	KF_TYPE_SEM	9
+#define	KF_TYPE_PTS	10
+#define	KF_TYPE_PROCDESC	11
+#define	KF_TYPE_DEV	12
+#define	KF_TYPE_EVENTFD	13
+#define	KF_TYPE_TIMERFD	14
+#define	KF_TYPE_INOTIFY	15
+#define	KF_TYPE_JAILDESC	16
+#define	KF_TYPE_NTSYNC	17
+#define	KF_TYPE_UNKNOWN	255
+
+#define	KF_VTYPE_VNON	0
+#define	KF_VTYPE_VREG	1
+#define	KF_VTYPE_VDIR	2
+#define	KF_VTYPE_VBLK	3
+#define	KF_VTYPE_VCHR	4
+#define	KF_VTYPE_VLNK	5
+#define	KF_VTYPE_VSOCK	6
+#define	KF_VTYPE_VFIFO	7
+#define	KF_VTYPE_VBAD	8
+#define	KF_VTYPE_UNKNOWN	255
+
+#define	KF_FD_TYPE_CWD	-1	/* Current working directory */
+#define	KF_FD_TYPE_ROOT	-2	/* Root directory */
+#define	KF_FD_TYPE_JAIL	-3	/* Jail directory */
+#define	KF_FD_TYPE_TRACE	-4	/* Ktrace vnode */
+#define	KF_FD_TYPE_TEXT	-5	/* Text vnode */
+#define	KF_FD_TYPE_CTTY	-6	/* Controlling terminal */
+
+#define	KF_NTSYNC_TYPE_DEV	1	/* Not reported, reserved */
+#define	KF_NTSYNC_TYPE_SEM	2
+#define	KF_NTSYNC_TYPE_MUTEX	3
+#define	KF_NTSYNC_TYPE_EVENT	4
+
+#define	KF_FLAG_READ		0x00000001
+#define	KF_FLAG_WRITE		0x00000002
+#define	KF_FLAG_APPEND		0x00000004
+#define	KF_FLAG_ASYNC		0x00000008
+#define	KF_FLAG_FSYNC		0x00000010
+#define	KF_FLAG_NONBLOCK	0x00000020
+#define	KF_FLAG_DIRECT		0x00000040
+#define	KF_FLAG_HASLOCK		0x00000080
+#define	KF_FLAG_SHLOCK		0x00000100
+#define	KF_FLAG_EXLOCK		0x00000200
+#define	KF_FLAG_NOFOLLOW	0x00000400
+#define	KF_FLAG_CREAT		0x00000800
+#define	KF_FLAG_TRUNC		0x00001000
+#define	KF_FLAG_EXCL		0x00002000
+#define	KF_FLAG_EXEC		0x00004000
+
+/*
+ * Old format.  Has variable hidden padding due to alignment.
+ * This is a compatibility hack for pre-build 7.1 packages.
+ */
+#if defined(__amd64__)
+#define	KINFO_OFILE_SIZE	1328
+#endif
+#if defined(__i386__)
+#define	KINFO_OFILE_SIZE	1324
+#endif
+
+struct kinfo_ofile {
+	int	kf_structsize;			/* Size of kinfo_file. */
+	int	kf_type;			/* Descriptor type. */
+	int	kf_fd;				/* Array index. */
+	int	kf_ref_count;			/* Reference count. */
+	int	kf_flags;			/* Flags. */
+	/* XXX Hidden alignment padding here on amd64 */
+	off_t	kf_offset;			/* Seek location. */
+	int	kf_vnode_type;			/* Vnode type. */
+	int	kf_sock_domain;			/* Socket domain. */
+	int	kf_sock_type;			/* Socket type. */
+	int	kf_sock_protocol;		/* Socket protocol. */
+	char	kf_path[PATH_MAX];	/* Path to file, if any. */
+	struct sockaddr_storage kf_sa_local;	/* Socket address. */
+	struct sockaddr_storage	kf_sa_peer;	/* Peer address. */
+};
+
+#if defined(__amd64__) || defined(__i386__)
+/*
+ * This size should never be changed. If you really need to, you must provide
+ * backward ABI compatibility by allocating a new sysctl MIB that will return
+ * the new structure. The current structure has to be returned by the current
+ * sysctl MIB. See how it is done for the kinfo_ofile structure.
+ */
+#define	KINFO_FILE_SIZE	1392
+#endif
+
+struct kinfo_file {
+	int		kf_structsize;		/* Variable size of record. */
+	int		kf_type;		/* Descriptor type. */
+	int		kf_fd;			/* Array index. */
+	int		kf_ref_count;		/* Reference count. */
+	int		kf_flags;		/* Flags. */
+	int		kf_pad0;		/* Round to 64 bit alignment. */
+	int64_t		kf_offset;		/* Seek location. */
 	union {
-		lck_mtx_t  *uu_mtx;
-		struct knote_lock_ctx *uu_knlock;
+		struct {
+			/* API compatibility with FreeBSD < 12. */
+			int		kf_vnode_type;
+			int		kf_sock_domain;
+			int		kf_sock_type;
+			int		kf_sock_protocol;
+			struct sockaddr_storage kf_sa_local;
+			struct sockaddr_storage	kf_sa_peer;
+		};
+		union {
+			struct {
+				/* Sendq size */
+				uint32_t	kf_sock_sendq;
+				/* Socket domain. */
+				int		kf_sock_domain0;
+				/* Socket type. */
+				int		kf_sock_type0;
+				/* Socket protocol. */
+				int		kf_sock_protocol0;
+				/* Socket address. */
+				struct sockaddr_storage kf_sa_local;
+				/* Peer address. */
+				struct sockaddr_storage	kf_sa_peer;
+				/* Address of so_pcb. */
+				uint64_t	kf_sock_pcb;
+				/* Obsolete! May be reused as a spare. */
+				uint64_t	kf_sock_inpcb;
+				/* Address of unp_conn. */
+				uint64_t	kf_sock_unpconn;
+				/* Send buffer state. */
+				uint16_t	kf_sock_snd_sb_state;
+				/* Receive buffer state. */
+				uint16_t	kf_sock_rcv_sb_state;
+				/* Recvq size. */
+				uint32_t	kf_sock_recvq;
+			} kf_sock;
+			struct {
+				/* Vnode type. */
+				int		kf_file_type;
+				/* Space for future use */
+				int		kf_spareint[3];
+				uint64_t	kf_spareint64[29];
+				/* Number of references to file. */
+				uint64_t	kf_file_nlink;
+				/* Vnode filesystem id. */
+				uint64_t	kf_file_fsid;
+				/* File device. */
+				uint64_t	kf_file_rdev;
+				/* Global file id. */
+				uint64_t	kf_file_fileid;
+				/* File size. */
+				uint64_t	kf_file_size;
+				/* Vnode filesystem id, FreeBSD 11 compat. */
+				uint32_t	kf_file_fsid_freebsd11;
+				/* File device, FreeBSD 11 compat. */
+				uint32_t	kf_file_rdev_freebsd11;
+				/* File mode. */
+				uint16_t	kf_file_mode;
+				/* Round to 64 bit alignment. */
+				uint16_t	kf_file_pad0;
+				uint32_t	kf_file_pad1;
+			} kf_file;
+			struct {
+				uint32_t	kf_spareint[4];
+				uint64_t	kf_spareint64[32];
+				uint32_t	kf_sem_value;
+				uint16_t	kf_sem_mode;
+			} kf_sem;
+			struct {
+				uint32_t	kf_spareint[4];
+				uint64_t	kf_spareint64[32];
+				uint64_t	kf_pipe_addr;
+				uint64_t	kf_pipe_peer;
+				uint32_t	kf_pipe_buffer_cnt;
+				uint32_t	kf_pipe_buffer_in;
+				uint32_t	kf_pipe_buffer_out;
+				uint32_t	kf_pipe_buffer_size;
+			} kf_pipe;
+			struct {
+				uint32_t	kf_spareint[4];
+				uint64_t	kf_spareint64[32];
+				uint32_t	kf_pts_dev_freebsd11;
+				uint32_t	kf_pts_pad0;
+				uint64_t	kf_pts_dev;
+				/* Round to 64 bit alignment. */
+				uint32_t	kf_pts_pad1[4];
+			} kf_pts;
+			struct {
+				uint32_t	kf_spareint[4];
+				uint64_t	kf_spareint64[32];
+				pid_t		kf_pid;
+			} kf_proc;
+			struct {
+				uint64_t	kf_eventfd_value;
+				uint32_t	kf_eventfd_flags;
+				uint32_t	kf_eventfd_spareint[3];
+				uint64_t	kf_eventfd_addr;
+			} kf_eventfd;
+			struct {
+				uint32_t	kf_timerfd_clockid;
+				uint32_t	kf_timerfd_flags;
+				uint64_t	kf_timerfd_addr;
+			} kf_timerfd;
+			struct {
+				int32_t		kf_jid;
+			} kf_jail;
+			struct {
+				uint64_t	kf_kqueue_addr;
+				int32_t		kf_kqueue_count;
+				int32_t		kf_kqueue_state;
+			} kf_kqueue;
+			struct {
+				uint64_t	kf_inotify_npending;
+				uint64_t	kf_inotify_nbpending;
+			} kf_inotify;
+			struct {
+				uint32_t	kf_ntsync_type;
+				uint64_t	kf_ntsync_dev;
+				union {
+					struct {
+						uint32_t count;
+						uint32_t max;
+					} kf_ntsync_sem;
+					struct{
+						uint32_t owner;
+						uint32_t count;
+					} kf_ntsync_mutex;
+					struct {
+						uint32_t signaled;
+						uint32_t manual;
+					} kf_ntsync_event;
+				} kf_ntsync_un;
+			} kf_ntsync;
+		} kf_un;
 	};
-
-	lck_spin_t      uu_rethrottle_lock;     /* locks was_rethrottled and is_throttled */
-	TAILQ_ENTRY(uthread) uu_throttlelist;   /* List of uthreads currently throttled */
-	void    *       uu_throttle_info;       /* pointer to throttled I/Os info */
-	int8_t          uu_on_throttlelist;
-	bool            uu_lowpri_window;
-	/* These boolean fields are protected by different locks */
-	bool            uu_was_rethrottled;
-	bool            uu_is_throttled;
-	bool            uu_throttle_bc;
-	bool            uu_defer_reclaims;
-
-	/* internal support for continuation framework */
-	uint16_t uu_pri;                        /* pri | PCATCH | PVFS, ... */
-	caddr_t uu_wchan;                       /* sleeping thread wait channel */
-	int (*uu_continuation)(int);
-	const char *uu_wmesg;                   /* ... wait message */
-
-	struct kern_sigaltstack uu_sigstk;
-	vnode_t         uu_vreclaims;
-	vnode_t         uu_cdir;                /* per thread CWD */
-	int             uu_dupfd;               /* fd in fdesc_open/dupfdopen */
-
-	u_int32_t       uu_network_marks;       /* network control flow marks */
-
-	/*
-	 * Bound kqueue request. This field is only cleared by the current thread,
-	 * hence can be dereferenced safely by the current thread without locks.
-	 */
-	struct workq_threadreq_s *uu_kqr_bound;
-	TAILQ_ENTRY(uthread) uu_workq_entry;
-	vm_offset_t uu_workq_stackaddr;
-	mach_port_name_t uu_workq_thport;
-	struct uu_workq_policy {
-		/* Requested QoS.
-		 *
-		 *	- Modified on self during qos updates, or on idle threads we are setting
-		 *	up to run (eg. creator, threads for dispatch apply, etc) while holding
-		 *	wq lock
-		 *	- Read from self
-		 *
-		 *	Synchronization is subtle since it's generally on self but when
-		 *	modifying on non-self threads, we rely on the fact that they are
-		 *	previously idle and therefore, not modifying it on self at the same time
-		 *	until they take the wq lock.
-		 */
-		uint16_t qos_req : 4;
-		/* Current acked max qos - from kevent.
-		 *
-		 * Synchronized by being modified on self. Also generally under the wq lock
-		 * but that's more of a happy coincidence.
-		 */
-		uint16_t qos_max : 4;
-		/* Async QoS override received - workqueue override
-		 *
-		 * Synchronized with the thread mutex and wq lock since it can be modified
-		 * by another thread.
-		 */
-		uint16_t qos_override : 4;
-		/* Current acked bucket.
-		 *
-		 * Synchronized by only being read or written on self.
-		 */
-		uint16_t qos_bucket : 4;
-	} uu_workq_pri;
-
-	uint16_t uu_workq_flags;
-	kq_index_t uu_kqueue_override;
-
-#ifdef CONFIG_IOCOUNT_TRACE
-	int             uu_iocount;
-	int             uu_vpindex;
-	void    *uu_vps[32];
-	void    *uu_pcs[32][10];
-#endif
-#if CONFIG_WORKLOOP_DEBUG
-#define UU_KEVENT_HISTORY_COUNT 32
-#define UU_KEVENT_HISTORY_WRITE_ENTRY(uth, ...)  ({ \
-	        struct uthread *__uth = (uth); \
-	        unsigned int __index = __uth->uu_kevent_index++; \
-	        __uth->uu_kevent_history[__index % UU_KEVENT_HISTORY_COUNT] = \
-	                        (struct uu_kevent_history)__VA_ARGS__; \
-	})
-	struct uu_kevent_history {
-		uint64_t uu_kqid;
-		struct kqueue *uu_kq;
-		int uu_error, uu_nchanges, uu_nevents;
-		unsigned int uu_flags;
-	} uu_kevent_history[UU_KEVENT_HISTORY_COUNT];
-	unsigned int uu_kevent_index;
-#endif
-	int             uu_proc_refcount;
-#if PROC_REF_DEBUG
-	struct uthread_proc_ref_info *uu_proc_ref_info;
-#endif
-
-#if CONFIG_DTRACE
-	uint32_t        t_dtrace_errno; /* Most recent errno */
-	siginfo_t       t_dtrace_siginfo;
-	uint64_t        t_dtrace_resumepid; /* DTrace's pidresume() pid */
-	uint8_t         t_dtrace_stop;  /* indicates a DTrace desired stop */
-	uint8_t         t_dtrace_sig;   /* signal sent via DTrace's raise() */
-
-	union __tdu {
-		struct __tds {
-			uint8_t _t_dtrace_on;   /* hit a fasttrap tracepoint */
-			uint8_t _t_dtrace_step; /* about to return to kernel */
-			uint8_t _t_dtrace_ret;  /* handling a return probe */
-			uint8_t _t_dtrace_ast;  /* saved ast flag */
-#if __sol64 || defined(__APPLE__)
-			uint8_t _t_dtrace_reg;  /* modified register */
-#endif
-		} _tds;
-		u_int32_t _t_dtrace_ft;           /* bitwise or of these flags */
-	} _tdu;
-#define t_dtrace_ft     _tdu._t_dtrace_ft
-#define t_dtrace_on     _tdu._tds._t_dtrace_on
-#define t_dtrace_step   _tdu._tds._t_dtrace_step
-#define t_dtrace_ret    _tdu._tds._t_dtrace_ret
-#define t_dtrace_ast    _tdu._tds._t_dtrace_ast
-#if __sol64 || defined(__APPLE__)
-#define t_dtrace_reg    _tdu._tds._t_dtrace_reg
-#endif
-
-	user_addr_t     t_dtrace_pc;    /* DTrace saved pc from fasttrap */
-	user_addr_t     t_dtrace_npc;   /* DTrace next pc from fasttrap */
-	user_addr_t     t_dtrace_scrpc; /* DTrace per-thread scratch location */
-	user_addr_t     t_dtrace_astpc; /* DTrace return sequence location */
-
-	struct dtrace_ptss_page_entry*  t_dtrace_scratch; /* scratch space entry */
-
-#if __sol64 || defined(__APPLE__)
-	uint64_t        t_dtrace_regv;  /* DTrace saved reg from fasttrap */
-#endif
-	void *t_dtrace_syscall_args;
-#endif /* CONFIG_DTRACE */
-	char *pth_name;
-
-	/* Document Tracking struct used to track a "tombstone" for a document */
-	struct doc_tombstone *t_tombstone;
-
-	/* Field to be used by filesystems */
-	uint64_t t_fs_private;
-
-	struct os_reason *uu_exit_reason;
-
-#if CONFIG_DEBUG_SYSCALL_REJECTION
-	uint64_t        syscall_rejection_flags;  /* flags for syscall rejection behavior */
-	uint64_t        *syscall_rejection_mask;  /* mach_trap_count + nsysent bits */
-	uint64_t        *syscall_rejection_once_mask;  /* mach_trap_count + nsysent bits */
-#endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
+	uint16_t	kf_status;		/* Status flags. */
+	uint16_t	kf_pad1;		/* Round to 32 bit alignment. */
+	int		_kf_ispare0;		/* Space for more stuff. */
+	cap_rights_t	kf_cap_rights;		/* Capability rights. */
+	uint64_t	_kf_cap_spare;		/* Space for future cap_rights_t. */
+	/* Truncated before copyout in sysctl */
+	char		kf_path[PATH_MAX];	/* Path to file, if any. */
 };
 
-typedef struct uthread * uthread_t;
+struct kinfo_lockf {
+	int		kl_structsize;		/* Variable size of record. */
+	int		kl_rw;
+	int		kl_type;
+	int		kl_pid;
+	int		kl_sysid;
+	int		kl_pad0;
+	uint64_t	kl_file_fsid;
+	uint64_t	kl_file_rdev;
+	uint64_t	kl_file_fileid;
+	off_t		kl_start;
+	off_t		kl_len;			/* len == 0 till the EOF */
+	char		kl_path[PATH_MAX];
+};
 
-/* Definition of uu_flag */
-#define UT_SAS_OLDMASK  0x00000001      /* need to restore mask before pause */
-#define UT_NO_SIGMASK   0x00000002      /* exited thread; invalid sigmask */
-#define UT_NOTCANCELPT  0x00000004      /* not a cancelation point */
-#define UT_CANCEL       0x00000008      /* thread marked for cancel */
-#define UT_CANCELED     0x00000010      /* thread cancelled */
-#define UT_CANCELDISABLE 0x00000020     /* thread cancel disabled */
-#define UT_ALTSTACK     0x00000040      /* this thread has alt stack for signals */
-#define UT_THROTTLE_IO  0x00000080      /* this thread issues throttle I/O */
-#define UT_PASSIVE_IO   0x00000100      /* this thread issues passive I/O */
-#define UT_PROCEXIT     0x00000200      /* this thread completed the  proc exit */
-#define UT_RAGE_VNODES  0x00000400      /* rapid age any vnodes created by this thread */
-#define UT_KERN_RAGE_VNODES        0x00000800 /* rapid age any vnodes created by this thread (kernel set) */
-#define UT_NSPACE_NODATALESSFAULTS 0x00001000 /* thread does not materialize dataless files */
-#define UT_ATIME_UPDATE 0x00002000      /* don't update atime for files accessed by this thread */
-#define UT_NSPACE_FORCEDATALESSFAULTS  0x00004000 /* thread always materializes dataless files */
-#define UT_LP64         0x00010000      /* denormalized P_LP64 bit from proc */
-#define UT_FS_ENTITLED_RESERVE_ACCESS  0x00020000 /* thread's FS allocations should come from the entitled reserve */
-#define UT_SKIP_MTIME_UPDATE  0x00040000 /* don't update mtime for files modified by this thread */
-#define UT_SKIP_MTIME_UPDATE_IGNORE  0x00080000 /* ignore the process's mtime update policy when the policy is not enabled for this thread */
-#define UT_SUPPORT_LONG_PATHS  0x00100000 /* support long paths in syscalls used by this thread */
-#define UT_IGNORE_NODE_PERMISSIONS 0x00200000 /* thread should ignore node permissions */
+#define	KLOCKF_RW_READ		0x01
+#define	KLOCKF_RW_WRITE		0x02
 
-#endif /* BSD_KERNEL_PRIVATE */
-
-#endif /* __APPLE_API_PRIVATE */
-
-#endif  /* KERNEL */
+#define	KLOCKF_TYPE_FLOCK	0x01
+#define	KLOCKF_TYPE_PID		0x02
+#define	KLOCKF_TYPE_REMOTE	0x03
 
 /*
- * Per process structure containing data that isn't needed in core
- * when the process isn't running (esp. when swapped out).
- * This structure may or may not be at the same kernel address
- * in all processes.
+ * The KERN_PROC_VMMAP sysctl allows a process to dump the VM layout of
+ * another process as a series of entries.
  */
+#define	KVME_TYPE_NONE		0
+#define	KVME_TYPE_DEFAULT	1		/* no longer returned */
+#define	KVME_TYPE_VNODE		2
+#define	KVME_TYPE_SWAP		3
+#define	KVME_TYPE_DEVICE	4
+#define	KVME_TYPE_PHYS		5
+#define	KVME_TYPE_DEAD		6
+#define	KVME_TYPE_SG		7
+#define	KVME_TYPE_MGTDEVICE	8
+#define	KVME_TYPE_GUARD		9
+#define	KVME_TYPE_UNKNOWN	255
 
-struct  user {
-	/* NOT USED ANYMORE */
+#define	KVME_PROT_READ		0x00000001
+#define	KVME_PROT_WRITE		0x00000002
+#define	KVME_PROT_EXEC		0x00000004
+#define	KVME_MAX_PROT_READ	0x00010000
+#define	KVME_MAX_PROT_WRITE	0x00020000
+#define	KVME_MAX_PROT_EXEC	0x00040000
+
+#define	KVME_FLAG_COW		0x00000001
+#define	KVME_FLAG_NEEDS_COPY	0x00000002
+#define	KVME_FLAG_NOCOREDUMP	0x00000004
+#define	KVME_FLAG_SUPER		0x00000008
+#define	KVME_FLAG_GROWS_UP	0x00000010
+#define	KVME_FLAG_GROWS_DOWN	0x00000020
+#define	KVME_FLAG_USER_WIRED	0x00000040
+#define	KVME_FLAG_SYSVSHM	0x00000080
+#define	KVME_FLAG_POSIXSHM	0x00000100
+
+#if defined(__amd64__)
+#define	KINFO_OVMENTRY_SIZE	1168
+#endif
+#if defined(__i386__)
+#define	KINFO_OVMENTRY_SIZE	1128
+#endif
+
+struct kinfo_ovmentry {
+	int	 kve_structsize;		/* Size of kinfo_vmmapentry. */
+	int	 kve_type;			/* Type of map entry. */
+	void	*kve_start;			/* Starting address. */
+	void	*kve_end;			/* Finishing address. */
+	int	 kve_flags;			/* Flags on map entry. */
+	int	 kve_resident;			/* Number of resident pages. */
+	int	 kve_private_resident;		/* Number of private pages. */
+	int	 kve_protection;		/* Protection bitmask. */
+	int	 kve_ref_count;			/* VM obj ref count. */
+	int	 kve_shadow_count;		/* VM obj shadow count. */
+	char	 kve_path[PATH_MAX];		/* Path to VM obj, if any. */
+	void	*_kve_pspare[8];		/* Space for more stuff. */
+	off_t	 kve_offset;			/* Mapping offset in object */
+	uint64_t kve_fileid;			/* inode number if vnode */
+	uint32_t kve_fsid;			/* dev_t of vnode location */
+	int	 _kve_ispare[3];		/* Space for more stuff. */
 };
 
-#endif  /* !_SYS_USER_H_ */
+#if defined(__amd64__) || defined(__i386__)
+#define	KINFO_VMENTRY_SIZE	1160
+#endif
+
+struct kinfo_vmentry {
+	int	 kve_structsize;		/* Variable size of record. */
+	int	 kve_type;			/* Type of map entry. */
+	uint64_t kve_start;			/* Starting address. */
+	uint64_t kve_end;			/* Finishing address. */
+	uint64_t kve_offset;			/* Mapping offset in object */
+	uint64_t kve_vn_fileid;			/* inode number if vnode */
+	uint32_t kve_vn_fsid_freebsd11;		/* dev_t of vnode location */
+	int	 kve_flags;			/* Flags on map entry. */
+	int	 kve_resident;			/* Number of resident pages. */
+	int	 kve_private_resident;		/* Number of private pages. */
+	int	 kve_protection;		/* Protection bitmask. */
+	int	 kve_ref_count;			/* VM obj ref count. */
+	int	 kve_shadow_count;		/* VM obj shadow count. */
+	int	 kve_vn_type;			/* Vnode type. */
+	uint64_t kve_vn_size;			/* File size. */
+	uint32_t kve_vn_rdev_freebsd11;		/* Device id if device. */
+	uint16_t kve_vn_mode;			/* File mode. */
+	uint16_t kve_status;			/* Status flags. */
+	union {
+		uint64_t _kve_vn_fsid;		/* dev_t of vnode location */
+		uint64_t _kve_obj;		/* handle of anon obj */
+	} kve_type_spec;
+	uint64_t kve_vn_rdev;			/* Device id if device. */
+	int	 _kve_ispare[8];		/* Space for more stuff. */
+	/* Truncated before copyout in sysctl */
+	char	 kve_path[PATH_MAX];		/* Path to VM obj, if any. */
+};
+#define	kve_vn_fsid	kve_type_spec._kve_vn_fsid
+#define	kve_obj		kve_type_spec._kve_obj
+
+#define	KVMO_FLAG_SYSVSHM	0x0001
+#define	KVMO_FLAG_POSIXSHM	0x0002
+
+/*
+ * The "vm.objects" sysctl provides a list of all VM objects in the system
+ * via an array of these entries.
+ */
+struct kinfo_vmobject {
+	int	kvo_structsize;			/* Variable size of record. */
+	int	kvo_type;			/* Object type: KVME_TYPE_*. */
+	uint64_t kvo_size;			/* Object size in pages. */
+	uint64_t kvo_vn_fileid;			/* inode number if vnode. */
+	uint32_t kvo_vn_fsid_freebsd11;		/* dev_t of vnode location. */
+	int	kvo_ref_count;			/* Reference count. */
+	int	kvo_shadow_count;		/* Shadow count. */
+	int	kvo_memattr;			/* Memory attribute. */
+	uint64_t kvo_resident;			/* Number of resident pages. */
+	uint64_t kvo_active;			/* Number of active pages. */
+	uint64_t kvo_inactive;			/* Number of inactive pages. */
+	union {
+		uint64_t _kvo_vn_fsid;
+		uint64_t _kvo_backing_obj;	/* Handle for the backing obj */
+	} kvo_type_spec;			/* Type-specific union */
+	uint64_t kvo_me;			/* Uniq handle for anon obj */
+	uint64_t kvo_laundry;			/* Number of laundry pages. */
+	uint64_t kvo_wired;			/* Number of wired pages. */
+	uint64_t _kvo_qspare[4];
+	uint32_t kvo_swapped;			/* Number of swapped pages */
+	uint32_t kvo_flags;
+	uint32_t _kvo_ispare[6];
+	char	kvo_path[PATH_MAX];		/* Pathname, if any. */
+};
+#define	kvo_vn_fsid	kvo_type_spec._kvo_vn_fsid
+#define	kvo_backing_obj	kvo_type_spec._kvo_backing_obj
+
+/*
+ * The KERN_PROC_KSTACK sysctl allows a process to dump the kernel stacks of
+ * another process as a series of entries.  Each stack is represented by a
+ * series of symbol names and offsets as generated by stack_sbuf_print(9).
+ */
+#define	KKST_MAXLEN	1024
+
+#define	KKST_STATE_STACKOK	0		/* Stack is valid. */
+#define	KKST_STATE_SWAPPED	1		/* Stack swapped out, obsolete. */
+#define	KKST_STATE_RUNNING	2		/* Stack ephemeral. */
+
+#if defined(__amd64__) || defined(__i386__)
+#define	KINFO_KSTACK_SIZE	1096
+#endif
+
+struct kinfo_kstack {
+	lwpid_t	 kkst_tid;			/* ID of thread. */
+	int	 kkst_state;			/* Validity of stack. */
+	char	 kkst_trace[KKST_MAXLEN];	/* String representing stack. */
+	int	 _kkst_ispare[16];		/* Space for more stuff. */
+};
+
+struct kinfo_sigtramp {
+	void	*ksigtramp_start;
+	void	*ksigtramp_end;
+	void	*ksigtramp_spare[4];
+};
+
+#define	KMAP_FLAG_WIREFUTURE	0x01	/* all future mappings wil be wired */
+#define	KMAP_FLAG_ASLR		0x02	/* ASLR is applied to mappings */
+#define	KMAP_FLAG_ASLR_IGNSTART	0x04	/* ASLR may map into sbrk grow region */
+#define	KMAP_FLAG_WXORX		0x08	/* W^X mapping policy is enforced */
+#define	KMAP_FLAG_ASLR_STACK	0x10	/* the stack location is randomized */
+#define	KMAP_FLAG_ASLR_SHARED_PAGE 0x20	/* the shared page location is randomized */
+
+struct kinfo_vm_layout {
+	uintptr_t	kvm_min_user_addr;
+	uintptr_t	kvm_max_user_addr;
+	uintptr_t	kvm_text_addr;
+	size_t		kvm_text_size;
+	uintptr_t	kvm_data_addr;
+	size_t		kvm_data_size;
+	uintptr_t	kvm_stack_addr;
+	size_t		kvm_stack_size;
+	int		kvm_map_flags;
+	uintptr_t	kvm_shp_addr;
+	size_t		kvm_shp_size;
+	uintptr_t	kvm_spare[12];
+};
+
+#define	KNOTE_STATUS_ACTIVE		0x00000001
+#define	KNOTE_STATUS_QUEUED		0x00000002
+#define	KNOTE_STATUS_DISABLED		0x00000004
+#define	KNOTE_STATUS_DETACHED		0x00000008
+#define	KNOTE_STATUS_KQUEUE		0x00000010
+
+#define	KNOTE_EXTDATA_NONE		0
+#define	KNOTE_EXTDATA_VNODE		1
+#define	KNOTE_EXTDATA_PIPE		2
+
+struct kinfo_knote {
+	int		knt_kq_fd;
+	struct kevent	knt_event;
+	int		knt_status;
+	int		knt_extdata;
+	uint64_t	knt_spare0[4];
+	union {
+		struct {
+			int		knt_vnode_type;
+			uint64_t	knt_vnode_fsid;
+			uint64_t	knt_vnode_fileid;
+			char		knt_vnode_fullpath[PATH_MAX];
+		} knt_vnode;
+		struct {
+			ino_t		knt_pipe_ino;
+		} knt_pipe;
+	};
+};
+
+#ifdef _KERNEL
+/* Flags for kern_proc_out function. */
+#define KERN_PROC_NOTHREADS	0x1
+#define KERN_PROC_MASK32	0x2
+
+/* Flags for kern_proc_filedesc_out. */
+#define	KERN_FILEDESC_PACK_KINFO	0x00000001U
+
+/* Flags for kern_proc_vmmap_out. */
+#define	KERN_VMMAP_PACK_KINFO		0x00000001U
+struct sbuf;
+
+/*
+ * The kern_proc out functions are helper functions to dump process
+ * miscellaneous kinfo structures to sbuf.  The main consumers are KERN_PROC
+ * sysctls but they may also be used by other kernel subsystems.
+ *
+ * The functions manipulate the process locking state and expect the process
+ * to be locked on enter.  On return the process is unlocked.
+ */
+
+int	kern_proc_filedesc_out(struct proc *p, struct sbuf *sb, ssize_t maxlen,
+	int flags);
+int	kern_proc_cwd_out(struct proc *p, struct sbuf *sb, ssize_t maxlen);
+int	kern_proc_out(struct proc *p, struct sbuf *sb, int flags);
+int	kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen,
+	int flags);
+int	kern_proc_kqueues_out(struct proc *p, struct sbuf *s, size_t maxlen,
+	bool compat32);
+
+int	vntype_to_kinfo(int vtype);
+void	pack_kinfo(struct kinfo_file *kif);
+#endif /* !_KERNEL */
+
+#endif

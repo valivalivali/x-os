@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2014 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1985, 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,41 +27,39 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)namei.h	8.4 (Berkeley) 8/20/94
  */
 
 #ifndef _SYS_NAMEI_H_
-#define _SYS_NAMEI_H_
+#define	_SYS_NAMEI_H_
 
-#include <sys/appleapiopts.h>
-
-#ifdef KERNEL
-#define LOCKLEAF        0x0004  /* lock inode on return */
-#define LOCKPARENT      0x0008  /* want parent vnode returned */
-#define WANTPARENT      0x0010  /* want parent vnode returned */
-
-#ifdef KERNEL_PRIVATE
-#define CN_SECLUDE_RENAME 0x10000000 /*rename iff ￢(hard-linked ∨ opened ∨ mmaped)*/
-#define CN_RAW_ENCRYPTED 0x80000000 /* Look-up is for RO raw encrypted access. */
-#endif
-
-#endif // KERNEL
-
-#ifdef BSD_KERNEL_PRIVATE
-
-/* VFS Supports "/..namedfork/rsrc" access. */
-#define NAMEDRSRCFORK           NAMEDSTREAMS
-
-
-#include <sys/queue.h>
-#include <kern/smr.h>
-#include <sys/uio.h>
-#include <sys/vnode.h>
-#include <sys/mount.h>
+#include <sys/caprights.h>
 #include <sys/filedesc.h>
+#include <sys/queue.h>
+#include <sys/_seqc.h>
+#include <sys/_uio.h>
 
-#define PATHBUFLEN      256
+#include <vm/uma.h>
+
+enum nameiop { LOOKUP, CREATE, DELETE, RENAME };
+
+struct componentname {
+	/*
+	 * Arguments to lookup.
+	 */
+	u_int64_t cn_flags;	/* flags to namei */
+	struct	ucred *cn_cred;	/* credentials */
+	enum nameiop cn_nameiop;	/* namei operation */
+	int	cn_lkflags;	/* Lock flags LK_EXCLUSIVE or LK_SHARED */
+	/*
+	 * Shared between lookup and commit routines.
+	 */
+	char	*cn_pnbuf;	/* pathname buffer */
+	char	*cn_nameptr;	/* pointer to looked up name */
+	long	cn_namelen;	/* length of looked up component */
+};
+
+struct nameicap_tracker;
+TAILQ_HEAD(nameicap_tracker_head, nameicap_tracker);
 
 /*
  * Encapsulation of namei parameters.
@@ -100,210 +68,266 @@ struct nameidata {
 	/*
 	 * Arguments to namei/lookup.
 	 */
-	user_addr_t ni_dirp;            /* pathname pointer */
-	enum    uio_seg ni_segflg;      /* location of pathname */
-	enum    path_operation ni_op;   /* intended operation, see enum path_operation in vnode.h */
+	const	char *ni_dirp;		/* pathname pointer */
+	enum	uio_seg ni_segflg;	/* location of pathname */
+	const cap_rights_t *ni_rightsneeded; /* rights needed to look up vnode */
 	/*
 	 * Arguments to lookup.
 	 */
-	struct  vnode *ni_startdir;     /* starting directory */
-	struct  vnode *ni_rootdir;      /* logical root directory */
-	struct  vnode *ni_usedvp;       /* directory passed in via USEDVP */
+	struct  vnode *ni_startdir;	/* starting directory */
+	struct	vnode *ni_rootdir;	/* logical root directory */
+	struct	vnode *ni_topdir;	/* logical top directory */
+	int	ni_dirfd;		/* starting directory for *at functions */
+	int	ni_lcf;			/* local call flags */
+	/*
+	 * Results: returned from namei
+	 */
+	struct filecaps ni_filecaps;	/* rights the *at base has */
 	/*
 	 * Results: returned from/manipulated by lookup
 	 */
-	struct  vnode *ni_vp;           /* vnode of result */
-	struct  vnode *ni_dvp;          /* vnode of intermediate directory */
+	struct	vnode *ni_vp;		/* vnode of result */
+	struct	vnode *ni_dvp;		/* vnode of intermediate directory */
+	/*
+	 * Results: flags returned from namei
+	 */
+	u_int	ni_resflags;
+	/*
+	 * Debug for validating API use by the callers.
+	 */
+	u_short	ni_debugflags;
 	/*
 	 * Shared between namei and lookup/commit routines.
 	 */
-	u_int   ni_pathlen;             /* remaining chars in path */
-	char    *ni_next;               /* next location in pathname */
-	char    ni_pathbuf[PATHBUFLEN];
-	u_long  ni_loopcnt;             /* count of symlinks encountered */
-
+	u_short	ni_loopcnt;		/* count of symlinks encountered */
+	size_t	ni_pathlen;		/* remaining chars in path */
+	char	*ni_next;		/* next location in pathname */
+	/*
+	 * Lookup parameters: this structure describes the subset of
+	 * information from the nameidata structure that is passed
+	 * through the VOP interface.
+	 */
 	struct componentname ni_cnd;
-	int32_t ni_flag;
-	int ni_ncgeneration;            /* For a batched vnop, grab generation beforehand */
 
-	/* arguments to namei */
-	int ni_atfd;
+	/* Serving RBENEATH. */
+	struct nameicap_tracker_head ni_cap_tracker;
+	struct vnode *ni_rbeneath_dpp;
+	struct mount *ni_nctrack_mnt;
+
+	/*
+	 * Private helper data for UFS, must be at the end.  See
+	 * NDINIT_PREFILL().
+	 */
+	seqc_t	ni_dvp_seqc;
+	seqc_t	ni_vp_seqc;
 };
 
-#define NAMEI_CONTLOOKUP        0x002    /* Continue processing a lookup which was partially processed in a compound VNOP */
-#define NAMEI_TRAILINGSLASH     0x004    /* There was at least one trailing slash after last component */
-#define NAMEI_UNFINISHED        0x008    /* We broke off a lookup to do a compound op */
+#ifdef _KERNEL
+
+enum cache_fpl_status { CACHE_FPL_STATUS_DESTROYED, CACHE_FPL_STATUS_ABORTED,
+    CACHE_FPL_STATUS_PARTIAL, CACHE_FPL_STATUS_HANDLED, CACHE_FPL_STATUS_UNSET };
+int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
+    struct pwd **pwdp);
 
 /*
- * XXX Hack: we need to encode the intended VNOP in order to
- * be able to include information about which operations a filesystem
- * supports in the decision to break off a lookup early.
+ * Flags for namei.
+ *
+ * If modifying the list make sure to check whether NDVALIDATE needs updating.
  */
-#define NAMEI_COMPOUNDOPEN      0x010
-#define NAMEI_COMPOUNDREMOVE    0x020
-#define NAMEI_COMPOUNDMKDIR     0x040
-#define NAMEI_COMPOUNDRMDIR     0x080
-#define NAMEI_COMPOUNDRENAME    0x100
-#define NAMEI_COMPOUND_OP_MASK (NAMEI_COMPOUNDOPEN | NAMEI_COMPOUNDREMOVE | NAMEI_COMPOUNDMKDIR | NAMEI_COMPOUNDRMDIR | NAMEI_COMPOUNDRENAME)
 
-#define NAMEI_NOFOLLOW_ANY      0x1000  /* no symlinks allowed in the path */
-#define NAMEI_ROOTDIR           0x2000  /* Limit lookup to ni_rootdir (similar to chroot) */
-#define NAMEI_RESOLVE_BENEATH   0x4000  /* path resolution must not escape the starting directory */
-#define NAMEI_NODOTDOT          0x8000  /* prevent '..' path traversal */
+/*
+ * Debug.
+ */
+#define	NAMEI_DBG_INITED	0x0001
+#define	NAMEI_DBG_CALLED	0x0002
+#define	NAMEI_DBG_HADSTARTDIR	0x0004
 
-#define NAMEI_LOCAL             0x10000 /* prevent a path lookup into a network filesystem */
-#define NAMEI_NODEVFS           0x20000 /* prevent a path lookup into `devfs` filesystem */
-#define NAMEI_IMMOVABLE         0x40000 /* prevent a path lookup into a removable filesystem */
-#define NAMEI_NOXATTRS          0x80000 /* prevent a path lookup on named streams */
-
-#define NAMEI_UNIQUE            0x100000 /* prevent a path lookup from succeeding on a vnode with multiple links */
-#define NAMEI_NOUNION           0x200000 /* prevent a path lookup on filesystem with MNT_UNION from traversing to covered filesystem */
-#define NAMEI_ATFD              0x400000 /* use the fd passed as the starting directory for lookup */
-
-#define NAMEI_FIRMLINK_FOLLOWED 0x800000 /* Firmlink followed since last root encounter */
-
-#ifdef KERNEL
 /*
  * namei operational modifier flags, stored in ni_cnd.flags
- * Also includes LOCKLEAF, LOCKPARENT, and WANTPARENT flags, defined above.
  */
-#define NOCACHE         0x00000020 /* name must not be left in cache */
-#define NOFOLLOW        0x00000000 /* do not follow symbolic links (pseudo) */
-/* public FOLLOW	0x00000040    see vnode.h */
-#define SHAREDLEAF      0x00000080 /* OK to have shared leaf lock */
-#define MODMASK         0x100000fc /* mask of operational modifiers */
+#define	NC_NOMAKEENTRY	0x0001	/* name must not be added to cache */
+#define	NC_KEEPPOSENTRY	0x0002	/* don't evict a positive entry */
+#define	NOCACHE		NC_NOMAKEENTRY	/* for compatibility with older code */
+#define	LOCKLEAF	0x0004	/* lock vnode on return */
+#define	LOCKPARENT	0x0008	/* want parent vnode returned locked */
+#define	WANTPARENT	0x0010	/* want parent vnode returned unlocked */
+#define	FAILIFEXISTS	0x0020	/* return EEXIST if found */
+#define	FOLLOW		0x0040	/* follow symbolic links */
+#define	EMPTYPATH	0x0080	/* Allow empty path for *at */
+#define	LOCKSHARED	0x0100	/* Shared lock leaf */
+#define	NOFOLLOW	0x0000	/* do not follow symbolic links (pseudo) */
+#define	RBENEATH	0x100000000ULL /* No escape, even tmp, from start dir */
+#define	NAMEILOOKUP	0x200000000ULL /* cnp is embedded in nameidata */
+#define	MODMASK		0xf000001ffULL	/* mask of operational modifiers */
+
 /*
  * Namei parameter descriptors.
- *
- * SAVESTART is set only by the callers of namei. It implies SAVENAME
- * plus the addition of saving the parent directory that contains the
- * name in ni_startdir. It allows repeated calls to lookup for the
- * name being sought. The caller is responsible for releasing the
- * buffer and for vrele'ing ni_startdir.
  */
-#define SAVENAME        0          /* save pathanme buffer ***obsolete */
-#define NOCROSSMOUNT    0x00000100 /* do not cross mount points */
-#define RDONLY          0x00000200 /* lookup with read-only semantics */
-#define HASBUF          0x00000400 /* has allocated pathname buffer */
-#define DONOTAUTH       0x00000800 /* do not authorize during lookup */
-#define SAVESTART       0x00001000 /* save starting directory */
-/* public ISDOTDOT	0x00002000    see vnode.h */
-/* public MAKEENTRY	0x00004000    see vnode.h */
-/* public ISLASTCN	0x00008000    see vnode.h */
-#define ISSYMLINK       0x00010000 /* symlink needs interpretation */
-/* public ISWHITEOUT	0x00020000    see vnode.h */
-/* public DOWHITEOUT	0x00040000    see vnode.h */
-#define WILLBEDIR       0x00080000 /* new files will be dirs; allow trailing / */
-#define AUDITVNPATH1    0x00100000 /* audit the path/vnode info */
-#define AUDITVNPATH2    0x00200000 /* audit the path/vnode info */
-#define USEDVP          0x00400000 /* start the lookup at ndp.ni_dvp */
-#define CN_VOLFSPATH    0x00800000 /* user path was a volfs style path */
-#define CN_FIRMLINK_NOFOLLOW    0x01000000 /* Do not follow firm links */
-#if NAMEDSTREAMS
-#define MARKISSHADOW    0x02000000 /* only for getshadowfile() */
-#endif
-#if NAMEDRSRCFORK
-#define CN_WANTSRSRCFORK 0x04000000
-#define CN_ALLOWRSRCFORK 0x08000000
-#endif // NAMEDRSRCFORK
-// CN_SECLUDE_RENAME is defined above as 0x10000000 (SPI)
-#define CN_NBMOUNTLOOK  0x20000000 /* do not block for cross mount lookups */
-#ifdef BSD_KERNEL_PRIVATE
-#define CN_SKIPNAMECACHE        0x40000000      /* skip cache during lookup(), allow FS to handle all components */
-#endif
-// CN_RAW_ENCRYPTED	is defined above as 0x80000000 (SPI)
+#define	RDONLY		0x00000200 /* lookup with read-only semantics */
+#define	ISRESTARTED	0x00000400 /* restarted namei */
+#define	IGNOREWHITEOUT	0x00000800 /* ignore whiteouts, e.g. when checking if a dir is empty */
+#define	ISWHITEOUT	0x00001000 /* found whiteout */
+#define	DOWHITEOUT	0x00002000 /* do whiteouts */
+#define	WILLBEDIR	0x00004000 /* new files will be dirs; allow trailing / */
+#define	ISOPEN		0x00008000 /* caller is opening; return a real vnode. */
+#define	NOCROSSMOUNT	0x00010000 /* do not cross mount points */
+#define	NOMACCHECK	0x00020000 /* do not perform MAC checks */
+#define	AUDITVNODE1	0x00040000 /* audit the looked up vnode information */
+#define	AUDITVNODE2	0x00080000 /* audit the looked up vnode information */
+#define	NOCAPCHECK	0x00100000 /* do not perform capability checks */
+#define	OPENREAD	0x00200000 /* open for reading */
+#define	OPENWRITE	0x00400000 /* open for writing */
+#define	WANTIOCTLCAPS	0x00800000 /* leave ioctl caps for the caller */
+#define	OPENNAMED	0x01000000 /* opening a named attribute (dir) */
+#define	NOEXECCHECK	0x02000000 /* do not perform exec check on dir */
+#define	MAKEENTRY	0x04000000 /* entry is to be added to name cache */
+#define	ISSYMLINK	0x08000000 /* symlink needs interpretation */
+#define	ISLASTCN	0x10000000 /* this is last component of pathname */
+#define	ISDOTDOT	0x20000000 /* current component name is .. */
+#define	TRAILINGSLASH	0x40000000 /* path ended in a slash */
+#define	CREATENAMED	0x80000000 /* create a named attribute dir */
+#define	PARAMASK	0xfffffe00 /* mask of parameter descriptors */
 
 /*
- * Initialization of an nameidata structure.
+ * Flags which must not be passed in by callers.
  */
+#define NAMEI_INTERNAL_FLAGS	\
+	(NOEXECCHECK | MAKEENTRY | ISSYMLINK | ISLASTCN | ISDOTDOT | \
+	 TRAILINGSLASH | ISRESTARTED)
 
-#define NDINIT(ndp, op, pop, flags, segflg, namep, ctx) { \
-	(ndp)->ni_cnd.cn_nameiop = op; \
-	(ndp)->ni_op = pop; \
-	(ndp)->ni_cnd.cn_flags = flags; \
-	if ((segflg) == UIO_USERSPACE) { \
-	        (ndp)->ni_segflg = (vfs_context_is64bit(ctx) ? UIO_USERSPACE64 : UIO_USERSPACE32); \
-	} \
-	else { \
-	        (ndp)->ni_segflg = segflg; \
-	} \
-	(ndp)->ni_dirp = namep; \
-	(ndp)->ni_cnd.cn_context = ctx; \
-	(ndp)->ni_flag = 0; \
-	(ndp)->ni_cnd.cn_ndp = (ndp); \
-	(ndp)->ni_atfd = -2; \
+/*
+ * Namei results flags
+ */
+#define	NIRES_ABS	0x00000001 /* Path was absolute */
+#define	NIRES_STRICTREL	0x00000002 /* Restricted lookup result */
+#define	NIRES_EMPTYPATH	0x00000004 /* EMPTYPATH used */
+#define	NIRES_BENEATH	0x00000008 /* O_RESOLVE_BENEATH is to be inherited */
+
+/*
+ * Flags in ni_lcf, valid for the duration of the namei call.
+ */
+#define	NI_LCF_STRICTREL	0x0001	/* relative lookup only */
+#define	NI_LCF_CAP_DOTDOT	0x0002	/* ".." in strictrelative case */
+/* Track capability restrictions seperately for violation ktracing. */
+#define	NI_LCF_STRICTREL_KTR	0x0004	/* trace relative lookups */
+#define	NI_LCF_CAP_DOTDOT_KTR	0x0008	/* ".." in strictrelative case */
+#define	NI_LCF_KTR_FLAGS	(NI_LCF_STRICTREL_KTR | NI_LCF_CAP_DOTDOT_KTR)
+
+/*
+ * Initialization of a nameidata structure.
+ */
+#define	NDINIT(ndp, op, flags, segflg, namep)				\
+	NDINIT_ALL(ndp, op, flags, segflg, namep, AT_FDCWD, NULL, &cap_no_rights)
+#define	NDINIT_AT(ndp, op, flags, segflg, namep, dirfd)			\
+	NDINIT_ALL(ndp, op, flags, segflg, namep, dirfd, NULL, &cap_no_rights)
+#define	NDINIT_ATRIGHTS(ndp, op, flags, segflg, namep, dirfd, rightsp) 	\
+	NDINIT_ALL(ndp, op, flags, segflg, namep, dirfd, NULL, rightsp)
+#define	NDINIT_ATVP(ndp, op, flags, segflg, namep, vp)			\
+	NDINIT_ALL(ndp, op, flags, segflg, namep, AT_FDCWD, vp, &cap_no_rights)
+
+/*
+ * Note the constant pattern may *hide* bugs.
+ * Note also that we enable debug checks for non-TIED KLDs
+ * so that they can run on an INVARIANTS kernel without tripping over
+ * assertions on ni_debugflags state.
+ */
+#if defined(INVARIANTS) || (defined(KLD_MODULE) && !defined(KLD_TIED))
+#define NDINIT_PREFILL(arg)	memset(arg, 0xff, offsetof(struct nameidata,	\
+    ni_dvp_seqc))
+#define NDINIT_DBG(arg)		{ (arg)->ni_debugflags = NAMEI_DBG_INITED; }
+#define NDREINIT_DBG(arg)	{						\
+	if (((arg)->ni_debugflags & NAMEI_DBG_INITED) == 0)			\
+		panic("namei data not inited");					\
+	if (((arg)->ni_debugflags & NAMEI_DBG_HADSTARTDIR) != 0)		\
+		panic("NDREINIT on namei data with NAMEI_DBG_HADSTARTDIR");	\
+	if ((arg)->ni_nctrack_mnt != NULL)			\
+		panic("NDREINIT on namei data with leaked ni_nctrack_mnt");	\
+	if (!TAILQ_EMPTY(&(arg)->ni_cap_tracker))				\
+		panic("NDREINIT on namei data with leaked ni_cap_tracker");	\
+	(arg)->ni_debugflags = NAMEI_DBG_INITED;				\
 }
+#else
+#define NDINIT_PREFILL(arg)	do { } while (0)
+#define NDINIT_DBG(arg)		do { } while (0)
+#define NDREINIT_DBG(arg)	do { } while (0)
+#endif
 
-#endif /* KERNEL */
+#define NDINIT_ALL(ndp, op, flags, segflg, namep, dirfd, startdir, rightsp)	\
+do {										\
+	struct nameidata *_ndp = (ndp);						\
+	const cap_rights_t *_rightsp = (rightsp);					\
+	MPASS(_rightsp != NULL);						\
+	NDINIT_PREFILL(_ndp);							\
+	NDINIT_DBG(_ndp);							\
+	_ndp->ni_cnd.cn_nameiop = op;						\
+	_ndp->ni_cnd.cn_flags = (flags) | NAMEILOOKUP;				\
+	_ndp->ni_segflg = segflg;						\
+	_ndp->ni_dirp = namep;							\
+	_ndp->ni_dirfd = dirfd;							\
+	_ndp->ni_startdir = startdir;						\
+	_ndp->ni_resflags = 0;							\
+	filecaps_init(&_ndp->ni_filecaps);					\
+	_ndp->ni_rightsneeded = _rightsp;					\
+	_ndp->ni_rbeneath_dpp = NULL;						\
+	_ndp->ni_nctrack_mnt = NULL;						\
+	TAILQ_INIT(&_ndp->ni_cap_tracker);					\
+} while (0)
 
-/*
- * This structure describes the elements in the cache of recent
- * names looked up by namei.
- */
-struct  namecache {
-	TAILQ_ENTRY(namecache)  nc_entry;       /* chain of all entries */
-	TAILQ_ENTRY(namecache)  nc_child;       /* chain of ncp's that are children of a vp */
-	union {
-		LIST_ENTRY(namecache)  nc_link; /* chain of ncp's that 'name' a vp */
-		TAILQ_ENTRY(namecache) nc_negentry; /* chain of ncp's that 'name' a vp */
-	} nc_un;
-	struct smrq_link        nc_hash;        /* hash chain */
-	uint32_t                nc_vid;         /* vid for nc_vp */
-	uint32_t                nc_counter;     /* flags */
-	vnode_t                 nc_dvp;         /* vnode of parent of name */
-	vnode_t                 nc_vp;          /* vnode the name refers to */
-	unsigned int            nc_hashval;     /* hashval of stringname */
-	const char              *nc_name;       /* pointer to segment name in string cache */
-};
+#define NDREINIT(ndp)	do {							\
+	struct nameidata *_ndp = (ndp);						\
+	NDREINIT_DBG(_ndp);							\
+	filecaps_free(&_ndp->ni_filecaps);					\
+	_ndp->ni_resflags = 0;							\
+	_ndp->ni_startdir = NULL;						\
+	_ndp->ni_cnd.cn_flags &= ~NAMEI_INTERNAL_FLAGS;				\
+} while (0)
 
-#define NC_VALID 0x01  /* counter value with this bit set (i.e. odd number) represents an valid/in-use namecache struct */
+#define	NDPREINIT(ndp) do {							\
+	(ndp)->ni_dvp_seqc = SEQC_MOD;						\
+	(ndp)->ni_vp_seqc = SEQC_MOD;						\
+} while (0)
 
-#ifdef KERNEL
+#define NDFREE_IOCTLCAPS(ndp) do {						\
+	struct nameidata *_ndp = (ndp);						\
+	filecaps_free(&_ndp->ni_filecaps);					\
+} while (0)
 
-int     namei(struct nameidata *ndp);
-void    nameidone(struct nameidata *);
-int     lookup(struct nameidata *ndp);
-int     relookup(struct vnode *dvp, struct vnode **vpp,
-    struct componentname *cnp);
-#if CONFIG_UNION_MOUNTS
-int     lookup_traverse_union(vnode_t dvp, vnode_t *new_dvp, vfs_context_t ctx);
-#endif /* CONFIG_UNION_MOUNTS */
-int     lookup_check_for_resolve_prefix(char *path, size_t pathbuflen, size_t len, uint32_t *resolve_flags, size_t *prefix_len);
-void    lookup_compound_vnop_post_hook(int error, vnode_t dvp, vnode_t vp, struct nameidata *ndp, int did_create);
-void    kdebug_lookup(struct vnode *dp, struct componentname *cnp);
+#define	NDFREE_PNBUF(ndp) do {							\
+	struct nameidata *_ndp = (ndp);						\
+	MPASS(_ndp->ni_cnd.cn_pnbuf != NULL);					\
+	uma_zfree(namei_zone, _ndp->ni_cnd.cn_pnbuf);				\
+	_ndp->ni_cnd.cn_pnbuf = NULL;						\
+} while (0)
 
-/*
- * namecache function prototypes
- */
-void    cache_purgevfs(mount_t mp);
-int             cache_lookup_path(struct nameidata *ndp, struct componentname *cnp, vnode_t dp,
-    vfs_context_t context, int *dp_authorized, vnode_t last_dp);
+int	namei(struct nameidata *ndp);
+int	vfs_lookup(struct nameidata *ndp);
+bool	vfs_lookup_isroot(struct nameidata *ndp, struct vnode *dvp);
+struct nameidata *vfs_lookup_nameidata(struct componentname *cnp);
+int	vfs_relookup(struct vnode *dvp, struct vnode **vpp,
+	    struct componentname *cnp, bool refstart);
 
-void            vnode_cache_authorized_action(vnode_t vp, vfs_context_t context, kauth_action_t action);
-void            vnode_uncache_authorized_action(vnode_t vp, kauth_action_t action);
-boolean_t       vnode_cache_is_stale(vnode_t vp);
-boolean_t       vnode_cache_is_authorized(vnode_t vp, vfs_context_t context, kauth_action_t action);
-int             lookup_validate_creation_path(struct nameidata *ndp);
-int             namei_compound_available(vnode_t dp, struct nameidata *ndp);
-bool            mount_skip_rsrc_lookup(mount_t mp);
-
-#endif /* KERNEL */
+#define namei_setup_rootdir(ndp, cnp, pwd) do {					\
+	if (__predict_true((cnp->cn_flags & ISRESTARTED) == 0))			\
+		ndp->ni_rootdir = pwd->pwd_adir;				\
+	else									\
+		ndp->ni_rootdir = pwd->pwd_rdir;				\
+} while (0)
+#endif
 
 /*
  * Stats on usefulness of namei caches.
  */
-struct  nchstats {
-	long    ncs_goodhits;           /* hits that we can really use */
-	long    ncs_neghits;            /* negative hits that we can use */
-	long    ncs_badhits;            /* hits we must drop */
-	long    ncs_miss;               /* misses */
-	long    ncs_pass2;              /* names found with passes == 2 */
-	long    ncs_2passes;            /* number of times we attempt it */
-	long    ncs_stolen;
-	long    ncs_enters;
-	long    ncs_deletes;
-	long    ncs_badvid;
+struct nchstats {
+	long	ncs_goodhits;		/* hits that we can really use */
+	long	ncs_neghits;		/* negative hits that we can use */
+	long	ncs_badhits;		/* hits we must drop */
+	long	ncs_falsehits;		/* hits with id mismatch */
+	long	ncs_miss;		/* misses */
+	long	ncs_long;		/* long names that ignore cache */
+	long	ncs_pass2;		/* names found with passes == 2 */
+	long	ncs_2passes;		/* number of times we attempt it */
 };
-#endif /* BSD_KERNEL_PRIVATE */
+
+extern struct nchstats nchstats;
 
 #endif /* !_SYS_NAMEI_H_ */

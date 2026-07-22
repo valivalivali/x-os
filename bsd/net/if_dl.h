@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2000-2011 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -37,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -56,21 +27,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)if_dl.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD: src/sys/net/if_dl.h,v 1.10 2000/03/01 02:46:25 archie Exp $
  */
 
 #ifndef _NET_IF_DL_H_
 #define _NET_IF_DL_H_
-#include <sys/appleapiopts.h>
 
-#include <sys/_types.h> /* __offsetof() */
-#include <sys/types.h>
-
-#ifdef BSD_KERNEL_PRIVATE
-#define DLIL_SDLMAXLEN  64
-#endif /* BSD_KERNEL_PRIVATE */
+#include <sys/_types.h>
 
 /*
  * A Link-Level Sockaddr may specify the interface in one of two
@@ -94,41 +56,38 @@
  * Structure of a Link-Level sockaddr:
  */
 struct sockaddr_dl {
-	u_char  sdl_len;        /* Total length of sockaddr */
-	u_char  sdl_family;     /* AF_LINK */
-	u_short sdl_index;      /* if != 0, system given index for interface */
-	u_char  sdl_type;       /* interface type */
-	u_char  sdl_nlen;       /* interface name length, no trailing 0 reqd. */
-	u_char  sdl_alen;       /* link level address length */
-	u_char  sdl_slen;       /* link layer selector length */
-	char    sdl_data[12];
-	/* minimum work area, can be larger;
-	 *  contains both if name and ll address */
-#ifndef __APPLE__
-	/* For TokenRing */
-	u_short sdl_rcf;        /* source routing control */
-	u_short sdl_route[16];  /* source routing information */
-#endif
+	u_char	sdl_len;	/* Total length of sockaddr */
+	u_char	sdl_family;	/* AF_LINK */
+	u_short	sdl_index;	/* if != 0, system given index for interface */
+	u_char	sdl_type;	/* interface type */
+	u_char	sdl_nlen;	/* interface name length, no trailing 0 reqd. */
+	u_char	sdl_alen;	/* link level address length */
+	u_char	sdl_slen;	/* link layer selector length */
+	char	sdl_data[46];	/* minimum work area, can be larger;
+				   contains both if name and ll address */
 };
 
-#define LLADDR(s) ((caddr_t)(s) + __offsetof(struct sockaddr_dl, sdl_data) + (s)->sdl_nlen)
-#ifdef KERNEL_PRIVATE
-#define CONST_LLADDR(s) ((const u_char*)(s) + __offsetof(struct sockaddr_dl, sdl_data) + (s)->sdl_nlen)
-#endif
+#define LLADDR(s) (&(s)->sdl_data[(s)->sdl_nlen])
+#define LLINDEX(s) ((s)->sdl_index)
 
-#ifdef BSD_KERNEL_PRIVATE
-#define SDL(s) ((struct sockaddr_dl *)(void *)s)
-#endif
+#ifdef _KERNEL
 
-#ifndef KERNEL
+struct ifnet;
+struct sockaddr_dl *link_alloc_sdl(size_t size, int flags);
+void link_free_sdl(struct sockaddr *sa);
+struct sockaddr_dl *link_init_sdl(struct ifnet *ifp, struct sockaddr *paddr,
+    u_char iftypes);
+
+#else /* !_KERNEL */
 
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
-void    link_addr(const char *, struct sockaddr_dl *);
-char    *link_ntoa(const struct sockaddr_dl *);
+int	link_addr(const char *, struct sockaddr_dl *);
+char	*link_ntoa(const struct sockaddr_dl *);
+int	link_ntoa_r(const struct sockaddr_dl *, char *, size_t *);
 __END_DECLS
 
-#endif /* !KERNEL */
+#endif /* !_KERNEL */
 
 #endif

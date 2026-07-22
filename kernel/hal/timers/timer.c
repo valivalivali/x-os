@@ -7,12 +7,30 @@
 #define PIT_CH0    0x40
 #define PIT_CMD    0x43
 
-static volatile uint64_t ticks = 0;
+static volatile uint64_t local_ticks = 0;
 static uint32_t hz = 1000;
 
 static void timer_tick(void) {
-    ticks++;
+    local_ticks++;
     mouse_poll();
+    /* Update FreeBSD time counters for ARP expiry and IP fragment timeouts */
+    extern volatile long time_uptime;
+    extern volatile long time_second;
+    extern int ticks_val;
+    extern int ticks;
+    extern void callout_process(unsigned long long);
+    extern unsigned long long tick_sbt;
+    ticks_val++;
+    ticks++;
+    if ((local_ticks % hz) == 0) {
+        time_uptime++;
+        time_second++;
+    }
+    /* Process expired FreeBSD callouts (TCP retransmit, keepalive, etc.) */
+    callout_process((unsigned long long)ticks * tick_sbt);
+    /* Poll virtio-net for received packets and feed into FreeBSD stack */
+    extern void vioif_rx_poll(void);
+    vioif_rx_poll();
 }
 
 void timer_init(uint32_t frequency_hz) {
@@ -28,9 +46,9 @@ void timer_init(uint32_t frequency_hz) {
     irq_install(0, timer_tick);
 }
 
-uint64_t timer_ticks(void) { return ticks; }
+uint64_t timer_ticks(void) { return local_ticks; }
 
 void timer_sleep_ms(uint64_t ms) {
-    uint64_t target = ticks + (ms * hz) / 1000u;
-    while (ticks < target) __asm__ volatile("sti; hlt");
+    uint64_t target = local_ticks + (ms * hz) / 1000u;
+    while (local_ticks < target) __asm__ volatile("sti; hlt");
 }

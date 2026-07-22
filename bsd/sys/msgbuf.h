@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2010 Apple, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1981, 1984, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,32 +27,62 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)msgbuf.h	8.1 (Berkeley) 6/2/93
  */
+
 #ifndef _SYS_MSGBUF_H_
-#define _SYS_MSGBUF_H_
+#define	_SYS_MSGBUF_H_
 
-#include <sys/cdefs.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
 
-#define MAX_MSG_BSIZE   (1*1024*1024)
-struct  msgbuf {
-#define MSG_MAGIC       0x063061
-	int             msg_magic;
-	int             msg_size;
-	int             msg_bufx;               /* write pointer */
-	int             msg_bufr;               /* read pointer */
-	char    *msg_bufc;              /* buffer */
+struct msgbuf {
+	char	   *msg_ptr;		/* pointer to buffer */
+#define	MSG_MAGIC	0x063062
+	u_int	   msg_magic;
+	u_int	   msg_size;		/* size of buffer area */
+	u_int	   msg_wseq;		/* write sequence number */
+	u_int	   msg_rseq;		/* read sequence number */
+	u_int	   msg_cksum;		/* checksum of contents */
+	u_int	   msg_seqmod;		/* range for sequence numbers */
+	int	   msg_lastpri;		/* saved priority value */
+	u_int      msg_flags;
+#define MSGBUF_NEEDNL	0x01	/* set when newline needed */
+#define MSGBUF_WRAP	0x02	/* buffer has wrapped around */
+	struct mtx msg_lock;		/* mutex to protect the buffer */
 };
 
-#ifdef XNU_KERNEL_PRIVATE
-__BEGIN_DECLS
-extern struct   msgbuf *msgbufp;
-extern struct   msgbuf *aslbufp;
-extern void log_putc(char);
-extern void log_putc_locked(struct msgbuf *, char);
-extern int log_dmesg(user_addr_t, uint32_t, int32_t *);
-__END_DECLS
-#endif /* XNU_KERNEL_PRIVATE */
+/* Normalise a sequence number or a difference between sequence numbers. */
+#define	MSGBUF_SEQNORM(mbp, seq)	(((seq) + (mbp)->msg_seqmod) % \
+    (mbp)->msg_seqmod)
+#define	MSGBUF_SEQ_TO_POS(mbp, seq)	((seq) % (mbp)->msg_size)
+/* Add/subtract normalized sequence numbers.  Normalized values result. */
+#define	MSGBUF_SEQADD(mbp, seq1, seq2)	(((seq1) + (seq2)) % (mbp)->msg_seqmod)
+#define	MSGBUF_SEQSUB(mbp, seq1, seq2)	((seq1) >= (seq2) ? (seq1) - (seq2) : \
+    (seq1) + (mbp)->msg_seqmod - (seq2))
 
-#endif  /* !_SYS_MSGBUF_H_ */
+#ifdef _KERNEL
+extern int	msgbufsize;
+extern int	msgbuftrigger;
+extern struct	msgbuf *msgbufp;
+extern struct	mtx msgbuf_lock;
+
+void	msgbufinit(void *ptr, int size);
+void	msgbuf_addchar(struct msgbuf *mbp, int c);
+void	msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr);
+void	msgbuf_clear(struct msgbuf *mbp);
+void	msgbuf_copy(struct msgbuf *src, struct msgbuf *dst);
+int	msgbuf_getbytes(struct msgbuf *mbp, char *buf, int buflen);
+int	msgbuf_getchar(struct msgbuf *mbp);
+int	msgbuf_getcount(struct msgbuf *mbp);
+void	msgbuf_init(struct msgbuf *mbp, void *ptr, int size);
+int	msgbuf_peekbytes(struct msgbuf *mbp, char *buf, int buflen,
+	    u_int *seqp);
+void	msgbuf_reinit(struct msgbuf *mbp, void *ptr, int size);
+void	msgbuf_duplicate(struct msgbuf *src, struct msgbuf *dst, char *msgptr);
+
+#ifndef MSGBUF_SIZE
+#define	MSGBUF_SIZE	(32768 * 3)
+#endif
+#endif /* KERNEL */
+
+#endif /* !_SYS_MSGBUF_H_ */

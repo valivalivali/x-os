@@ -2,7 +2,7 @@
  *
  * These are the kernel-side implementations of the new POSIX syscalls
  * (sockets, mmap, signals, select/poll, fcntl, ioctl).
- * They bridge x-os's syscall interface to the XNU BSD networking stack.
+ * They bridge x-os's syscall interface to the kernel subsystems.
  */
 
 #include "kernel/include/syscall.h"
@@ -37,114 +37,267 @@ struct kwinsize {
 #define KTIOCGPGRP  0x40047477
 #define KTIOCSPGRP  0x80047476
 
-/* Socket layer functions — implemented in bsd/kern/uipc_socket_xos.c */
-extern int socreate(int domain, int type, int protocol);
-extern int sobind(int fd, void *nam, int namelen);
-extern int solisten(int fd, int backlog);
-extern int soaccept(int fd, void *nam, int *namelen);
-extern int soconnect(int fd, void *nam, int namelen);
-extern int sosend(int fd, const void *buf, size_t len, int flags,
-                  void *addr, int addrlen);
-extern int soreceive(int fd, void *buf, size_t len, int flags,
-                     void *addr, int *addrlen);
-extern int soshutdown(int fd, int how);
-extern int soclose(int fd);
-extern int sosetsockopt(int fd, int level, int name, const void *val, int valsize);
-extern int sogetsockopt(int fd, int level, int name, void *val, int *valsize);
-
 /* ------------------------------------------------------------------ */
-/* Socket syscalls — forward to BSD networking layer                   */
+/* Socket syscalls — wired to FreeBSD network stack                    */
 /* ------------------------------------------------------------------ */
 
-/* The BSD socket layer functions are declared in the XNU headers.
- * We provide thin wrappers that will be connected to the actual
- * BSD implementation once the networking stack is compiled. */
+/* Minimal FreeBSD-compatible type definitions to avoid header conflicts.
+ * These match the layout of the structs defined in bsd/compat/sys/proc.h
+ * and FreeBSD's sys/socket.h for the fields we actually access. */
+struct bsd_thread {
+    void *td_proc;
+    void *td_ucred;
+    int td_critnest;
+    int td_flags;
+    int td_retval[2];
+};
+struct bsd_sockaddr {
+    unsigned char sa_len;
+    unsigned char sa_family;
+    char sa_data[14];
+};
+struct bsd_iovec {
+    void *iov_base;
+    unsigned long iov_len;
+};
+struct bsd_msghdr {
+    void *msg_name;
+    int msg_namelen;
+    struct bsd_iovec *msg_iov;
+    unsigned long msg_iovlen;
+    void *msg_control;
+    unsigned long msg_controllen;
+    int msg_flags;
+};
 
-/* For now, these are stubs that return -1 with EAFNOSUPPORT.
- * As we compile and link more of the XNU BSD stack, these will
- * be replaced with real implementations. */
+/* FreeBSD kern_* function declarations (defined in uipc_syscalls.c) */
+int kern_socket(struct bsd_thread *td, int domain, int type, int protocol);
+int kern_bindat(struct bsd_thread *td, int dirfd, int fd, struct bsd_sockaddr *sa);
+int kern_listen(struct bsd_thread *td, int s, int backlog);
+int kern_accept4(struct bsd_thread *td, int s, struct bsd_sockaddr *sa, int flags, void **fp);
+int kern_connectat(struct bsd_thread *td, int dirfd, int fd, struct bsd_sockaddr *sa);
+int kern_shutdown(struct bsd_thread *td, int s, int how);
+int kern_setsockopt(struct bsd_thread *td, int s, int level, int name, const void *val, int valseg, int valsize);
+int kern_getsockopt(struct bsd_thread *td, int s, int level, int name, void *val, int valseg, int *valsize);
+int kern_getsockname(struct bsd_thread *td, int fd, struct bsd_sockaddr *sa);
+int kern_getpeername(struct bsd_thread *td, int fd, struct bsd_sockaddr *sa);
+int kern_sendit(struct bsd_thread *td, int s, struct bsd_msghdr *mp, int flags, void *control, int segflg);
+int kern_recvfrom(struct bsd_thread *td, int s, void *buf, unsigned long len, int flags, struct bsd_sockaddr *from, int *fromlenaddr);
+int getsockaddr(struct bsd_sockaddr **namp, const struct bsd_sockaddr *uaddr, unsigned long len);
+
+/* copyin/copyout implemented in compat_shims.c */
+int copyin(const void *uaddr, void *kaddr, unsigned long len);
+int copyout(const void *kaddr, void *uaddr, unsigned long len);
+
+/* free/M_SONAME from compat shims */
+#define M_SONAME 0
+extern void free(void *ptr, int type);
+
+/* thread0 is defined in compat_shims.c using the full FreeBSD struct thread.
+ * Our bsd_thread has matching layout for td_retval at the same offset. */
+extern struct bsd_thread thread0;
+
+#define AT_FDCWD (-100)
+#define ACCEPT4_INHERIT 0
+#define UIO_USERSPACE 0
+
+static struct bsd_thread *
+get_bsd_td(void)
+{
+    thread0.td_retval[0] = 0;
+    thread0.td_retval[1] = 0;
+    return &thread0;
+}
 
 uint64_t sys_socket_impl(uint64_t domain, uint64_t type, uint64_t protocol,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
-    int fd = socreate((int)domain, (int)type, (int)protocol);
-    return (uint64_t)fd;
+    struct bsd_thread *td = get_bsd_td();
+    int error = kern_socket(td, (int)domain, (int)type, (int)protocol);
+    kprintf("[sock] socket(%d, %d, %d) = error=%d fd=%d\n",
+            (int)domain, (int)type, (int)protocol, error, td->td_retval[0]);
+    if (error) return (uint64_t)-1;
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_bind_impl(uint64_t fd, uint64_t addr, uint64_t addrlen,
                        uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
-    return (uint64_t)sobind((int)fd, (void*)addr, (int)addrlen);
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_sockaddr *sa = NULL;
+    int error = getsockaddr(&sa, (const struct bsd_sockaddr *)addr, (unsigned long)addrlen);
+    if (error) return (uint64_t)-1;
+    error = kern_bindat(td, AT_FDCWD, (int)fd, sa);
+    free(sa, M_SONAME);
+    return error ? (uint64_t)-1 : 0;
 }
 
 uint64_t sys_listen_impl(uint64_t fd, uint64_t backlog,
                          uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
-    return (uint64_t)solisten((int)fd, (int)backlog);
+    struct bsd_thread *td = get_bsd_td();
+    int error = kern_listen(td, (int)fd, (int)backlog);
+    return error ? (uint64_t)-1 : 0;
 }
 
 uint64_t sys_accept_impl(uint64_t fd, uint64_t addr, uint64_t addrlen,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
-    return (uint64_t)soaccept((int)fd, (void*)addr, (int*)addrlen);
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_sockaddr sa;
+    __builtin_memset(&sa, 0, sizeof(sa));
+    int error = kern_accept4(td, (int)fd, &sa, ACCEPT4_INHERIT, NULL);
+    if (error) return (uint64_t)-1;
+    if (addr && addrlen) {
+        int ulen;
+        copyin((void *)addrlen, &ulen, sizeof(ulen));
+        int sa_len = sa.sa_len;
+        if (sa_len > ulen) sa_len = ulen;
+        if (sa_len > 0) copyout(&sa, (void *)addr, sa_len);
+        copyout(&sa_len, (void *)addrlen, sizeof(int));
+    }
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_connect_impl(uint64_t fd, uint64_t addr, uint64_t addrlen,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
-    return (uint64_t)soconnect((int)fd, (void*)addr, (int)addrlen);
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_sockaddr *sa = NULL;
+    int error = getsockaddr(&sa, (const struct bsd_sockaddr *)addr, (unsigned long)addrlen);
+    if (error) return (uint64_t)-1;
+    error = kern_connectat(td, AT_FDCWD, (int)fd, sa);
+    kprintf("[sock] connect(fd=%d) = error=%d\n", (int)fd, error);
+    free(sa, M_SONAME);
+    return error ? (uint64_t)-1 : 0;
 }
 
 uint64_t sys_send_impl(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags,
                        uint64_t a5, uint64_t a6) {
     (void)a5; (void)a6;
-    return (uint64_t)sosend((int)fd, (void*)buf, len, (int)flags, NULL, 0);
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_msghdr msg;
+    struct bsd_iovec aiov;
+    __builtin_memset(&msg, 0, sizeof(msg));
+    aiov.iov_base = (void *)buf;
+    aiov.iov_len = len;
+    msg.msg_iov = &aiov;
+    msg.msg_iovlen = 1;
+    int error = kern_sendit(td, (int)fd, &msg, (int)flags, NULL, UIO_USERSPACE);
+    if (error) return (uint64_t)-1;
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_recv_impl(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags,
                        uint64_t a5, uint64_t a6) {
     (void)a5; (void)a6;
-    return (uint64_t)soreceive((int)fd, (void*)buf, len, (int)flags, NULL, NULL);
+    struct bsd_thread *td = get_bsd_td();
+    int error = kern_recvfrom(td, (int)fd, (void *)buf, (unsigned long)len, (int)flags, NULL, NULL);
+    if (error) return (uint64_t)-1;
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_sendto_impl(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags,
                          uint64_t addr, uint64_t addrlen) {
-    return (uint64_t)sosend((int)fd, (void*)buf, len, (int)flags, (void*)addr, (int)addrlen);
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_msghdr msg;
+    struct bsd_iovec aiov;
+    struct bsd_sockaddr *sa = NULL;
+    __builtin_memset(&msg, 0, sizeof(msg));
+    aiov.iov_base = (void *)buf;
+    aiov.iov_len = len;
+    msg.msg_iov = &aiov;
+    msg.msg_iovlen = 1;
+    if (addr) {
+        int error = getsockaddr(&sa, (const struct bsd_sockaddr *)addr, (unsigned long)addrlen);
+        if (error) return (uint64_t)-1;
+        msg.msg_name = sa;
+        msg.msg_namelen = (int)addrlen;
+    }
+    int error = kern_sendit(td, (int)fd, &msg, (int)flags, NULL, UIO_USERSPACE);
+    if (sa) free(sa, M_SONAME);
+    if (error) return (uint64_t)-1;
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_recvfrom_impl(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags,
                            uint64_t addr, uint64_t addrlen) {
-    return (uint64_t)soreceive((int)fd, (void*)buf, len, (int)flags, (void*)addr, (int*)addrlen);
+    struct bsd_thread *td = get_bsd_td();
+    /* kern_recvfrom expects user-space pointers for from and fromlenaddr
+     * (it uses copyin/copyout on them). Pass them directly. */
+    int error = kern_recvfrom(td, (int)fd, (void *)buf, (unsigned long)len, (int)flags,
+                              addr ? (struct bsd_sockaddr *)addr : NULL,
+                              addrlen ? (int *)addrlen : NULL);
+    if (error) return (uint64_t)-1;
+    return (uint64_t)td->td_retval[0];
 }
 
 uint64_t sys_shutdown_impl(uint64_t fd, uint64_t how,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
-    return (uint64_t)soshutdown((int)fd, (int)how);
+    struct bsd_thread *td = get_bsd_td();
+    int error = kern_shutdown(td, (int)fd, (int)how);
+    return error ? (uint64_t)-1 : 0;
 }
 
 uint64_t sys_getsockname_impl(uint64_t fd, uint64_t addr, uint64_t addrlen,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)fd; (void)addr; (void)addrlen; (void)a4; (void)a5; (void)a6;
-    return 0;  /* TODO: implement */
+    (void)a4; (void)a5; (void)a6;
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_sockaddr sa;
+    __builtin_memset(&sa, 0, sizeof(sa));
+    int error = kern_getsockname(td, (int)fd, &sa);
+    if (error) return (uint64_t)-1;
+    if (addr && addrlen) {
+        int ulen;
+        copyin((void *)addrlen, &ulen, sizeof(ulen));
+        int sa_len = sa.sa_len;
+        if (sa_len > ulen) sa_len = ulen;
+        if (sa_len > 0) copyout(&sa, (void *)addr, sa_len);
+        copyout(&sa_len, (void *)addrlen, sizeof(int));
+    }
+    return 0;
 }
 
 uint64_t sys_getpeername_impl(uint64_t fd, uint64_t addr, uint64_t addrlen,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)fd; (void)addr; (void)addrlen; (void)a4; (void)a5; (void)a6;
-    return 0;  /* TODO: implement */
+    (void)a4; (void)a5; (void)a6;
+    struct bsd_thread *td = get_bsd_td();
+    struct bsd_sockaddr sa;
+    __builtin_memset(&sa, 0, sizeof(sa));
+    int error = kern_getpeername(td, (int)fd, &sa);
+    if (error) return (uint64_t)-1;
+    if (addr && addrlen) {
+        int ulen;
+        copyin((void *)addrlen, &ulen, sizeof(ulen));
+        int sa_len = sa.sa_len;
+        if (sa_len > ulen) sa_len = ulen;
+        if (sa_len > 0) copyout(&sa, (void *)addr, sa_len);
+        copyout(&sa_len, (void *)addrlen, sizeof(int));
+    }
+    return 0;
 }
 
 uint64_t sys_setsockopt_impl(uint64_t fd, uint64_t level, uint64_t optname,
                              uint64_t optval, uint64_t optlen, uint64_t a6) {
     (void)a6;
-    return (uint64_t)sosetsockopt((int)fd, (int)level, (int)optname, (void*)optval, (int)optlen);
+    struct bsd_thread *td = get_bsd_td();
+    int error = kern_setsockopt(td, (int)fd, (int)level, (int)optname,
+                                (const void *)optval, UIO_USERSPACE, (int)optlen);
+    return error ? (uint64_t)-1 : 0;
 }
 
 uint64_t sys_getsockopt_impl(uint64_t fd, uint64_t level, uint64_t optname,
                              uint64_t optval, uint64_t optlen, uint64_t a6) {
     (void)a6;
-    return (uint64_t)sogetsockopt((int)fd, (int)level, (int)optname, (void*)optval, (int*)optlen);
+    struct bsd_thread *td = get_bsd_td();
+    int valsize;
+    copyin((void *)optlen, &valsize, sizeof(valsize));
+    int error = kern_getsockopt(td, (int)fd, (int)level, (int)optname,
+                                (void *)optval, UIO_USERSPACE, &valsize);
+    if (error) return (uint64_t)-1;
+    copyout(&valsize, (void *)optlen, sizeof(int));
+    return 0;
 }
 
 uint64_t sys_select_impl(uint64_t nfds, uint64_t readfds, uint64_t writefds,
@@ -403,7 +556,7 @@ uint64_t sys_ioctl_impl(uint64_t fd, uint64_t cmd, uint64_t arg,
 }
 
 /* ------------------------------------------------------------------ */
-/* Raw network packet syscalls                                         */
+/* Raw network packet syscalls — forward to virtio-net driver          */
 /* ------------------------------------------------------------------ */
 
 extern int virtio_net_send(const void *data, int len);

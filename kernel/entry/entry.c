@@ -22,13 +22,11 @@
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
 #include "kernel/hal/net/virtio_net.h"
-#include "net/net_xos.h"
 #include "kernel/fs/xfs.h"
 
 extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
 extern uint64_t g_kernel_rsp0;
-extern void bsd_net_init(void);
 
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
@@ -114,11 +112,13 @@ void kmain(void) {
     /* Initialize virtio-net networking */
     virtio_net_init();
 
-    /* Initialize BSD networking subsystem */
+    /* Initialize FreeBSD network stack */
+    extern void bsd_net_init(void);
     bsd_net_init();
 
-    /* Initialize TCP/IP stack */
-    net_init();
+    /* Attach virtio-net as a FreeBSD ifnet interface and configure IP */
+    extern void vioif_attach(void);
+    vioif_attach();
 
     /* Spawn init (PID 1) as the first ring-3 userspace process.
      * The init.elf is embedded into the kernel as a byte array. */
@@ -167,7 +167,6 @@ void kmain(void) {
 idle:
     /* Kernel idle loop — all work is now in ring-3 processes. */
     for (;;) {
-        net_poll();
         __asm__ volatile("hlt");
     }
 }

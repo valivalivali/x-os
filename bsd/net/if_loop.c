@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2000-2020 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -37,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -56,734 +27,395 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)if_loop.c	8.1 (Berkeley) 6/10/93
- * $FreeBSD: src/sys/net/if_loop.c,v 1.47.2.5 2001/07/03 11:01:41 ume Exp $
- */
-/*
- * NOTICE: This file was modified by SPARTA, Inc. in 2006 to introduce
- * support for mandatory and extensible security protections.  This notice
- * is included in support of clause 2.2 (b) of the Apple Public License,
- * Version 2.0.
  */
 
 /*
  * Loopback interface driver for protocol testing and timing.
  */
-#include "loop.h"
-#if NLOOP > 0
 
-#if NLOOP != 1
-#error "More than one loopback interface is not supported."
-#endif
+#include "opt_inet.h"
+#include "opt_inet6.h"
+#include "opt_rss.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/mbuf.h>
+#include <sys/module.h>
+#include <machine/bus.h>
+#include <sys/rman.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
-#include <sys/mcache.h>
 #include <sys/sysctl.h>
 
 #include <net/if.h>
+#include <net/if_var.h>
+#include <net/if_private.h>
+#include <net/if_clone.h>
 #include <net/if_types.h>
+#include <net/netisr.h>
 #include <net/route.h>
 #include <net/bpf.h>
-#include <sys/malloc.h>
+#include <net/vnet.h>
 
-#if INET
+#ifdef	INET
 #include <netinet/in.h>
 #include <netinet/in_var.h>
 #endif
 
-#if !INET
+#ifdef INET6
+#ifndef INET
 #include <netinet/in.h>
 #endif
 #include <netinet6/in6_var.h>
 #include <netinet/ip6.h>
+#endif
 
-#include <net/dlil.h>
-#include <net/kpi_protocol.h>
+#include <security/mac/mac_framework.h>
 
-#include <pexpert/pexpert.h>
+#ifdef TINY_LOMTU
+#define	LOMTU	(1024+512)
+#elif defined(LARGE_LOMTU)
+#define LOMTU	131072
+#else
+#define LOMTU	16384
+#endif
 
-#define LOMTU           16384
-#define LOSNDQ_MAXLEN   256
+#define	LO_CSUM_FEATURES	(CSUM_IP | CSUM_IP_TCP | CSUM_IP_UDP | \
+				    CSUM_IP_SCTP)
+#define	LO_CSUM_FEATURES6	(CSUM_IP6_TCP | CSUM_IP6_UDP | CSUM_IP6_SCTP)
+#define	LO_CSUM_SET		(CSUM_L3_CALC | CSUM_L3_VALID | \
+				    CSUM_L4_CALC | CSUM_L4_VALID)
 
-#define LO_BPF_TAP_OUT(_m) {                                            \
-	if (lo_statics[0].bpf_callback != NULL) {                       \
-	        bpf_tap_out(lo_ifp, DLT_NULL, _m,                       \
-	            &((struct loopback_header *)_m->m_pkthdr.pkt_hdr)-> \
-	            protocol, sizeof (u_int32_t));                      \
-	}                                                               \
-}
+static int	loioctl(struct ifnet *, u_long, caddr_t);
+static int	looutput(struct ifnet *ifp, struct mbuf *m,
+		    const struct sockaddr *dst, struct route *ro);
 
-#define LO_BPF_TAP_OUT_MULTI(_m) {                                      \
-	if (lo_statics[0].bpf_callback != NULL) {                       \
-	        struct mbuf *_n;                                        \
-	        for (_n = _m; _n != NULL; _n = _n->m_nextpkt)           \
-	                LO_BPF_TAP_OUT(_n);                             \
-	}                                                               \
-}
+VNET_DEFINE(struct ifnet *, loif);	/* Used externally */
+VNET_DEFINE_STATIC(struct if_clone *, lo_cloner);
+#define	V_lo_cloner		VNET(lo_cloner)
 
-struct lo_statics_str {
-	int             bpf_mode;
-	bpf_packet_func bpf_callback;
-};
+static const char loname[] = "lo";
 
-static struct lo_statics_str lo_statics[NLOOP];
-static int lo_txstart = 0;
-
-struct ifnet *lo_ifp = NULL;
-
-struct  loopback_header {
-	protocol_family_t       protocol;
-};
-
-/* Local forward declerations */
-void loopattach(void);
-static errno_t lo_demux(struct ifnet *, struct mbuf *, char *,
-    protocol_family_t *);
-static errno_t
-lo_framer(struct ifnet *, struct mbuf **, const struct sockaddr *,
-    IFNET_LLADDR_T, IFNET_FRAME_TYPE_T,
-    u_int32_t *, u_int32_t *);
-static errno_t lo_add_proto(struct ifnet *, protocol_family_t,
-    const struct ifnet_demux_desc *, u_int32_t);
-static errno_t lo_del_proto(struct ifnet *, protocol_family_t);
-static int lo_output(struct ifnet *, struct mbuf *);
-static errno_t lo_pre_enqueue(struct ifnet *, struct mbuf *);
-static void lo_start(struct ifnet *);
-static errno_t lo_pre_output(struct ifnet *, protocol_family_t, struct mbuf **,
-    const struct sockaddr *, void *, IFNET_FRAME_TYPE_RW_T, IFNET_LLADDR_RW_T);
-static errno_t lo_input(struct ifnet *, protocol_family_t, struct mbuf *);
-static void lo_rtrequest(int, struct rtentry *, struct sockaddr *);
-static errno_t lo_ioctl(struct ifnet *, u_long, void *);
-static errno_t lo_attach_proto(struct ifnet *, protocol_family_t);
-static void lo_reg_if_mods(void);
-static errno_t lo_set_bpf_tap(struct ifnet *, bpf_tap_mode, bpf_packet_func);
-static int sysctl_dequeue_max SYSCTL_HANDLER_ARGS;
-static int sysctl_sched_model SYSCTL_HANDLER_ARGS;
-static int sysctl_dequeue_scidx SYSCTL_HANDLER_ARGS;
-
-SYSCTL_DECL(_net_link);
-
-SYSCTL_NODE(_net_link, OID_AUTO, loopback, CTLFLAG_RW | CTLFLAG_LOCKED, 0,
-    "loopback interface");
-
-static u_int32_t lo_dequeue_max = LOSNDQ_MAXLEN;
-SYSCTL_PROC(_net_link_loopback, OID_AUTO, max_dequeue,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &lo_dequeue_max, LOSNDQ_MAXLEN,
-    sysctl_dequeue_max, "I", "Maximum number of packets dequeued at a time");
-
-static u_int32_t lo_sched_model = IFNET_SCHED_MODEL_NORMAL;
-SYSCTL_PROC(_net_link_loopback, OID_AUTO, sched_model,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &lo_sched_model,
-    IFNET_SCHED_MODEL_NORMAL, sysctl_sched_model, "I", "Scheduling model");
-
-static u_int32_t lo_dequeue_sc = MBUF_SC_BE;
-static int lo_dequeue_scidx = MBUF_SCIDX(MBUF_SC_BE);
-SYSCTL_PROC(_net_link_loopback, OID_AUTO, dequeue_sc,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &lo_dequeue_scidx,
-    MBUF_SC_BE, sysctl_dequeue_scidx, "I", "Dequeue a specific SC index");
-
-static errno_t
-lo_demux(struct ifnet *ifp, struct mbuf *m, char *frame_header,
-    protocol_family_t *protocol_family)
-{
-#pragma unused(ifp, m)
-	struct loopback_header *header =
-	    (struct loopback_header *)(void *)frame_header;
-
-	*protocol_family = header->protocol;
-
-	return 0;
-}
-
-static errno_t
-lo_framer(struct ifnet *ifp, struct mbuf **m, const struct sockaddr *dest,
-    IFNET_LLADDR_T dest_linkaddr,
-    IFNET_FRAME_TYPE_T frame_type,
-    u_int32_t *prepend_len, u_int32_t *postpend_len)
-{
-#pragma unused(ifp, dest, dest_linkaddr)
-	struct loopback_header  *header;
-
-	M_PREPEND(*m, sizeof(struct loopback_header), M_WAITOK, 1);
-	if (*m == NULL) {
-		/* Tell caller not to try to free passed-in mbuf */
-		return EJUSTRETURN;
-	}
-
-	if (prepend_len != NULL) {
-		*prepend_len = sizeof(struct loopback_header);
-	}
-	if (postpend_len != NULL) {
-		*postpend_len = 0;
-	}
-
-	header = mtod(*m, struct loopback_header *);
-	bcopy(frame_type, &header->protocol, sizeof(u_int32_t));
-	return 0;
-}
-
-static errno_t
-lo_add_proto(struct ifnet *interface, protocol_family_t protocol_family,
-    const struct ifnet_demux_desc *demux_array, u_int32_t demux_count)
-{
-#pragma unused(interface, protocol_family, demux_array, demux_count)
-	return 0;
-}
-
-static errno_t
-lo_del_proto(struct ifnet *ifp, protocol_family_t protocol)
-{
-#pragma unused(ifp, protocol)
-	return 0;
-}
-
-static void
-lo_tx_compl(struct ifnet *ifp, struct mbuf *m)
-{
-	errno_t error;
-
-	if ((ifp->if_xflags & IFXF_TIMESTAMP_ENABLED) != 0) {
-		boolean_t requested;
-
-		error = mbuf_get_timestamp_requested(m, &requested);
-		if (requested) {
-			struct timespec now;
-			u_int64_t ts;
-
-			nanouptime(&now);
-			net_timernsec(&now, &ts);
-
-			error = mbuf_set_timestamp(m, ts, TRUE);
-			if (error != 0) {
-				printf("%s: mbuf_set_timestamp() failed %d\n",
-				    __func__, error);
-			}
-		}
-	}
-	error = mbuf_set_status(m, KERN_SUCCESS);
-	if (error != 0) {
-		printf("%s: mbuf_set_status() failed %d\n",
-		    __func__, error);
-	}
-
-	ifnet_tx_compl(ifp, m);
-}
-
-/*
- * Output callback.
- *
- * This routine is called only when lo_txstart is disabled.
- */
 static int
-lo_output(struct ifnet *ifp, struct mbuf *m_list)
+lo_clone_destroy(struct if_clone *ifc, struct ifnet *ifp, uint32_t flags)
 {
-	struct mbuf *m, *m_tail = NULL;
-	struct ifnet_stat_increment_param s;
-	u_int32_t cnt = 0, len = 0;
+	if (ifp->if_dunit == 0 && (flags & IFC_F_FORCE) == 0)
+		return (EINVAL);
 
-	bzero(&s, sizeof(s));
+#ifndef VIMAGE
+	/* XXX: destroying lo0 will lead to panics. */
+	KASSERT(V_loif != ifp, ("%s: destroying lo0", __func__));
+#endif
 
-	for (m = m_list; m; m = m->m_nextpkt) {
-		VERIFY(m->m_flags & M_PKTHDR);
-		cnt++;
+	bpfdetach(ifp);
+	if_detach(ifp);
+	if_free(ifp);
 
-		/*
-		 * Don't overwrite the rcvif field if it is in use.
-		 *  This is used to match multicast packets, sent looping
-		 *  back, with the appropriate group record on input.
-		 */
-		if (m->m_pkthdr.rcvif == NULL) {
-			m->m_pkthdr.rcvif = ifp;
-		}
-
-		m->m_pkthdr.pkt_flags |= PKTF_LOOP;
-		m->m_pkthdr.pkt_hdr = mtod(m, char *);
-
-		/* loopback checksums are always OK */
-		m->m_pkthdr.csum_data = 0xffff;
-		m->m_pkthdr.csum_flags =
-		    CSUM_DATA_VALID | CSUM_PSEUDO_HDR |
-		    CSUM_IP_CHECKED | CSUM_IP_VALID;
-
-		m_adj(m, sizeof(struct loopback_header));
-		len += m->m_pkthdr.len;
-
-		LO_BPF_TAP_OUT(m);
-		if (m->m_nextpkt == NULL) {
-			m_tail = m;
-		}
-		lo_tx_compl(ifp, m);
-	}
-
-	s.packets_in = cnt;
-	s.packets_out = cnt;
-	s.bytes_in = len;
-	s.bytes_out = len;
-
-	return ifnet_input_extended(ifp, m_list, m_tail, &s);
+	return (0);
 }
 
-/*
- * Pre-enqueue callback.
- *
- * This routine is called only when lo_txstart is enabled.
- */
-static errno_t
-lo_pre_enqueue(struct ifnet *ifp, struct mbuf *m0)
+static int
+lo_clone_create(struct if_clone *ifc, char *name, size_t len,
+    struct ifc_data *ifd, struct ifnet **ifpp)
 {
-	struct mbuf *m = m0, *n;
-	int error = 0;
+	struct ifnet *ifp;
 
-	while (m != NULL) {
-		VERIFY(m->m_flags & M_PKTHDR);
+	ifp = if_alloc(IFT_LOOP);
+	if_initname(ifp, loname, ifd->unit);
+	ifp->if_mtu = LOMTU;
+	ifp->if_flags = IFF_LOOPBACK | IFF_MULTICAST;
+	ifp->if_ioctl = loioctl;
+	ifp->if_output = looutput;
+	ifp->if_snd.ifq_maxlen = ifqmaxlen;
+	ifp->if_capabilities = ifp->if_capenable =
+	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_LINKSTATE;
+	ifp->if_hwassist = LO_CSUM_FEATURES | LO_CSUM_FEATURES6;
+	if_attach(ifp);
+	bpfattach(ifp, DLT_NULL, sizeof(u_int32_t));
+	*ifpp = ifp;
 
-		n = m->m_nextpkt;
-		m->m_nextpkt = NULL;
-
-		/*
-		 * Don't overwrite the rcvif field if it is in use.
-		 *  This is used to match multicast packets, sent looping
-		 *  back, with the appropriate group record on input.
-		 */
-		if (m->m_pkthdr.rcvif == NULL) {
-			m->m_pkthdr.rcvif = ifp;
-		}
-
-		m->m_pkthdr.pkt_flags |= PKTF_LOOP;
-		m->m_pkthdr.pkt_hdr = mtod(m, char *);
-
-		/* loopback checksums are always OK */
-		m->m_pkthdr.csum_data = 0xffff;
-		m->m_pkthdr.csum_flags =
-		    CSUM_DATA_VALID | CSUM_PSEUDO_HDR |
-		    CSUM_IP_CHECKED | CSUM_IP_VALID;
-
-		m_adj(m, sizeof(struct loopback_header));
-
-		/*
-		 * Let the callee free it in case of error,
-		 * and perform any necessary accounting.
-		 */
-		(void) ifnet_enqueue(ifp, m);
-
-		m = n;
-	}
-
-	return error;
+	return (0);
 }
 
-/*
- * Start output callback.
- *
- * This routine is invoked by the start worker thread; because we never call
- * it directly, there is no need do deploy any serialization mechanism other
- * than what's already used by the worker thread, i.e. this is already single
- * threaded.
- *
- * This routine is called only when lo_txstart is enabled.
- */
 static void
-lo_start(struct ifnet *ifp)
+vnet_loif_init(const void *unused __unused)
 {
-	struct ifnet_stat_increment_param s;
+	struct if_clone_addreq req = {
+		.create_f = lo_clone_create,
+		.destroy_f = lo_clone_destroy,
+		.flags = IFC_F_AUTOUNIT,
+	};
+	V_lo_cloner = ifc_attach_cloner(loname, &req);
+	struct ifc_data ifd = { .unit = 0 };
+	ifc_create_ifp(loname, &ifd, &V_loif);
+}
+VNET_SYSINIT(vnet_loif_init, SI_SUB_PROTO_IF, SI_ORDER_ANY,
+    vnet_loif_init, NULL);
 
-	bzero(&s, sizeof(s));
+#ifdef VIMAGE
+static void
+vnet_loif_uninit(const void *unused __unused)
+{
 
-	for (;;) {
-		mbuf_ref_t m = NULL, m_tail = NULL;
-		u_int32_t cnt, len = 0;
+	ifc_detach_cloner(V_lo_cloner);
+	V_loif = NULL;
+}
+VNET_SYSUNINIT(vnet_loif_uninit, SI_SUB_INIT_IF, SI_ORDER_SECOND,
+    vnet_loif_uninit, NULL);
+#endif
 
-		if (lo_sched_model == IFNET_SCHED_MODEL_NORMAL) {
-			if (ifnet_dequeue_multi(ifp, lo_dequeue_max, &m,
-			    &m_tail, &cnt, &len) != 0) {
-				break;
-			}
-		} else {
-			if (ifnet_dequeue_service_class_multi(ifp,
-			    lo_dequeue_sc, lo_dequeue_max, &m,
-			    &m_tail, &cnt, &len) != 0) {
-				break;
-			}
-		}
+static int
+loop_modevent(module_t mod, int type, void *data)
+{
 
-		LO_BPF_TAP_OUT_MULTI(m);
-		lo_tx_compl(ifp, m);
+	switch (type) {
+	case MOD_LOAD:
+		break;
 
-		/* stats are required for extended variant */
-		s.packets_in = cnt;
-		s.packets_out = cnt;
-		s.bytes_in = len;
-		s.bytes_out = len;
+	case MOD_UNLOAD:
+		printf("loop module unload - not possible for this module type\n");
+		return (EINVAL);
 
-		(void) ifnet_input_extended(ifp, m, m_tail, &s);
+	default:
+		return (EOPNOTSUPP);
 	}
+	return (0);
 }
 
-/*
- * This is a common pre-output route used by INET and INET6. This could
- * (should?) be split into separate pre-output routines for each protocol.
- */
-static errno_t
-lo_pre_output(struct ifnet *ifp, protocol_family_t protocol_family,
-    struct mbuf **m, const struct sockaddr *dst, void *route,
-    IFNET_FRAME_TYPE_RW_T frame_type, IFNET_LLADDR_RW_T dst_addr)
+static moduledata_t loop_mod = {
+	"if_lo",
+	loop_modevent,
+	0
+};
+
+DECLARE_MODULE(if_lo, loop_mod, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_ANY);
+
+static int
+looutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
+    struct route *ro)
 {
-#pragma unused(ifp, dst, dst_addr)
-	rtentry_ref_t rt = route;
+	u_int32_t af;
+#ifdef MAC
+	int error;
+#endif
 
-	VERIFY((*m)->m_flags & M_PKTHDR);
+	M_ASSERTPKTHDR(m); /* check if we have the packet header */
 
-	(*m)->m_flags |= M_LOOP;
-
-	if (rt != NULL) {
-		u_int32_t rt_flags = rt->rt_flags;
-		if (rt_flags & (RTF_REJECT | RTF_BLACKHOLE)) {
-			if (rt_flags & RTF_BLACKHOLE) {
-				m_freem(*m);
-				return EJUSTRETURN;
-			} else {
-				return (rt_flags & RTF_HOST) ?
-				       EHOSTUNREACH : ENETUNREACH;
-			}
-		}
-	}
-
-	bcopy(&protocol_family, frame_type, sizeof(protocol_family));
-
-	return 0;
-}
-
-/*
- *  lo_input - This should work for all attached protocols that use the
- *             ifq/schednetisr input mechanism.
- */
-static errno_t
-lo_input(struct ifnet *ifp, protocol_family_t protocol_family, struct mbuf *m)
-{
-#pragma unused(ifp, protocol_family)
-
-	if ((ifp->if_xflags & IFXF_TIMESTAMP_ENABLED) != 0) {
-		errno_t error;
-		struct timespec now;
-		u_int64_t ts;
-
-		nanouptime(&now);
-		net_timernsec(&now, &ts);
-
-		error = mbuf_set_timestamp(m, ts, TRUE);
-		if (error != 0) {
-			printf("%s: mbuf_set_timestamp() failed %d\n",
-			    __func__, error);
-		}
-	}
-
-	if (proto_input(protocol_family, m) != 0) {
+#ifdef MAC
+	error = mac_ifnet_check_transmit(ifp, m);
+	if (error) {
 		m_freem(m);
+		return (error);
 	}
-	return 0;
+#endif
+
+	if (ro != NULL && ro->ro_flags & (RT_REJECT|RT_BLACKHOLE)) {
+		m_freem(m);
+		return (ro->ro_flags & RT_BLACKHOLE ? 0 : EHOSTUNREACH);
+	}
+
+	if_inc_counter(ifp, IFCOUNTER_OPACKETS, 1);
+	if_inc_counter(ifp, IFCOUNTER_OBYTES, m->m_pkthdr.len);
+
+#ifdef RSS
+	M_HASHTYPE_CLEAR(m);
+#endif
+
+	/* BPF writes need to be handled specially. */
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
+		bcopy(dst->sa_data, &af, sizeof(af));
+	else
+		af = RO_GET_FAMILY(ro, dst);
+
+	switch (af) {
+	case AF_INET:
+		if ((ifp->if_capenable & IFCAP_RXCSUM) == 0) {
+			m->m_pkthdr.csum_flags &= ~LO_CSUM_SET;
+		}
+		break;
+	case AF_INET6:
+		if ((ifp->if_capenable & IFCAP_RXCSUM_IPV6) == 0) {
+			m->m_pkthdr.csum_flags &= ~LO_CSUM_SET;
+		}
+		break;
+	default:
+		printf("looutput: af=%d unexpected\n", af);
+		m_freem(m);
+		return (EAFNOSUPPORT);
+	}
+	return (if_simloop(ifp, m, af, 0));
 }
 
-/* ARGSUSED */
-static void
-lo_rtrequest(int cmd, struct rtentry *rt, struct sockaddr *sa)
+/*
+ * if_simloop()
+ *
+ * This function is to support software emulation of hardware loopback,
+ * i.e., for interfaces with the IFF_SIMPLEX attribute. Since they can't
+ * hear their own broadcasts, we create a copy of the packet that we
+ * would normally receive via a hardware loopback.
+ *
+ * This function expects the packet to include the media header of length hlen.
+ */
+int
+if_simloop(struct ifnet *ifp, struct mbuf *m, int af, int hlen)
 {
-#pragma unused(cmd, sa)
-	if (rt != NULL) {
-		RT_LOCK_ASSERT_HELD(rt);
-		rt->rt_rmx.rmx_mtu = rt->rt_ifp->if_mtu; /* for ISO */
-		/*
-		 * For optimal performance, the send and receive buffers
-		 * should be at least twice the MTU plus a little more for
-		 * overhead.
-		 */
-		rt->rt_rmx.rmx_recvpipe = rt->rt_rmx.rmx_sendpipe = 3 * LOMTU;
+	int isr;
+	int32_t len;
+
+	M_ASSERTPKTHDR(m);
+	m_tag_delete_nonpersistent(m);
+	m->m_pkthdr.rcvif = ifp;
+
+#ifdef MAC
+	mac_ifnet_create_mbuf(ifp, m);
+#endif
+
+	/*
+	 * Let BPF see incoming packet in the following manner:
+	 *  - Emulated packet loopback for a simplex interface
+	 *    (net/if_ethersubr.c)
+	 *	-> passes it to ifp's BPF
+	 *  - IPv4/v6 multicast packet loopback (netinet(6)/ip(6)_output.c)
+	 *	-> not passes it to any BPF
+	 *  - Normal packet loopback from myself to myself (net/if_loop.c)
+	 *	-> passes to lo0's BPF (even in case of IPv6, where ifp!=lo0)
+	 */
+	if (hlen > 0) {
+		if (bpf_peers_present(ifp->if_bpf)) {
+			bpf_mtap(ifp->if_bpf, m);
+		}
+	} else {
+		if (bpf_peers_present(V_loif->if_bpf)) {
+			if ((m->m_flags & M_MCAST) == 0 || V_loif == ifp) {
+				/* XXX beware sizeof(af) != 4 */
+				u_int32_t af1 = af;
+
+				/*
+				 * We need to prepend the address family.
+				 */
+				bpf_mtap2(V_loif->if_bpf, &af1, sizeof(af1), m);
+			}
+		}
 	}
+
+	/* Strip away media header */
+	if (hlen > 0) {
+		m_adj(m, hlen);
+#ifndef __NO_STRICT_ALIGNMENT
+		/*
+		 * Some archs do not like unaligned data, so
+		 * we move data down in the first mbuf.
+		 */
+		if (mtod(m, vm_offset_t) & 3) {
+			KASSERT(hlen >= 3, ("if_simloop: hlen too small"));
+			bcopy(m->m_data,
+			    (char *)(mtod(m, vm_offset_t)
+				- (mtod(m, vm_offset_t) & 3)),
+			    m->m_len);
+			m->m_data -= (mtod(m,vm_offset_t) & 3);
+		}
+#endif
+	}
+
+	/* Deliver to upper layer protocol */
+	switch (af) {
+#ifdef INET
+	case AF_INET:
+		isr = NETISR_IP;
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		m->m_flags |= M_LOOP;
+		isr = NETISR_IPV6;
+		break;
+#endif
+	default:
+		printf("if_simloop: can't handle af=%d\n", af);
+		m_freem(m);
+		return (EAFNOSUPPORT);
+	}
+	len = m->m_pkthdr.len;
+	if (netisr_queue(isr, m) == 0) {
+		if_inc_counter(ifp, IFCOUNTER_IPACKETS, 1);
+		if_inc_counter(ifp, IFCOUNTER_IBYTES, len);
+	} else {
+		/* mbuf is free'd on failure. */
+		if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+	}
+	return (0);
 }
 
 /*
  * Process an ioctl request.
  */
-static errno_t
-lo_ioctl(struct ifnet *ifp, u_long cmd, void *data)
+static int
+loioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 {
-	int error = 0;
+	struct ifreq *ifr = (struct ifreq *)data;
+	int error = 0, mask;
 
 	switch (cmd) {
-	case SIOCSIFADDR: {             /* struct ifaddr pointer */
-		ifaddr_ref_t ifa = data;
-
-		ifnet_set_flags(ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
-		IFA_LOCK_SPIN(ifa);
-		ifa->ifa_rtrequest = lo_rtrequest;
-		IFA_UNLOCK(ifa);
+	case SIOCSIFADDR:
+		ifp->if_flags |= IFF_UP;
+		ifp->if_drv_flags |= IFF_DRV_RUNNING;
+		if_link_state_change(ifp, LINK_STATE_UP);
 		/*
 		 * Everything else is done at a higher level.
 		 */
 		break;
-	}
 
-	case SIOCADDMULTI:              /* struct ifreq */
-	case SIOCDELMULTI: {            /* struct ifreq */
-		struct ifreq * __single ifr = data;
-
+	case SIOCADDMULTI:
+	case SIOCDELMULTI:
 		if (ifr == NULL) {
-			error = EAFNOSUPPORT;           /* XXX */
+			error = EAFNOSUPPORT;		/* XXX */
 			break;
 		}
 		switch (ifr->ifr_addr.sa_family) {
-#if INET
+#ifdef INET
 		case AF_INET:
 			break;
 #endif
+#ifdef INET6
 		case AF_INET6:
 			break;
+#endif
 
 		default:
 			error = EAFNOSUPPORT;
 			break;
 		}
 		break;
-	}
 
-	case SIOCSIFMTU: {              /* struct ifreq */
-		struct ifreq * __single ifr = data;
-
-		bcopy(&ifr->ifr_mtu, &ifp->if_mtu, sizeof(int));
-		break;
-	}
-
-	case SIOCSIFFLAGS:              /* struct ifreq */
-	case SIOCSIFTIMESTAMPENABLE:
-	case SIOCSIFTIMESTAMPDISABLE:
+	case SIOCSIFMTU:
+		ifp->if_mtu = ifr->ifr_mtu;
 		break;
 
-	default:
-		error = EOPNOTSUPP;
-		break;
-	}
-	return error;
-}
-#endif /* NLOOP > 0 */
-
-
-static errno_t
-lo_attach_proto(struct ifnet *ifp, protocol_family_t protocol_family)
-{
-	struct ifnet_attach_proto_param_v2      proto;
-	errno_t                                                 result = 0;
-
-	bzero(&proto, sizeof(proto));
-	proto.input = lo_input;
-	proto.pre_output = lo_pre_output;
-
-	result = ifnet_attach_protocol_v2(ifp, protocol_family, &proto);
-
-	if (result && result != EEXIST) {
-		printf("lo_attach_proto: ifnet_attach_protocol for %u "
-		    "returned=%d\n", protocol_family, result);
-	}
-
-	return result;
-}
-
-static void
-lo_reg_if_mods(void)
-{
-	int error;
-
-	/* Register protocol registration functions */
-	if ((error = proto_register_plumber(PF_INET,
-	    APPLE_IF_FAM_LOOPBACK, lo_attach_proto, NULL)) != 0) {
-		printf("proto_register_plumber failed for AF_INET "
-		    "error=%d\n", error);
-	}
-
-	if ((error = proto_register_plumber(PF_INET6,
-	    APPLE_IF_FAM_LOOPBACK, lo_attach_proto, NULL)) != 0) {
-		printf("proto_register_plumber failed for AF_INET6 "
-		    "error=%d\n", error);
-	}
-}
-
-static errno_t
-lo_set_bpf_tap(struct ifnet *ifp, bpf_tap_mode mode,
-    bpf_packet_func bpf_callback)
-{
-	VERIFY(ifp == lo_ifp);
-
-	lo_statics[0].bpf_mode = mode;
-
-	switch (mode) {
-	case BPF_TAP_DISABLE:
-	case BPF_TAP_INPUT:
-		lo_statics[0].bpf_callback = NULL;
+	case SIOCSIFFLAGS:
+		if_link_state_change(ifp, (ifp->if_flags & IFF_UP) ?
+		    LINK_STATE_UP: LINK_STATE_DOWN);
 		break;
 
-	case BPF_TAP_OUTPUT:
-	case BPF_TAP_INPUT_OUTPUT:
-		lo_statics[0].bpf_callback = bpf_callback;
-		break;
-	}
-
-	return 0;
-}
-
-/* ARGSUSED */
-void
-loopattach(void)
-{
-	struct ifnet_init_eparams lo_init;
-	errno_t result = 0;
-
-	PE_parse_boot_argn("lo_txstart", &lo_txstart, sizeof(lo_txstart));
-
-	lo_reg_if_mods();
-
-	lo_statics[0].bpf_callback = NULL;
-	lo_statics[0].bpf_mode = BPF_TAP_DISABLE;
-
-	bzero(&lo_init, sizeof(lo_init));
-	lo_init.ver                     = IFNET_INIT_CURRENT_VERSION;
-	lo_init.len                     = sizeof(lo_init);
-	lo_init.sndq_maxlen             = LOSNDQ_MAXLEN;
-	if (lo_txstart) {
-		lo_init.flags           = 0;
-		lo_init.pre_enqueue     = lo_pre_enqueue;
-		lo_init.start           = lo_start;
-		lo_init.output_sched_model = lo_sched_model;
-	} else {
-		lo_init.flags           = IFNET_INIT_LEGACY;
-		lo_init.output          = lo_output;
-	}
-	lo_init.flags                   |= IFNET_INIT_NX_NOAUTO;
-	lo_init.name                    = "lo";
-	lo_init.unit                    = 0;
-	lo_init.family                  = IFNET_FAMILY_LOOPBACK;
-	lo_init.type                    = IFT_LOOP;
-	lo_init.demux                   = lo_demux;
-	lo_init.add_proto               = lo_add_proto;
-	lo_init.del_proto               = lo_del_proto;
-	lo_init.framer_extended         = lo_framer;
-	lo_init.softc                   = &lo_statics[0];
-	lo_init.ioctl                   = lo_ioctl;
-	lo_init.set_bpf_tap             = lo_set_bpf_tap;
-
-	result = ifnet_allocate_extended(&lo_init, &lo_ifp);
-	if (result != 0) {
-		panic("%s: couldn't allocate loopback ifnet (%d)",
-		    __func__, result);
-		/* NOTREACHED */
-	}
-
-	ifnet_set_mtu(lo_ifp, LOMTU);
-	ifnet_set_flags(lo_ifp, IFF_LOOPBACK | IFF_MULTICAST,
-	    IFF_LOOPBACK | IFF_MULTICAST);
-	ifnet_set_offload(lo_ifp,
-	    IFNET_CSUM_IP | IFNET_CSUM_TCP | IFNET_CSUM_UDP |
-	    IFNET_CSUM_TCPIPV6 | IFNET_CSUM_UDPIPV6 | IFNET_IPV6_FRAGMENT |
-	    IFNET_CSUM_FRAGMENT | IFNET_IP_FRAGMENT | IFNET_MULTIPAGES |
-	    IFNET_TX_STATUS | IFNET_SW_TIMESTAMP);
-	ifnet_set_hdrlen(lo_ifp, sizeof(struct loopback_header));
-	ifnet_set_eflags(lo_ifp, IFEF_SENDLIST, IFEF_SENDLIST);
-
-	result = ifnet_attach(lo_ifp, NULL);
-	if (result != 0) {
-		panic("%s: couldn't attach loopback ifnet (%d)",
-		    __func__, result);
-		/* NOTREACHED */
-	}
-
-	bpfattach(lo_ifp, DLT_NULL, sizeof(u_int32_t));
-}
-
-static int
-sysctl_dequeue_max SYSCTL_HANDLER_ARGS
-{
-#pragma unused(arg1, arg2)
-	u_int32_t i;
-	int err;
-
-	i = lo_dequeue_max;
-
-	err = sysctl_handle_int(oidp, &i, 0, req);
-	if (err != 0 || req->newptr == USER_ADDR_NULL) {
-		return err;
-	}
-
-	if (i < 1) {
-		i = 1;
-	} else if (i > LOSNDQ_MAXLEN) {
-		i = LOSNDQ_MAXLEN;
-	}
-
-	lo_dequeue_max = i;
-
-	return err;
-}
-
-static int
-sysctl_sched_model SYSCTL_HANDLER_ARGS
-{
-#pragma unused(arg1, arg2)
-	u_int32_t i;
-	int err;
-
-	i = lo_sched_model;
-
-	err = sysctl_handle_int(oidp, &i, 0, req);
-	if (err != 0 || req->newptr == USER_ADDR_NULL) {
-		return err;
-	}
-
-	switch (i) {
-	case IFNET_SCHED_MODEL_NORMAL:
-	case IFNET_SCHED_MODEL_DRIVER_MANAGED:
-	case IFNET_SCHED_MODEL_FQ_CODEL:
-	case IFNET_SCHED_MODEL_FQ_CODEL_DM:
+	case SIOCSIFCAP:
+		mask = ifp->if_capenable ^ ifr->ifr_reqcap;
+		if ((mask & IFCAP_RXCSUM) != 0)
+			ifp->if_capenable ^= IFCAP_RXCSUM;
+		if ((mask & IFCAP_TXCSUM) != 0)
+			ifp->if_capenable ^= IFCAP_TXCSUM;
+		if ((mask & IFCAP_RXCSUM_IPV6) != 0)
+			ifp->if_capenable ^= IFCAP_RXCSUM_IPV6;
+		if ((mask & IFCAP_TXCSUM_IPV6) != 0)
+			ifp->if_capenable ^= IFCAP_TXCSUM_IPV6;
+		ifp->if_hwassist = 0;
+		if (ifp->if_capenable & IFCAP_TXCSUM)
+			ifp->if_hwassist = LO_CSUM_FEATURES;
+		if (ifp->if_capenable & IFCAP_TXCSUM_IPV6)
+			ifp->if_hwassist |= LO_CSUM_FEATURES6;
 		break;
 
 	default:
-		err = EINVAL;
-		break;
+		error = EINVAL;
 	}
-
-	if (err == 0 && (err = ifnet_set_output_sched_model(lo_ifp, i)) == 0) {
-		lo_sched_model = i;
-	}
-
-	return err;
-}
-
-static int
-sysctl_dequeue_scidx SYSCTL_HANDLER_ARGS
-{
-#pragma unused(arg1, arg2)
-	u_int32_t i;
-	int err;
-
-	i = lo_dequeue_scidx;
-
-	err = sysctl_handle_int(oidp, &i, 0, req);
-	if (err != 0 || req->newptr == USER_ADDR_NULL) {
-		return err;
-	}
-
-	if (!MBUF_VALID_SCIDX(i)) {
-		return EINVAL;
-	}
-
-	if ((lo_sched_model & IFNET_SCHED_DRIVER_MANGED_MODELS) == 0) {
-		return ENODEV;
-	}
-
-	lo_dequeue_sc = m_service_class_from_idx(i);
-	lo_dequeue_scidx = MBUF_SCIDX(lo_dequeue_sc);
-
-	return err;
+	return (error);
 }

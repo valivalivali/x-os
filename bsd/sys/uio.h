@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2019 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1982, 1986, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,228 +27,94 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)uio.h	8.5 (Berkeley) 2/22/94
  */
 
 #ifndef _SYS_UIO_H_
-#define _SYS_UIO_H_
+#define	_SYS_UIO_H_
 
-#include <Availability.h>
 #include <sys/cdefs.h>
 #include <sys/_types.h>
-#include <sys/_types/_off_t.h>
+#include <sys/_iovec.h>
+#include <sys/_uio.h>
 
-/*
- * [XSI] The ssize_t and size_t types shall be defined as described
- * in <sys/types.h>.
- */
-#include <sys/_types/_size_t.h>
-#include <sys/_types/_ssize_t.h>
-
-/*
- * [XSI] Structure whose address is passed as the second parameter to the
- * readv(), preadv(), writev() and pwritev() functions.
- */
-#include <sys/_types/_iovec_t.h>
-
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-/*
- * IO direction for uio_t.
- *	UIO_READ - data moves into iovec(s) associated with uio_t
- *	UIO_WRITE - data moves out of iovec(s) associated with uio_t
- */
-enum uio_rw { UIO_READ, UIO_WRITE };
+#ifndef _SSIZE_T_DECLARED
+typedef	__ssize_t	ssize_t;
+#define	_SSIZE_T_DECLARED
 #endif
 
-#ifdef KERNEL
+#ifndef _OFF_T_DECLARED
+typedef	__off_t	off_t;
+#define	_OFF_T_DECLARED
+#endif
 
-/*
- * XXX This all really wants a uio_internal.h
- */
+#ifdef _KERNEL
 
-#include <sys/kernel_types.h>
-
-
-/*
- * user / kernel address space type flags.
- * WARNING - make sure to check when adding flags!  Be sure new flags
- * don't overlap the definitions in uio_internal.h
- * NOTES -
- *	UIO_USERSPACE is equivalent to UIO_USERSPACE32, but UIO_USERSPACE32
- *		is preferred.  UIO_USERSPACE remains for backwards compatibility.
- *	UIO_SYSSPACE is equivalent to UIO_SYSSPACE32, but UIO_SYSSPACE
- *		is preferred.
- */
-enum uio_seg {
-	UIO_USERSPACE           = 0,    /* kernel address is virtual,  to/from user virtual */
-	UIO_SYSSPACE            = 2,    /* kernel address is virtual,  to/from system virtual */
-	UIO_USERSPACE32         = 5,    /* kernel address is virtual,  to/from user 32-bit virtual */
-	UIO_USERSPACE64         = 8,    /* kernel address is virtual,  to/from user 64-bit virtual */
-	UIO_SYSSPACE32          = 11    /* deprecated */
+struct uio {
+	struct iovec	*uio_iov;	/* scatter/gather list */
+	int		 uio_iovcnt;	/* length of scatter/gather list */
+	off_t		 uio_offset;	/* offset in target object */
+	ssize_t		 uio_resid;	/* remaining bytes to process */
+	enum uio_seg	 uio_segflg;	/* address space */
+	enum uio_rw	 uio_rw;	/* operation */
+	struct thread	*uio_td;	/* owner */
 };
-
-enum {
-	UIOF_USERSPACE          = (1 << UIO_USERSPACE),
-	UIOF_SYSSPACE           = (1 << UIO_SYSSPACE),
-	UIOF_USERSPACE32        = (1 << UIO_USERSPACE32),
-	UIOF_USERSPACE64        = (1 << UIO_USERSPACE64),
-	UIOF_SYSSPACE32         = (1 << UIO_SYSSPACE32),
-};
-
-#define UIO_SEG_IS_USER_SPACE( a_uio_seg )  \
-	((1 << a_uio_seg) & (UIOF_USERSPACE64 | UIOF_USERSPACE32 | UIOF_USERSPACE))
-
-
-__BEGIN_DECLS
-
-/*
- * uio_create - create an uio_t.
- *      Space is allocated to hold up to a_iovcount number of iovecs.  The uio_t
- *	is not fully initialized until all iovecs are added using uio_addiov calls.
- *	a_iovcount is the maximum number of iovecs you may add.
- */
-uio_t uio_create( int a_iovcount,               /* max number of iovecs */
-    off_t a_offset,                                             /* current offset */
-    int a_spacetype,                                            /* type of address space */
-    int a_iodirection );                                /* read or write flag */
-
-/*
- * uio_reset - reset an uio_t.
- *      Reset the given uio_t to initial values.  The uio_t is not fully initialized
- *      until all iovecs are added using uio_add_ov calls.
- *	The a_iovcount value passed in the uio_create is the maximum number of
- *	iovecs you may add.
- */
-void uio_reset( uio_t a_uio,
-    off_t a_offset,                                             /* current offset */
-    int a_spacetype,                                            /* type of address space */
-    int a_iodirection );                                /* read or write flag */
-
-/*
- * uio_duplicate - allocate a new uio and make a copy of the given uio_t.
- *	may return NULL.
- */
-uio_t uio_duplicate( uio_t a_uio );
-
-/*
- * uio_restore - restore a uio to the state it was in the provided snapshot.
- *      returns 0 if it was successful else non zero.
- */
-int uio_restore(uio_t uio, uio_t snapshot_uio);
-
-/*
- * uio_free - free a uio_t allocated via uio_create.
- */
-void uio_free( uio_t a_uio );
-
-/*
- * uio_addiov - add an iovec to the given uio_t.  You may call this up to
- *      the a_iovcount number that was passed to uio_create.
- *	returns 0 if add was successful else non zero.
- */
-int uio_addiov( uio_t a_uio, user_addr_t a_baseaddr, user_size_t a_length );
-
-/*
- * uio_getiov - get iovec data associated with the given uio_t.  Use
- *  a_index to iterate over each iovec (0 to (uio_iovcnt(uio_t) - 1)).
- *  a_baseaddr_p and a_length_p may be NULL.
- *      returns -1 when a_index is out of range or invalid uio_t.
- *	returns 0 when data is returned.
- */
-int uio_getiov( uio_t a_uio,
-    int a_index,
-    user_addr_t * a_baseaddr_p,
-    user_size_t * a_length_p );
-
-/*
- * uio_update - update the given uio_t for a_count of completed IO.
- *	This call adjusts decrements the current iovec length and residual IO,
- *	and increments the current iovec base address and offset value.
- */
-void uio_update( uio_t a_uio, user_size_t a_count );
-
-/*
- * uio_resid - return the residual IO value for the given uio_t
- */
-user_ssize_t uio_resid( uio_t a_uio );
-
-/*
- * uio_setresid - set the residual IO value for the given uio_t
- */
-void uio_setresid( uio_t a_uio, user_ssize_t a_value );
-
-/*
- * uio_iovcnt - return count of active iovecs for the given uio_t
- */
-int uio_iovcnt( uio_t a_uio );
-
-/*
- * uio_offset - return the current offset value for the given uio_t
- */
-off_t uio_offset( uio_t a_uio );
-
-/*
- * uio_setoffset - set the current offset value for the given uio_t
- */
-void uio_setoffset( uio_t a_uio, off_t a_offset );
-
-/*
- * uio_rw - return the read / write flag for the given uio_t
- */
-int uio_rw( uio_t a_uio );
-
-/*
- * uio_setrw - set the read / write flag for the given uio_t
- */
-void uio_setrw( uio_t a_uio, int a_value );
-
-/*
- * uio_isuserspace - return non zero value if the address space
- * flag is for a user address space (could be 32 or 64 bit).
- */
-int uio_isuserspace( uio_t a_uio );
-
-/*
- * uio_curriovbase - return the base address of the current iovec associated
- *	with the given uio_t.  May return 0.
- */
-user_addr_t uio_curriovbase( uio_t a_uio );
-
-/*
- * uio_curriovlen - return the length value of the current iovec associated
- *	with the given uio_t.
- */
-user_size_t uio_curriovlen( uio_t a_uio );
 
 /*
  * Limits
+ *
+ * N.B.: UIO_MAXIOV must be no less than IOV_MAX from <sys/syslimits.h>
+ * which in turn must be no less than _XOPEN_IOV_MAX from <limits.h>.  If
+ * we ever make this tunable (probably pointless), then IOV_MAX should be
+ * removed from <sys/syslimits.h> and applications would be expected to use
+ * sysconf(3) to find out the correct value, or else assume the worst
+ * (_XOPEN_IOV_MAX).  Perhaps UIO_MAXIOV should be simply defined as
+ * IOV_MAX.
  */
-#define UIO_MAXIOV      1024            /* max 1K of iov's */
-#define UIO_SMALLIOV    8               /* 8 on stack, else malloc */
+#define UIO_MAXIOV	1024		/* max 1K of iov's */
 
-extern int uiomove(const char *__sized_by(n) cp, int n, struct uio *uio);
-extern int uiomove64(const __uint64_t cp, int n, struct uio *uio);
-__END_DECLS
+struct vm_object;
+struct vm_page;
+struct bus_dma_segment;
 
-#endif /* KERNEL */
+struct uio *allocuio(u_int iovcnt);
+void	freeuio(struct uio *uio);
+struct uio *cloneuio(struct uio *uiop);
+int	copyiniov(const struct iovec *iovp, u_int iovcnt, struct iovec **iov,
+	    int error);
+int	copyinuio(const struct iovec *iovp, u_int iovcnt, struct uio **uiop);
+int	copyout_map(struct thread *td, vm_offset_t *addr, size_t sz);
+int	copyout_unmap(struct thread *td, vm_offset_t addr, size_t sz);
+void	exterr_copyout(struct thread *td);
+int	physcopyin(void *src, vm_paddr_t dst, size_t len);
+int	physcopyout(vm_paddr_t src, void *dst, size_t len);
+int	physcopyin_vlist(struct bus_dma_segment *src, off_t offset,
+	    vm_paddr_t dst, size_t len);
+int	physcopyout_vlist(vm_paddr_t src, struct bus_dma_segment *dst,
+	    off_t offset, size_t len);
+void	uioadvance(struct uio *, size_t);
+int	uiomove(void *cp, int n, struct uio *uio);
+int	uiomove_frombuf(void *buf, int buflen, struct uio *uio);
+int	uiomove_fromphys(struct vm_page *ma[], vm_offset_t offset, int n,
+	    struct uio *uio);
+int	uiomove_nofault(void *cp, int n, struct uio *uio);
+int	uiomove_object(struct vm_object *obj, off_t obj_size, struct uio *uio);
+int	uiomove_step(void *cp, void *base, size_t cnt, struct uio *uio);
 
-#ifndef KERNEL
+#else /* !_KERNEL */
+
+#if defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#include <ssp/uio.h>
+#endif
 
 __BEGIN_DECLS
-ssize_t readv(int, const struct iovec *, int) __DARWIN_ALIAS_C(readv);
-ssize_t writev(int, const struct iovec *, int) __DARWIN_ALIAS_C(writev);
-
-#if (!defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE)) || defined(_DARWIN_C_SOURCE)
-
-ssize_t preadv(int, const struct iovec *, int, off_t) __DARWIN_NOCANCEL(preadv) __API_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0), tvos(14.0));
-ssize_t pwritev(int, const struct iovec *, int, off_t) __DARWIN_NOCANCEL(pwritev) __API_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0), tvos(14.0));
-
-#endif /* #if (!defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE)) || defined(_DARWIN_C_SOURCE) */
-
+ssize_t	readv(int, const struct iovec *, int);
+ssize_t	writev(int, const struct iovec *, int);
+#if __BSD_VISIBLE
+ssize_t	preadv(int, const struct iovec *, int, off_t);
+ssize_t	pwritev(int, const struct iovec *, int, off_t);
+#endif
 __END_DECLS
 
-#endif /* !KERNEL */
+#endif /* _KERNEL */
 
 #endif /* !_SYS_UIO_H_ */

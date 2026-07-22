@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2018 Apple Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,54 +27,45 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)gmon.h	8.2 (Berkeley) 1/4/94
  */
 
 #ifndef _SYS_GMON_H_
 #define _SYS_GMON_H_
-#include <stdint.h>
-#include <sys/types.h>
+
+#include <machine/profile.h>
 
 /*
  * Structure prepended to gmon.out profiling data file.
  */
 struct gmonhdr {
-	uint32_t lpc;           /* base pc address of sample buffer */
-	uint32_t hpc;           /* max pc address of sampled buffer */
-	uint32_t ncnt;          /* size of sample buffer (plus this header) */
-	int32_t version;        /* version number */
-	int32_t profrate;       /* profiling clock rate */
-	int32_t spare[3];       /* reserved */
+	u_long	lpc;		/* base pc address of sample buffer */
+	u_long	hpc;		/* max pc address of sampled buffer */
+	int	ncnt;		/* size of sample buffer (plus this header) */
+	int	version;	/* version number */
+	int	profrate;	/* profiling clock rate */
+	int	histcounter_type; /* size (in bits) and sign of HISTCOUNTER */
+	int	spare[2];	/* reserved */
 };
-#define GMONVERSION     0x00051879
+#define GMONVERSION	0x00051879
 
-struct gmonhdr_64 {
-	uint64_t lpc;           /* base pc address of sample buffer */
-	uint64_t hpc;           /* max pc address of sampled buffer */
-	uint32_t ncnt;          /* size of sample buffer (plus this header) */
-	int32_t version;        /* version number */
-	int32_t profrate;       /* profiling clock rate */
-	int32_t spare[3];       /* reserved */
-};
-
-typedef struct
-#ifndef __LP64__
-    gmonhdr
+/*
+ * Type of histogram counters used in the kernel.
+ */
+#ifdef GPROF4
+#define	HISTCOUNTER	int64_t
 #else
-    gmonhdr_64
+#define	HISTCOUNTER	unsigned short
 #endif
-    gmonhdr_t;
 
 /*
- * histogram counters are unsigned shorts (according to the kernel).
+ * Fraction of text space to allocate for histogram counters.
+ * We allocate counters at the same or higher density as function
+ * addresses, so that each counter belongs to a unique function.
+ * A lower density of counters would give less resolution but a
+ * higher density would be wasted.
  */
-#define HISTCOUNTER     unsigned short
-
-/*
- * fraction of text space to allocate for histogram counters here, 1/2
- */
-#define HISTFRACTION    2
+#define	HISTFRACTION	(FUNCTION_ALIGNMENT / sizeof(HISTCOUNTER) == 0 \
+			 ? 1 : FUNCTION_ALIGNMENT / sizeof(HISTCOUNTER))
 
 /*
  * Fraction of text space to allocate for from hash buckets.
@@ -134,167 +95,148 @@ typedef struct
  * profiling data structures without (in practice) sacrificing
  * any granularity.
  */
-#define HASHFRACTION    2
+/*
+ * XXX I think the above analysis completely misses the point.  I think
+ * the point is that addresses in different functions must hash to
+ * different values.  Since the hash is essentially division by
+ * sizeof(unsigned short), the correct formula is:
+ *
+ * 	HASHFRACTION = MIN_FUNCTION_ALIGNMENT / sizeof(unsigned short)
+ *
+ * Note that he unsigned short here has nothing to do with the one for
+ * HISTFRACTION.
+ *
+ * Hash collisions from a two call sequence don't matter.  They get
+ * handled like collisions for calls to different addresses from the
+ * same address through a function pointer.
+ */
+#define	HASHFRACTION	(FUNCTION_ALIGNMENT / sizeof(unsigned short) == 0 \
+			 ? 1 : FUNCTION_ALIGNMENT / sizeof(unsigned short))
 
 /*
  * percent of text space to allocate for tostructs with a minimum.
  */
-#define ARCDENSITY      2
-#define MINARCS         50
-#define MAXARCS         ((1 << (8 * sizeof(HISTCOUNTER))) - 2)
+#define ARCDENSITY	2
+#define MINARCS		50
+
+/*
+ * Limit on the number of arcs to so that arc numbers can be stored in
+ * `*froms' and stored and incremented without overflow in links.
+ */
+#define MAXARCS		(((u_long)1 << (8 * sizeof(u_short))) - 2)
 
 struct tostruct {
-	uint32_t        selfpc;
-	int32_t         count;
-	uint16_t        link;
-	uint16_t        order;
+	u_long	selfpc;
+	long	count;
+	u_short	link;
+	u_short pad;
 };
-
-struct tostruct_64 {
-	uint64_t        selfpc;
-	int32_t         count;
-	uint16_t        link;
-	uint16_t        order;
-};
-
-typedef struct
-#ifndef __LP64__
-    tostruct
-#else
-    tostruct_64
-#endif
-    tostruct_t;
 
 /*
  * a raw arc, with pointers to the calling site and
  * the called site and a count.
  */
 struct rawarc {
-	uint32_t        raw_frompc;
-	uint32_t        raw_selfpc;
-	int32_t         raw_count;
+	u_long	raw_frompc;
+	u_long	raw_selfpc;
+	long	raw_count;
 };
-
-struct rawarc_64 {
-	uint64_t        raw_frompc;
-	uint64_t        raw_selfpc;
-	int32_t         raw_count;
-};
-
-typedef struct
-#ifndef __LP64__
-    rawarc
-#else
-    rawarc_64
-#endif
-    rawarc_t;
 
 /*
  * general rounding functions.
  */
-#define ROUNDDOWN(x, y)  (((x)/(y))*(y))
-#define ROUNDUP(x, y)    ((((x)+(y)-1)/(y))*(y))
+#define ROUNDDOWN(x,y)	rounddown(x,y)
+#define ROUNDUP(x,y)	roundup(x,y)
 
 /*
  * The profiling data structures are housed in this structure.
  */
 struct gmonparam {
-	int             state;
-	u_short         *kcount;
-	u_long          kcountsize;
-	u_short         *froms;
-	u_long          fromssize;
-	tostruct_t      *tos;
-	u_long          tossize;
-	long            tolimit;
-	u_long          lowpc;
-	u_long          highpc;
-	u_long          textsize;
-	u_long          hashfraction;
+	int		state;
+	HISTCOUNTER	*kcount;
+	u_long		kcountsize;
+	u_short		*froms;
+	u_long		fromssize;
+	struct tostruct	*tos;
+	u_long		tossize;
+	long		tolimit;
+	uintfptr_t	lowpc;
+	uintfptr_t	highpc;
+	u_long		textsize;
+	u_long		hashfraction;
+	int		profrate;	/* XXX wrong type to match gmonhdr */
+	HISTCOUNTER	*cputime_count;
+	int		cputime_overhead;
+	HISTCOUNTER	*mcount_count;
+	int		mcount_overhead;
+	int		mcount_post_overhead;
+	int		mcount_pre_overhead;
+	HISTCOUNTER	*mexitcount_count;
+	int		mexitcount_overhead;
+	int		mexitcount_post_overhead;
+	int		mexitcount_pre_overhead;
+	int		histcounter_type;
 };
 extern struct gmonparam _gmonparam;
 
 /*
  * Possible states of profiling.
  */
-#define GMON_PROF_ON    0
-#define GMON_PROF_BUSY  1
-#define GMON_PROF_ERROR 2
-#define GMON_PROF_OFF   3
+#define	GMON_PROF_ON	0
+#define	GMON_PROF_BUSY	1
+#define	GMON_PROF_ERROR	2
+#define	GMON_PROF_OFF	3
+#define	GMON_PROF_HIRES	4
 
 /*
- * In order to support more information than in the original mon.out and
- * gmon.out files there is an alternate gmon.out file format.  The alternate
- * gmon.out file format starts with a magic number then separates the
- * information with gmon_data_t's.
+ * Sysctl definitions for extracting profiling information from the kernel.
  */
-#define GMON_MAGIC 0xbeefbabe
-#define GMON_MAGIC_64 0xbeefbabf
-typedef struct gmon_data {
-	uint32_t type; /* constant for type of data following this struct */
-	uint32_t size; /* size in bytes of the data following this struct */
-} gmon_data_t;
+#define	GPROF_STATE	0	/* int: profiling enabling variable */
+#define	GPROF_COUNT	1	/* struct: profile tick count buffer */
+#define	GPROF_FROMS	2	/* struct: from location hash bucket */
+#define	GPROF_TOS	3	/* struct: destination/count structure */
+#define	GPROF_GMONPARAM	4	/* struct: profiling parameters (see above) */
 
-/*
- * The GMONTYPE_SAMPLES gmon_data.type is for the histogram counters described
- * above and has a gmonhdr_t followed by the counters.
- */
-#define GMONTYPE_SAMPLES        1
-/*
- * The GMONTYPE_RAWARCS gmon_data.type is for the raw arcs described above.
- */
-#define GMONTYPE_RAWARCS        2
-/*
- * The GMONTYPE_ARCS_ORDERS gmon_data.type is for the raw arcs with a call
- * order field.  The order is the order is a sequence number for the order each
- * call site was executed.  Raw_order values start at 1 not zero.  Other than
- * the raw_order field this is the same information as in the rawarc_t.
- */
-#define GMONTYPE_ARCS_ORDERS    3
-struct rawarc_order {
-	uint32_t    raw_frompc;
-	uint32_t    raw_selfpc;
-	uint32_t    raw_count;
-	uint32_t    raw_order;
-}; struct rawarc_order_64 {
-	uint64_t    raw_frompc;
-	uint64_t    raw_selfpc;
-	uint32_t    raw_count;
-	uint32_t    raw_order;
-};
+#ifdef _KERNEL
 
-typedef struct
-#ifndef __LP64__
-    rawarc_order
-#else
-    rawarc_order_64
-#endif
-    rawarc_order_t;
+#define	KCOUNT(p,index) \
+	((p)->kcount[(index) / (HISTFRACTION * sizeof(HISTCOUNTER))])
+#define	PC_TO_I(p, pc)	((uintfptr_t)(pc) - (uintfptr_t)(p)->lowpc)
 
-/*
- * The GMONTYPE_DYLD_STATE gmon_data.type is for the dynamic link editor state
- * of the program.
- * The informations starts with an uint32_t with the count of states:
- *      image_count
- * Then each state follows in the file.  The state is made up of
- *      vmaddr_slide (the amount dyld slid this image from it's vmaddress)
- *      name (the file name dyld loaded this image from)
- * The vmaddr_slide is a 32-bit value for 32-bit programs and 64-bit value for
- * 64-bit programs.
- */
-#define GMONTYPE_DYLD_STATE     4
+#ifdef GUPROF
 
-/*
- * The GMONTYPE_DYLD2_STATE gmon_data.type is for the dynamic link editor state
- * of the program.
- * The informations starts with an uint32_t with the count of states:
- *      image_count
- * Then each state follows in the file.  The state is made up of
- *      image_header (the address where dyld loaded this image)
- *      name (the file name dyld loaded this image from)
- * The image_header is a 32-bit value for 32-bit programs and 64-bit value for
- * 64-bit programs.
- */
-#define GMONTYPE_DYLD2_STATE     5
+#define	CALIB_SCALE	1000
+
+extern int	cputime_bias;
+
+int	cputime(void);
+void	nullfunc_loop_profiled(void);
+void	nullfunc_profiled(void);
+void	startguprof(struct gmonparam *p);
+void	stopguprof(struct gmonparam *p);
+
+#else /* !GUPROF */
+
+#define	startguprof(p)
+#define	stopguprof(p)
+
+#endif /* GUPROF */
+
+void	empty_loop(void);
+void	kmupetext(uintfptr_t nhighpc);
+void	mexitcount(uintfptr_t selfpc);
+void	nullfunc(void);
+void	nullfunc_loop(void);
+
+#else /* !_KERNEL */
+
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
+void	moncontrol(int);
+void	monstartup(u_long, u_long);
+__END_DECLS
+
+#endif /* _KERNEL */
 
 #endif /* !_SYS_GMON_H_ */

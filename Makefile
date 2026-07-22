@@ -37,12 +37,21 @@ endif
 OVMF         := $(shell brew --prefix qemu 2>/dev/null)/share/qemu/edk2-x86_64-code.fd
 
 SRC_DIRS     := boot kernel userspace
-# Exclude Limine, ring-3 userspace sources, generated blobs, and raw XNU BSD
-# files from kernel build. Include only x-os adapted files (*_xos.c, bsd_net_init.c).
-CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/kern/kern_*.c' -not -path './bsd/kern/sys_*.c' -not -path './bsd/kern/uipc_domain.c' -not -path './bsd/kern/uipc_socket.c' -not -path './bsd/kern/uipc_socket2.c' -not -path './bsd/kern/uipc_proto.c' -not -path './bsd/kern/uipc_syscalls.c' -not -path './bsd/kern/uipc_usrreq.c' -not -path './bsd/kern/uipc_mbuf.c' -not -path './bsd/kern/uipc_mbuf2.c' -not -path './bsd/kern/uipc_mbuf_mcache.c' -not -path './bsd/kern/mcache.c' -not -path './bsd/kern/kpi_*.c' -not -path './bsd/kern/mach_*.c' -not -path './bsd/kern/bsd_*.c' -not -path './bsd/kern/subr_*.c' -not -path './bsd/kern/tty*.c' -not -path './bsd/kern/proc_info.c' -not -path './bsd/kern/posix_*.c' -not -path './bsd/kern/sysv_*.c' -not -path './bsd/kern/stackshot.c' -not -path './bsd/kern/tracker.c' -not -path './bsd/kern/vsock_domain.c' -not -path './bsd/kern/ubc_subr.c' -not -path './bsd/kern/imageboot.c' -not -path './bsd/kern/chunklist.c' -not -path './bsd/kern/decmpfs.c' -not -path './bsd/kern/hvg_sysctl.c' -not -path './bsd/kern/kdebug*.c' -not -path './bsd/kern/mem_acct.c' -not -path './bsd/kern/netboot.c' -not -path './bsd/kern/policy_check.c' -not -path './bsd/kern/process_policy.c' -not -path './bsd/kern/proc_uuid_policy.c' -not -path './bsd/kern/socket_flows.c' -not -path './bsd/kern/socket_info.c' -not -path './bsd/kern/sys_coalition.c' -not -path './bsd/kern/sys_domain.c' -not -path './bsd/kern/sys_ecc.c' -not -path './bsd/kern/sys_eventlink.c' -not -path './bsd/kern/sys_persona.c' -not -path './bsd/kern/sys_reason.c' -not -path './bsd/kern/sys_record_event.c' -not -path './bsd/kern/sys_recount.c' -not -path './bsd/kern/sys_ulock.c' -not -path './bsd/kern/sys_work_interval.c' -not -path './bsd/kern/qsort.c' \( -not -path './bsd/net/*' -o -name 'net_xos.c' \) -not -path './bsd/netinet/*' -not -path './bsd/vfs/*' -not -path './bsd/pthread/*' -not -path './bsd/libkern/*' -not -path './bsd/compat/*' 2>/dev/null)
+# Exclude Limine, ring-3 userspace sources, generated blobs, and bsd/ from normal kernel build.
+# bsd/ files are handled separately with FreeBSD compat flags.
+# kernel/bsd/syscalls.c is also handled separately (needs BSD include paths).
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/*' -not -path './kernel/bsd/*' 2>/dev/null)
 SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.S' 2>/dev/null)
-OBJS         := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES)) $(patsubst %.S,$(OBJ_DIR)/%.o,$(SFILES))
-DEPS         := $(patsubst %.c,$(OBJ_DIR)/%.d,$(CFILES))
+
+# FreeBSD network stack source files
+BSD_CFILES   := $(shell find bsd -type f -name '*.c' -not -path 'bsd/compat/*' 2>/dev/null)
+BSD_COMPAT_CFILES := bsd/compat/compat_shims.c bsd/compat/atomic_stubs.c
+
+OBJS         := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES)) $(patsubst %.S,$(OBJ_DIR)/%.o,$(SFILES)) \
+               $(patsubst %.c,$(OBJ_DIR)/%.o,$(BSD_CFILES)) \
+               $(patsubst %.c,$(OBJ_DIR)/%.o,$(BSD_COMPAT_CFILES)) \
+               $(OBJ_DIR)/kernel/bsd/syscalls.o
+DEPS         := $(patsubst %.c,$(OBJ_DIR)/%.d,$(CFILES)) $(patsubst %.c,$(OBJ_DIR)/%.d,$(BSD_CFILES)) $(patsubst %.c,$(OBJ_DIR)/%.d,$(BSD_COMPAT_CFILES)) $(OBJ_DIR)/kernel/bsd/syscalls.d
 
 CFLAGS := \
   --target=x86_64-unknown-none-elf \
@@ -50,7 +59,18 @@ CFLAGS := \
   -fno-pic -fno-pie -m64 -march=x86-64 \
   -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
   -O2 -pipe -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -I. -I$(LIMINE_DIR) -Ibsd \
+  -I. -I$(LIMINE_DIR) \
+  -MMD -MP
+
+# CFLAGS for FreeBSD network stack files - adds _KERNEL and compat include paths
+BSD_CFLAGS := \
+  --target=x86_64-unknown-none-elf \
+  -ffreestanding -fno-stack-protector -fno-stack-check \
+  -fno-pic -fno-pie -m64 -march=x86-64 \
+  -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
+  -O2 -pipe -std=gnu11 -Wno-all \
+  -D_KERNEL -DTCP_RFC7413 -DTCP_RFC7413_MAX_KEYS=10 -DTCP_RFC7413_MAX_PSKS=10 -DTCP_BLACKBOX -DSTATS \
+  -I. -Ibsd/compat -Ibsd \
   -MMD -MP
 
 LDFLAGS := \
@@ -184,6 +204,16 @@ all: $(ISO)
 $(OBJ_DIR)/kernel/lib/string.o: kernel/lib/string.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove -c $< -o $@
+
+# FreeBSD network stack files use BSD_CFLAGS
+$(OBJ_DIR)/bsd/%.o: bsd/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(BSD_CFLAGS) -c $< -o $@
+
+# syscalls.c bridges X OS and FreeBSD — needs _KERNEL but NOT -Ibsd (avoids header conflicts)
+$(OBJ_DIR)/kernel/bsd/syscalls.o: kernel/bsd/syscalls.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -D_KERNEL -Wno-incompatible-library-redeclaration -c $< -o $@
 
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)

@@ -1,135 +1,396 @@
-/*
- * Copyright (c) 2015 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
+ * Copyright (c) 1988, 1993
+ *	The Regents of the University of California.  All rights reserved.
  *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
  *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
  */
 
-#ifndef SYS_KTRACE_H
-#define SYS_KTRACE_H
+#ifndef _SYS_KTRACE_H_
+#define _SYS_KTRACE_H_
 
-#include <stdint.h>
-#include <os/base.h>
-#include <kern/locks.h>
-
-__enum_decl(ktrace_state_t, unsigned int, {
-	/* No tool has configured ktrace. */
-	KTRACE_STATE_OFF = 0,
-	/* A foreground tool has configured ktrace. */
-	KTRACE_STATE_FG,
-	/* A background tool has configured ktrace. */
-	KTRACE_STATE_BG,
-});
-
-void ktrace_lock(void);
-void ktrace_unlock(void);
-void ktrace_assert_lock_held(void);
-void ktrace_start_single_threaded(void);
-void ktrace_end_single_threaded(void);
+#include <sys/param.h>
+#include <sys/caprights.h>
+#include <sys/signal.h>
+#include <sys/socket.h>
+#include <sys/_uexterror.h>
+#include <sys/_uio.h>
 
 /*
- * Subsystems that use ktrace to manage ownership.  These values are passed as
- * part of the `*_mask` arguments in `ktrace_configure` and `ktrace_reset`.
+ * operations to ktrace system call  (KTROP(op))
  */
-#define KTRACE_KDEBUG (1 << 0)
-#define KTRACE_KPERF  (1 << 1)
+#define KTROP_SET		0	/* set trace points */
+#define KTROP_CLEAR		1	/* clear trace points */
+#define KTROP_CLEARFILE		2	/* stop all tracing to file */
+#define	KTROP(o)		((o)&3)	/* macro to extract operation */
+/*
+ * flags (ORed in with operation)
+ */
+#define KTRFLAG_DESCEND		4	/* perform op on all children too */
 
 /*
- * Used by subsystems to inform ktrace that a configuration is occurring.
- * Validates whether the current process has privileges to configure
- * ktrace.  Pass the subsystem(s) being configured in config_mask.
- *
- * `ktrace_lock` must be held.
- *
- * Returns 0 if configuration is allowed, EPERM if process is not privileged,
- * and EBUSY if ktrace is owned by another process.
+ * ktrace record header
  */
-int ktrace_configure(uint32_t config_mask);
+struct ktr_header_v0 {
+	int	ktr_len;		/* length of buf */
+	short	ktr_type;		/* trace record type */
+	pid_t	ktr_pid;		/* process id */
+	char	ktr_comm[MAXCOMLEN + 1];/* command name */
+	struct	timeval ktr_time;	/* timestamp */
+	long	ktr_tid;		/* thread id */
+};
+
+struct ktr_header {
+	int	ktr_len;		/* length of buf */
+	short	ktr_type;		/* trace record type */
+	short	ktr_version;		/* ktr_header version */
+	pid_t	ktr_pid;		/* process id */
+	char	ktr_comm[MAXCOMLEN + 1];/* command name */
+	struct	timespec ktr_time;	/* timestamp */
+	/* XXX: make ktr_tid an lwpid_t on next ABI break */
+	long	ktr_tid;		/* thread id */
+	int	ktr_cpu;		/* cpu id */
+};
+
+#define	KTR_VERSION0	0
+#define	KTR_VERSION1	1
+#define	KTR_OFFSET_V0	sizeof(struct ktr_header_v0) - \
+			    sizeof(struct ktr_header)
+/*
+ * Test for kernel trace point (MP SAFE).
+ *
+ * KTRCHECK() just checks that the type is enabled and is only for
+ * internal use in the ktrace subsystem.  KTRPOINT() checks against
+ * ktrace recursion as well as checking that the type is enabled and
+ * is the public interface.
+ */
+#define	KTRCHECK(td, type)	((td)->td_proc->p_traceflag & (1 << type))
+#define	KTRPOINT(td, type)	(__predict_false(KTRCHECK((td), (type))))
+#define	KTRUSERRET(td) do {						\
+	if (__predict_false(!STAILQ_EMPTY_ATOMIC(&(td)->td_proc->p_ktr))) \
+		ktruserret(td);						\
+} while (0)
 
 /*
- * Tell ktrace to reset a configuration.  Pass the susbsystem(s) that are to
- * be reset in the reset_mask.
- *
- * `ktrace_lock` must be held.
+ * ktrace record types
  */
-void ktrace_reset(uint32_t reset_mask);
 
 /*
- * Determine if the current process can read the configuration of ktrace.
- * Only the owning process or a root privileged process is allowed.
- *
- * `ktrace_lock` must be held.
- *
- * Returns 0 if allowed, EPERM otherwise.
+ * KTR_SYSCALL - system call record
  */
-int ktrace_read_check(void);
+#define KTR_SYSCALL	1
+struct ktr_syscall {
+	short	ktr_code;		/* syscall number */
+	short	ktr_narg;		/* number of arguments */
+	/*
+	 * followed by ktr_narg register_t
+	 */
+	register_t	ktr_args[1];
+};
 
 /*
- * With certain boot-args, the kernel can start tracing without user space
- * intervention.  With `trace=<n_events>`, the kernel will start tracing at
- * boot.  With `trace_wake=<n_events>`, the kernel will start tracing on the
- * wake path out of hibernation (on Intel only).
- *
- * In these cases, ktrace must be aware of the state changes.  This function
- * should be called whenever the kernel initiates configuring ktrace.
- *
- * `ktrace_lock` must be held.
+ * KTR_SYSRET - return from system call record
  */
-void ktrace_kernel_configure(uint32_t config_mask);
+#define KTR_SYSRET	2
+struct ktr_sysret {
+	short	ktr_code;
+	short	ktr_eosys;
+	int	ktr_error;
+	register_t	ktr_retval;
+};
 
 /*
- * This KPI allows kernel systems to disable ktrace.  ktrace will only be
- * disabled if the state matches the provided state_to_match.
- *
- * This does not reset the configuration of any subsystems -- it just makes
- * them stop logging events or sampling data.
- *
- * `ktrace_lock` must be held.
+ * KTR_NAMEI - namei record
  */
-void ktrace_disable(ktrace_state_t state_to_match);
+#define KTR_NAMEI	3
+	/* record contains pathname */
 
 /*
- * Returns the pid of the process that owns ktrace.  If ktrace is unowned,
- * returns 0.
- *
- * `ktrace_lock` must be held.
+ * KTR_GENIO - trace generic process i/o
  */
-int ktrace_get_owning_pid(void);
+#define KTR_GENIO	4
+struct ktr_genio {
+	int	ktr_fd;
+	enum	uio_rw ktr_rw;
+	/*
+	 * followed by data successfully read/written
+	 */
+};
 
 /*
- * Returns true if background tracing is active, false otherwise.
- *
- * `ktrace_lock` must be held.
+ * KTR_PSIG - trace processed signal
  */
-bool ktrace_background_active(void);
+#define	KTR_PSIG	5
+struct ktr_psig {
+	int	signo;
+	sig_t	action;
+	int	code;
+	sigset_t mask;
+};
 
 /*
- * These functions exist for the transition for kperf to allow blessing other
- * processes.  They should not be used by other clients.
+ * KTR_CSW - trace context switches
  */
-extern bool ktrace_keep_ownership_on_reset;
-extern int ktrace_root_set_owner_allowed;
-int ktrace_set_owning_pid(int pid);
+#define KTR_CSW		6
+struct ktr_csw_old {
+	int	out;	/* 1 if switch out, 0 if switch in */
+	int	user;	/* 1 if usermode (ivcsw), 0 if kernel (vcsw) */
+};
 
-#endif /* SYS_KTRACE_H */
+struct ktr_csw {
+	int	out;	/* 1 if switch out, 0 if switch in */
+	int	user;	/* 1 if usermode (ivcsw), 0 if kernel (vcsw) */
+	char	wmesg[8];
+};
+
+/*
+ * KTR_USER - data coming from userland
+ */
+#define KTR_USER_MAXLEN	2048	/* maximum length of passed data */
+#define KTR_USER	7
+
+/*
+ * KTR_STRUCT - misc. structs
+ */
+#define KTR_STRUCT	8
+	/*
+	 * record contains null-terminated struct name followed by
+	 * struct contents
+	 */
+struct sockaddr;
+struct stat;
+struct sysentvec;
+
+/*
+ * KTR_SYSCTL - name of a sysctl MIB
+ */
+#define	KTR_SYSCTL	9
+	/* record contains null-terminated MIB name */
+
+/*
+ * KTR_PROCCTOR - trace process creation (multiple ABI support)
+ */
+#define KTR_PROCCTOR	10
+struct ktr_proc_ctor {
+	u_int	sv_flags;	/* struct sysentvec sv_flags copy */
+};
+
+/*
+ * KTR_PROCDTOR - trace process destruction (multiple ABI support)
+ */
+#define KTR_PROCDTOR	11
+
+/*
+ * KTR_CAPFAIL - trace capability check failures
+ */
+#define KTR_CAPFAIL	12
+enum ktr_cap_violation {
+	CAPFAIL_NOTCAPABLE,	/* insufficient capabilities in cap_check() */
+	CAPFAIL_INCREASE,	/* attempt to increase rights on a capability */
+	CAPFAIL_SYSCALL,	/* disallowed system call */
+	CAPFAIL_SIGNAL,		/* sent signal to process other than self */
+	CAPFAIL_PROTO,		/* disallowed protocol */
+	CAPFAIL_SOCKADDR,	/* restricted address lookup */
+	CAPFAIL_NAMEI,		/* restricted namei lookup */
+	CAPFAIL_CPUSET,		/* restricted CPU set modification */
+};
+
+union ktr_cap_data {
+	cap_rights_t	cap_rights[2];
+#define	cap_needed	cap_rights[0]
+#define	cap_held	cap_rights[1]
+	int		cap_int;
+	struct sockaddr	cap_sockaddr;
+	char		cap_path[MAXPATHLEN];
+};
+
+struct ktr_cap_fail {
+	enum ktr_cap_violation cap_type;
+	short	cap_code;
+	u_int	cap_svflags;
+	union ktr_cap_data cap_data;
+};
+
+/*
+ * KTR_FAULT - page fault record
+ */
+#define KTR_FAULT	13
+struct ktr_fault {
+	vm_offset_t vaddr;
+	int type;
+};
+
+/*
+ * KTR_FAULTEND - end of page fault record
+ */
+#define KTR_FAULTEND	14
+struct ktr_faultend {
+	int result;
+};
+
+/*
+ * KTR_STRUCT_ARRAY - array of misc. structs
+ */
+#define	KTR_STRUCT_ARRAY 15
+struct ktr_struct_array {
+	size_t struct_size;
+	/*
+	 * Followed by null-terminated structure name and then payload
+	 * contents.
+	 */
+};
+
+/*
+ * KTR_ARGS - arguments of execve()
+ */
+#define KTR_ARGS 16
+
+/*
+ * KTR_ENVS - environment variables of execve()
+ */
+#define KTR_ENVS 17
+
+/*
+ * KTR_EXTERR - extended error reported
+ */
+#define	KTR_EXTERR 18
+struct ktr_exterr {
+	struct uexterror ue;
+};
+
+/*
+ * KTR_DROP - If this bit is set in ktr_type, then at least one event
+ * between the previous record and this record was dropped.
+ */
+#define	KTR_DROP	0x8000
+/*
+ * KTR_VERSIONED - If this bit is set in ktr_type, then the kernel
+ * exposes the new struct ktr_header (versioned), otherwise the old
+ * struct ktr_header_v0 is exposed.
+ */
+#define	KTR_VERSIONED	0x4000
+#define	KTR_TYPE	(KTR_DROP | KTR_VERSIONED)
+
+/*
+ * kernel trace points (in p_traceflag)
+ */
+#define KTRFAC_MASK	0x00ffffff
+#define KTRFAC_SYSCALL	(1<<KTR_SYSCALL)
+#define KTRFAC_SYSRET	(1<<KTR_SYSRET)
+#define KTRFAC_NAMEI	(1<<KTR_NAMEI)
+#define KTRFAC_GENIO	(1<<KTR_GENIO)
+#define	KTRFAC_PSIG	(1<<KTR_PSIG)
+#define KTRFAC_CSW	(1<<KTR_CSW)
+#define KTRFAC_USER	(1<<KTR_USER)
+#define KTRFAC_STRUCT	(1<<KTR_STRUCT)
+#define KTRFAC_SYSCTL	(1<<KTR_SYSCTL)
+#define KTRFAC_PROCCTOR	(1<<KTR_PROCCTOR)
+#define KTRFAC_PROCDTOR	(1<<KTR_PROCDTOR)
+#define KTRFAC_CAPFAIL	(1<<KTR_CAPFAIL)
+#define KTRFAC_FAULT	(1<<KTR_FAULT)
+#define KTRFAC_FAULTEND	(1<<KTR_FAULTEND)
+#define	KTRFAC_STRUCT_ARRAY (1<<KTR_STRUCT_ARRAY)
+#define KTRFAC_ARGS     (1<<KTR_ARGS)
+#define KTRFAC_ENVS     (1<<KTR_ENVS)
+#define	KTRFAC_EXTERR	(1<<KTR_EXTERR)
+
+/*
+ * trace flags (also in p_traceflags)
+ */
+#define KTRFAC_ROOT	0x80000000	/* root set this trace */
+#define KTRFAC_INHERIT	0x40000000	/* pass trace flags to children */
+#define	KTRFAC_DROP	0x20000000	/* last event was dropped */
+
+#ifdef	_KERNEL
+struct ktr_io_params;
+
+#ifdef	KTRACE
+struct vnode *ktr_get_tracevp(struct proc *, bool);
+#else
+static inline struct vnode *
+ktr_get_tracevp(struct proc *p, bool ref)
+{
+
+	return (NULL);
+}
+#endif
+void	ktr_io_params_free(struct ktr_io_params *);
+void	ktrnamei(const char *);
+void	ktrcsw(int, int, const char *);
+void	ktrcsw_out(const struct timespec *, const char *);
+void	ktrpsig(int, sig_t, sigset_t *, int);
+void	ktrfault(vm_offset_t, int);
+void	ktrfaultend(int);
+void	ktrgenio(int, enum uio_rw, struct uio *, int);
+void	ktrsyscall(int, int narg, syscallarg_t args[]);
+void	ktrsysctl(int *name, u_int namelen);
+void	ktrsysret(int, int, register_t);
+void	ktrprocctor(struct proc *);
+struct ktr_io_params *ktrprocexec(struct proc *);
+void	ktrprocexit(struct thread *);
+void	ktrprocfork(struct proc *, struct proc *);
+void	ktruserret(struct thread *);
+void	ktrstruct(const char *, const void *, size_t);
+void	ktrstruct_error(const char *, const void *, size_t, int);
+void	ktrstructarray(const char *, enum uio_seg, const void *, int, size_t);
+void	ktrcapfail(enum ktr_cap_violation, const void *);
+void	ktrdata(int, const void *, size_t);
+#define ktrcaprights(s) \
+	ktrstruct("caprights", (s), sizeof(cap_rights_t))
+#define	ktritimerval(s) \
+	ktrstruct("itimerval", (s), sizeof(struct itimerval))
+#define ktrsockaddr(s) \
+	ktrstruct("sockaddr", (s), ((struct sockaddr *)(s))->sa_len)
+#define ktrstat(s) \
+	ktrstruct("stat", (s), sizeof(struct stat))
+#define ktrstat_error(s, error) \
+	ktrstruct_error("stat", (s), sizeof(struct stat), error)
+#define ktrcpuset(s, l) \
+	ktrstruct("cpuset_t", (s), l)
+#define	ktrsplice(s) \
+	ktrstruct("splice", (s), sizeof(struct splice))
+#define ktrthrparam(s) \
+	ktrstruct("thrparam", (s), sizeof(struct thr_param))
+extern u_int ktr_geniosize;
+#ifdef	KTRACE
+extern int ktr_filesize_limit_signal;
+#define	__ktrace_used
+#else
+#define	ktr_filesize_limit_signal 0
+#define	__ktrace_used	__unused
+#endif
+#else
+
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
+int	ktrace(const char *, int, int, pid_t);
+int	utrace(const void *, size_t);
+__END_DECLS
+
+#endif
+
+#endif

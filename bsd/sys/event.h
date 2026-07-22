@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2003-2021 Apple Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 1999,2000,2001 Jonathan Lemon <jlemon@FreeBSD.org>
  * All rights reserved.
  *
@@ -49,352 +24,373 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	$FreeBSD: src/sys/sys/event.h,v 1.5.2.5 2001/12/14 19:21:22 jlemon Exp $
  */
 
 #ifndef _SYS_EVENT_H_
 #define _SYS_EVENT_H_
 
-#include <machine/types.h>
-#include <sys/cdefs.h>
+#include <sys/_types.h>
 #include <sys/queue.h>
-#include <stdint.h>
-#ifndef KERNEL
-#include <sys/types.h>
-#endif
 
+#define EVFILT_READ		(-1)
+#define EVFILT_WRITE		(-2)
+#define EVFILT_AIO		(-3)	/* attached to aio requests */
+#define EVFILT_VNODE		(-4)	/* attached to vnodes */
+#define EVFILT_PROC		(-5)	/* attached to struct proc */
+#define EVFILT_SIGNAL		(-6)	/* attached to struct proc */
+#define EVFILT_TIMER		(-7)	/* timers */
+#define EVFILT_PROCDESC		(-8)	/* attached to process descriptors */
+#define EVFILT_FS		(-9)	/* filesystem events */
+#define EVFILT_LIO		(-10)	/* attached to lio requests */
+#define EVFILT_USER		(-11)	/* User events */
+#define EVFILT_SENDFILE		(-12)	/* attached to sendfile requests */
+#define EVFILT_EMPTY		(-13)	/* empty send socket buf */
+#define EVFILT_JAIL		(-14)	/* attached to struct prison */
+#define EVFILT_JAILDESC		(-15)	/* attached to jail descriptors */
+#define EVFILT_SYSCOUNT		15
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define	EV_SET(kevp_, a, b, c, d, e, f) do {	\
+	*(kevp_) = (struct kevent){		\
+	    .ident = (a),			\
+	    .filter = (b),			\
+	    .flags = (c),			\
+	    .fflags = (d),			\
+	    .data = (e),			\
+	    .udata = (f),			\
+	    .ext = {0},				\
+	};					\
+} while (0)
+#else /* Pre-C99 or not STDC (e.g., C++) */
 /*
- * Filter types
+ * The definition of the local variable kevp could possibly conflict
+ * with a user-defined value passed in parameters a-f.
  */
-#define EVFILT_READ             (-1)
-#define EVFILT_WRITE            (-2)
-#define EVFILT_AIO              (-3)    /* attached to aio requests */
-#define EVFILT_VNODE            (-4)    /* attached to vnodes */
-#define EVFILT_PROC             (-5)    /* attached to struct proc */
-#define EVFILT_SIGNAL           (-6)    /* attached to struct proc */
-#define EVFILT_TIMER            (-7)    /* timers */
-#define EVFILT_MACHPORT         (-8)    /* Mach portsets */
-#define EVFILT_FS               (-9)    /* Filesystem events */
-#define EVFILT_USER             (-10)   /* User events */
-#ifdef PRIVATE
-/* Additional filter types in event_private.h */
+#define EV_SET(kevp_, a, b, c, d, e, f) do {	\
+	struct kevent *kevp = (kevp_);		\
+	(kevp)->ident = (a);			\
+	(kevp)->filter = (b);			\
+	(kevp)->flags = (c);			\
+	(kevp)->fflags = (d);			\
+	(kevp)->data = (e);			\
+	(kevp)->udata = (f);			\
+	(kevp)->ext[0] = 0;			\
+	(kevp)->ext[1] = 0;			\
+	(kevp)->ext[2] = 0;			\
+	(kevp)->ext[3] = 0;			\
+} while (0)
 #endif
-#define EVFILT_VM               (-12)   /* Virtual memory events */
-#define EVFILT_EXCEPT           (-15)   /* Exception events */
-
-#ifdef PRIVATE
-/* Make sure to count the filter types in event_private.h! */
-#endif
-#define EVFILT_SYSCOUNT         18
-#define EVFILT_THREADMARKER     EVFILT_SYSCOUNT /* Internal use only */
-
-#pragma pack(4)
 
 struct kevent {
-	uintptr_t       ident;  /* identifier for this event */
-	int16_t         filter; /* filter for event */
-	uint16_t        flags;  /* general flags */
-	uint32_t        fflags; /* filter-specific flags */
-	intptr_t        data;   /* filter-specific data */
-	void            *udata; /* opaque user data identifier */
+	__uintptr_t	ident;		/* identifier for this event */
+	short		filter;		/* filter for event */
+	unsigned short	flags;		/* action flags for kqueue */
+	unsigned int	fflags;		/* filter flag value */
+	__int64_t	data;		/* filter data value */
+	void		*udata;		/* opaque user data identifier */
+	__uint64_t	ext[4];		/* extensions */
 };
 
-#pragma pack()
+#if defined(_WANT_FREEBSD11_KEVENT)
+/* Older structure used in FreeBSD 11.x and older. */
+struct freebsd11_kevent {
+	__uintptr_t	ident;		/* identifier for this event */
+	short		filter;		/* filter for event */
+	unsigned short	flags;
+	unsigned int	fflags;
+	__intptr_t	data;
+	void		*udata;		/* opaque user data identifier */
+};
+#endif
 
-struct kevent64_s {
-	uint64_t        ident;          /* identifier for this event */
-	int16_t         filter;         /* filter for event */
-	uint16_t        flags;          /* general flags */
-	uint32_t        fflags;         /* filter-specific flags */
-	int64_t         data;           /* filter-specific data */
-	uint64_t        udata;          /* opaque user data identifier */
-	uint64_t        ext[2];         /* filter-specific extensions */
+#if defined(_WANT_KEVENT32) || defined(_KERNEL)
+#include <sys/abi_types.h>
+
+struct kevent32 {
+	__uint32_t	ident;		/* identifier for this event */
+	short		filter;		/* filter for event */
+	unsigned short	flags;
+	unsigned int	fflags;
+#ifndef __amd64__
+	__uint32_t	pad0;
+#endif
+	freebsd32_uint64_t data;
+	__uint32_t	udata;		/* opaque user data identifier */
+#ifndef __amd64__
+	__uint32_t	pad1;
+#endif
+	freebsd32_uint64_t ext[4];
 };
 
-#define EV_SET(kevp, a, b, c, d, e, f) do {     \
-	struct kevent *__kevp__ = (kevp);       \
-	__kevp__->ident = (a);                  \
-	__kevp__->filter = (b);                 \
-	__kevp__->flags = (c);                  \
-	__kevp__->fflags = (d);                 \
-	__kevp__->data = (e);                   \
-	__kevp__->udata = (f);                  \
-} while(0)
-
-#define EV_SET64(kevp, a, b, c, d, e, f, g, h) do {     \
-	struct kevent64_s *__kevp__ = (kevp);           \
-	__kevp__->ident = (a);                          \
-	__kevp__->filter = (b);                         \
-	__kevp__->flags = (c);                          \
-	__kevp__->fflags = (d);                         \
-	__kevp__->data = (e);                           \
-	__kevp__->udata = (f);                          \
-	__kevp__->ext[0] = (g);                         \
-	__kevp__->ext[1] = (h);                         \
-} while(0)
-
-
-/* kevent system call flags */
-#define KEVENT_FLAG_NONE                         0x000000       /* no flag value */
-#define KEVENT_FLAG_IMMEDIATE                    0x000001       /* immediate timeout */
-#define KEVENT_FLAG_ERROR_EVENTS                 0x000002       /* output events only include change errors */
+#ifdef _WANT_FREEBSD11_KEVENT
+struct freebsd11_kevent32 {
+	__uint32_t	ident;		/* identifier for this event */
+	short		filter;		/* filter for event */
+	unsigned short	flags;
+	unsigned int	fflags;
+	__int32_t	data;
+	__uint32_t	udata;		/* opaque user data identifier */
+};
+#endif
+#endif
 
 /* actions */
-#define EV_ADD              0x0001      /* add event to kq (implies enable) */
-#define EV_DELETE           0x0002      /* delete event from kq */
-#define EV_ENABLE           0x0004      /* enable event */
-#define EV_DISABLE          0x0008      /* disable event (not reported) */
+#define EV_ADD		0x0001		/* add event to kq (implies enable) */
+#define EV_DELETE	0x0002		/* delete event from kq */
+#define EV_ENABLE	0x0004		/* enable event */
+#define EV_DISABLE	0x0008		/* disable event (not reported) */
+#define EV_FORCEONESHOT	0x0100		/* enable _ONESHOT and force trigger */
+#define EV_KEEPUDATA	0x0200		/* do not update the udata field */
 
 /* flags */
-#define EV_ONESHOT          0x0010      /* only report one occurrence */
-#define EV_CLEAR            0x0020      /* clear event state after reporting */
-#define EV_RECEIPT          0x0040      /* force immediate event output */
-                                        /* ... with or without EV_ERROR */
-                                        /* ... use KEVENT_FLAG_ERROR_EVENTS */
-                                        /*     on syscalls supporting flags */
+#define EV_ONESHOT	0x0010		/* only report one occurrence */
+#define EV_CLEAR	0x0020		/* clear event state after reporting */
+#define EV_RECEIPT	0x0040		/* force EV_ERROR on success, data=0 */
+#define EV_DISPATCH	0x0080		/* disable event after reporting */
 
-#define EV_DISPATCH         0x0080      /* disable event after reporting */
-#define EV_UDATA_SPECIFIC   0x0100      /* unique kevent per udata value */
-
-#define EV_DISPATCH2        (EV_DISPATCH | EV_UDATA_SPECIFIC)
-/* ... in combination with EV_DELETE */
-/* will defer delete until udata-specific */
-/* event enabled. EINPROGRESS will be */
-/* returned to indicate the deferral */
-
-#define EV_VANISHED         0x0200      /* report that source has vanished  */
-                                        /* ... only valid with EV_DISPATCH2 */
-
-#define EV_SYSFLAGS         0xF000      /* reserved by system */
-#define EV_FLAG0            0x1000      /* filter-specific flag */
-#define EV_FLAG1            0x2000      /* filter-specific flag */
+#define EV_SYSFLAGS	0xF000		/* reserved by system */
+#define	EV_DROP		0x1000		/* note should be dropped */
+#define EV_FLAG1	0x2000		/* filter-specific flag */
+#define EV_FLAG2	0x4000		/* filter-specific flag */
 
 /* returned values */
-#define EV_EOF              0x8000      /* EOF detected */
-#define EV_ERROR            0x4000      /* error, data contains errno */
+#define EV_EOF		0x8000		/* EOF detected */
+#define EV_ERROR	0x4000		/* error, data contains errno */
+
+ /*
+  * data/hint flags/masks for EVFILT_USER, shared with userspace
+  *
+  * On input, the top two bits of fflags specifies how the lower twenty four
+  * bits should be applied to the stored value of fflags.
+  *
+  * On output, the top two bits will always be set to NOTE_FFNOP and the
+  * remaining twenty four bits will contain the stored fflags value.
+  */
+#define NOTE_FFNOP	0x00000000		/* ignore input fflags */
+#define NOTE_FFAND	0x40000000		/* AND fflags */
+#define NOTE_FFOR	0x80000000		/* OR fflags */
+#define NOTE_FFCOPY	0xc0000000		/* copy fflags */
+#define NOTE_FFCTRLMASK	0xc0000000		/* masks for operations */
+#define NOTE_FFLAGSMASK	0x00ffffff
+
+#define NOTE_TRIGGER	0x01000000		/* Cause the event to be
+						   triggered for output. */
 
 /*
- * Filter specific flags for EVFILT_READ
- *
- * The default behavior for EVFILT_READ is to make the "read" determination
- * relative to the current file descriptor read pointer.
- *
- * The EV_POLL flag indicates the determination should be made via poll(2)
- * semantics. These semantics dictate always returning true for regular files,
- * regardless of the amount of unread data in the file.
- *
- * On input, EV_OOBAND specifies that filter should actively return in the
- * presence of OOB on the descriptor. It implies that filter will return
- * if there is OOB data available to read OR when any other condition
- * for the read are met (for example number of bytes regular data becomes >=
- * low-watermark).
- * If EV_OOBAND is not set on input, it implies that the filter should not actively
- * return for out of band data on the descriptor. The filter will then only return
- * when some other condition for read is met (ex: when number of regular data bytes
- * >=low-watermark OR when socket can't receive more data (SS_CANTRCVMORE)).
- *
- * On output, EV_OOBAND indicates the presence of OOB data on the descriptor.
- * If it was not specified as an input parameter, then the data count is the
- * number of bytes before the current OOB marker, else data count is the number
- * of bytes beyond OOB marker.
+ * data/hint flags for EVFILT_{READ|WRITE}, shared with userspace
  */
-#define EV_POLL         EV_FLAG0
-#define EV_OOBAND       EV_FLAG1
+#define NOTE_LOWAT	0x0001			/* low water mark */
+#define NOTE_FILE_POLL	0x0002			/* behave like poll() */
 
 /*
- * data/hint fflags for EVFILT_USER, shared with userspace
+ * data/hint flags for EVFILT_VNODE, shared with userspace
  */
+#define	NOTE_DELETE	0x0001			/* vnode was removed */
+#define	NOTE_WRITE	0x0002			/* data contents changed */
+#define	NOTE_EXTEND	0x0004			/* size increased */
+#define	NOTE_ATTRIB	0x0008			/* attributes changed */
+#define	NOTE_LINK	0x0010			/* link count changed */
+#define	NOTE_RENAME	0x0020			/* vnode was renamed */
+#define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
+#define	NOTE_OPEN	0x0080			/* vnode was opened */
+#define	NOTE_CLOSE	0x0100			/* file closed, fd did not
+						   allowed write */
+#define	NOTE_CLOSE_WRITE 0x0200			/* file closed, fd did allowed
+						   write */
+#define	NOTE_READ	0x0400			/* file was read */
 
 /*
- * On input, NOTE_TRIGGER causes the event to be triggered for output.
+ * data/hint flags for EVFILT_PROC and EVFILT_PROCDESC, shared with userspace
  */
-#define NOTE_TRIGGER    0x01000000
+#define	NOTE_EXIT	0x80000000		/* proc/procdesc: process
+						   exited */
+#define	NOTE_FORK	0x40000000		/* proc/procdesc: process
+						   forked */
+#define	NOTE_EXEC	0x20000000		/* proc: process exec'd */
+#define	NOTE_PDSIGCHLD	0x10000000		/* procdesc: pdwait() info
+						   available */
+#define	NOTE_PCTRLMASK	0xf0000000		/* mask for hint bits */
+#define	NOTE_PDATAMASK	0x000fffff		/* mask for pid */
 
-/*
- * On input, the top two bits of fflags specifies how the lower twenty four
- * bits should be applied to the stored value of fflags.
- *
- * On output, the top two bits will always be set to NOTE_FFNOP and the
- * remaining twenty four bits will contain the stored fflags value.
- */
-#define NOTE_FFNOP      0x00000000              /* ignore input fflags */
-#define NOTE_FFAND      0x40000000              /* and fflags */
-#define NOTE_FFOR       0x80000000              /* or fflags */
-#define NOTE_FFCOPY     0xc0000000              /* copy fflags */
-#define NOTE_FFCTRLMASK 0xc0000000              /* mask for operations */
-#define NOTE_FFLAGSMASK 0x00ffffff
-
-/*
- * data/hint fflags for EVFILT_{READ|WRITE}, shared with userspace
- *
- * The default behavior for EVFILT_READ is to make the determination
- * realtive to the current file descriptor read pointer.
- */
-#define NOTE_LOWAT      0x00000001              /* low water mark */
-
-/* data/hint flags for EVFILT_EXCEPT, shared with userspace */
-#define NOTE_OOB        0x00000002              /* OOB data */
-
-/*
- * data/hint fflags for EVFILT_VNODE, shared with userspace
- */
-#define NOTE_DELETE     0x00000001              /* vnode was removed */
-#define NOTE_WRITE      0x00000002              /* data contents changed */
-#define NOTE_EXTEND     0x00000004              /* size increased */
-#define NOTE_ATTRIB     0x00000008              /* attributes changed */
-#define NOTE_LINK       0x00000010              /* link count changed */
-#define NOTE_RENAME     0x00000020              /* vnode was renamed */
-#define NOTE_REVOKE     0x00000040              /* vnode access was revoked */
-#define NOTE_NONE       0x00000080              /* No specific vnode event: to test for EVFILT_READ activation*/
-#define NOTE_FUNLOCK    0x00000100              /* vnode was unlocked by flock(2) */
-#define NOTE_LEASE_DOWNGRADE 0x00000200         /* lease downgrade requested */
-#define NOTE_LEASE_RELEASE 0x00000400           /* lease release requested */
-
-/*
- * data/hint fflags for EVFILT_PROC, shared with userspace
- *
- * Please note that EVFILT_PROC and EVFILT_SIGNAL share the same knote list
- * that hangs off the proc structure. They also both play games with the hint
- * passed to KNOTE(). If NOTE_SIGNAL is passed as a hint, then the lower bits
- * of the hint contain the signal. IF NOTE_FORK is passed, then the lower bits
- * contain the PID of the child (but the pid does not get passed through in
- * the actual kevent).
- */
-enum {
-	eNoteReapDeprecated __deprecated_enum_msg("This kqueue(2) EVFILT_PROC flag is deprecated") = 0x10000000
-};
-
-#define NOTE_EXIT               0x80000000      /* process exited */
-#define NOTE_FORK               0x40000000      /* process forked */
-#define NOTE_EXEC               0x20000000      /* process exec'd */
-#define NOTE_REAP               ((unsigned int)eNoteReapDeprecated /* 0x10000000 */ )   /* process reaped */
-#define NOTE_SIGNAL             0x08000000      /* shared with EVFILT_SIGNAL */
-#define NOTE_EXITSTATUS         0x04000000      /* exit status to be returned, valid for child process or when allowed to signal target pid */
-#define NOTE_EXIT_DETAIL        0x02000000      /* provide details on reasons for exit */
-
-#define NOTE_PDATAMASK  0x000fffff              /* mask for signal & exit status */
-#define NOTE_PCTRLMASK  (~NOTE_PDATAMASK)
-
-/*
- * If NOTE_EXITSTATUS is present, provide additional info about exiting process.
- */
-enum {
-	eNoteExitReparentedDeprecated __deprecated_enum_msg("This kqueue(2) EVFILT_PROC flag is no longer sent") = 0x00080000
-};
-#define NOTE_EXIT_REPARENTED    ((unsigned int)eNoteExitReparentedDeprecated)   /* exited while reparented */
-
-/*
- * If NOTE_EXIT_DETAIL is present, these bits indicate specific reasons for exiting.
- */
-#define NOTE_EXIT_DETAIL_MASK           0x00070000
-#define NOTE_EXIT_DECRYPTFAIL           0x00010000
-#define NOTE_EXIT_MEMORY                0x00020000
-#define NOTE_EXIT_CSERROR               0x00040000
-
-/*
- * data/hint fflags for EVFILT_VM, shared with userspace.
- */
-#define NOTE_VM_PRESSURE                        0x80000000              /* will react on memory pressure */
-#define NOTE_VM_PRESSURE_TERMINATE              0x40000000              /* will quit on memory pressure, possibly after cleaning up dirty state */
-#define NOTE_VM_PRESSURE_SUDDEN_TERMINATE       0x20000000              /* will quit immediately on memory pressure */
-#define NOTE_VM_ERROR                           0x10000000              /* there was an error */
-
-/*
- * data/hint fflags for EVFILT_TIMER, shared with userspace.
- * The default is a (repeating) interval timer with the data
- * specifying the timeout interval in milliseconds.
- *
- * All timeouts are implicitly EV_CLEAR events.
- */
-#define NOTE_SECONDS    0x00000001              /* data is seconds         */
-#define NOTE_USECONDS   0x00000002              /* data is microseconds    */
-#define NOTE_NSECONDS   0x00000004              /* data is nanoseconds     */
-#define NOTE_ABSOLUTE   0x00000008              /* absolute timeout        */
-/* ... implicit EV_ONESHOT, timeout uses the gettimeofday epoch */
-#define NOTE_LEEWAY             0x00000010              /* ext[1] holds leeway for power aware timers */
-#define NOTE_CRITICAL   0x00000020              /* system does minimal timer coalescing */
-#define NOTE_BACKGROUND 0x00000040              /* system does maximum timer coalescing */
-#define NOTE_MACH_CONTINUOUS_TIME       0x00000080
-/*
- * NOTE_MACH_CONTINUOUS_TIME:
- * with NOTE_ABSOLUTE: causes the timer to continue to tick across sleep,
- *      still uses gettimeofday epoch
- * with NOTE_MACHTIME and NOTE_ABSOLUTE: uses mach continuous time epoch
- * without NOTE_ABSOLUTE (interval timer mode): continues to tick across sleep
- */
-#define NOTE_MACHTIME   0x00000100              /* data is mach absolute time units */
-/* timeout uses the mach absolute time epoch */
-
-/*
- * data/hint fflags for EVFILT_MACHPORT, shared with userspace.
- *
- * Only portsets are supported at this time.
- *
- * The fflags field can optionally contain the MACH_RCV_MSG, MACH_RCV_LARGE,
- * and related trailer receive options as defined in <mach/message.h>.
- * The presence of these flags directs the kevent64() call to attempt to receive
- * the message during kevent delivery, rather than just indicate that a message exists.
- * On setup, The ext[0] field contains the receive buffer pointer and ext[1] contains
- * the receive buffer length.  Upon event delivery, the actual received message size
- * is returned in ext[1].  As with mach_msg(), the buffer must be large enough to
- * receive the message and the requested (or default) message trailers.  In addition,
- * the fflags field contains the return code normally returned by mach_msg().
- *
- * If MACH_RCV_MSG is specified, and the ext[1] field specifies a zero length, the
- * system call argument specifying an ouput area (kevent_qos) will be consulted. If
- * the system call specified an output data area, the user-space address
- * of the received message is carved from that provided output data area (if enough
- * space remains there). The address and length of each received message is
- * returned in the ext[0] and ext[1] fields (respectively) of the corresponding kevent.
- *
- * IF_MACH_RCV_VOUCHER_CONTENT is specified, the contents of the message voucher is
- * extracted (as specified in the xflags field) and stored in ext[2] up to ext[3]
- * length.  If the input length is zero, and the system call provided a data area,
- * the space for the voucher content is carved from the provided space and its
- * address and length is returned in ext[2] and ext[3] respectively.
- *
- * If no message receipt options were provided in the fflags field on setup, no
- * message is received by this call. Instead, on output, the data field simply
- * contains the name of the actual port detected with a message waiting.
- */
-
-/*
- * DEPRECATED!!!!!!!!!
- * NOTE_TRACK, NOTE_TRACKERR, and NOTE_CHILD are no longer supported as of 10.5
- */
 /* additional flags for EVFILT_PROC */
-#define NOTE_TRACK      0x00000001              /* follow across forks */
-#define NOTE_TRACKERR   0x00000002              /* could not track child */
-#define NOTE_CHILD      0x00000004              /* am a child process */
+#define	NOTE_TRACK	0x00000001		/* follow across fork/create */
+#define	NOTE_TRACKERR	0x00000002		/* could not track child */
+#define	NOTE_CHILD	0x00000004		/* am a child process */
 
+/* data/hint flags for EVFILT_JAIL and EVFILT_JAILDESC */
+#define	NOTE_JAIL_CHILD		0x80000000	/* child jail was created */
+#define	NOTE_JAIL_SET		0x40000000	/* jail was modified */
+#define	NOTE_JAIL_ATTACH	0x20000000	/* jail was attached to */
+#define	NOTE_JAIL_REMOVE	0x10000000	/* jail was removed */
+#define NOTE_JAIL_MULTI		0x08000000	/* multiple child or attach */
+#define	NOTE_JAIL_CTRLMASK	0xf0000000	/* mask for hint bits */
 
-#ifndef KERNEL
-/* Temporary solution for BootX to use inode.h till kqueue moves to vfs layer */
+/* additional flags for EVFILT_TIMER */
+#define NOTE_SECONDS		0x00000001	/* data is seconds */
+#define NOTE_MSECONDS		0x00000002	/* data is milliseconds */
+#define NOTE_USECONDS		0x00000004	/* data is microseconds */
+#define NOTE_NSECONDS		0x00000008	/* data is nanoseconds */
+#define	NOTE_ABSTIME		0x00000010	/* timeout is absolute */
+
+/* Flags for kqueuex(2) */
+#define	KQUEUE_CLOEXEC	0x00000001	/* close on exec */
+#define	KQUEUE_CPONFORK	0x00000002	/* copy on fork */
+
 struct knote;
 SLIST_HEAD(klist, knote);
+struct kqueue;
+TAILQ_HEAD(kqlist, kqueue);
+struct knlist {
+	struct	klist	kl_list;
+	void    (*kl_lock)(void *);	/* lock function */
+	void    (*kl_unlock)(void *);
+	void	(*kl_assert_lock)(void *, int);
+	void	*kl_lockarg;		/* argument passed to lock functions */
+	int	kl_autodestroy;
+};
 
+#ifdef _KERNEL
+
+/*
+ * Flags for knote call
+ */
+#define	KNF_LISTLOCKED	0x0001			/* knlist is locked */
+#define	KNF_NOKQLOCK	0x0002			/* do not keep KQ_LOCK */
+
+#define KNOTE(list, hint, flags)	knote(list, hint, flags)
+#define KNOTE_LOCKED(list, hint)	knote(list, hint, KNF_LISTLOCKED)
+#define KNOTE_UNLOCKED(list, hint)	knote(list, hint, 0)
+
+#define	KNLIST_EMPTY(list)		SLIST_EMPTY(&(list)->kl_list)
+
+/*
+ * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
+ * shared by EVFILT_PROC  (all knotes attached to p->p_klist)
+ */
+#define NOTE_SIGNAL	0x08000000
+
+/*
+ * Hint values for the optional f_touch event filter.  If f_touch is not set 
+ * to NULL and f_isfd is zero the f_touch filter will be called with the type
+ * argument set to EVENT_REGISTER during a kevent() system call.  It is also
+ * called under the same conditions with the type argument set to EVENT_PROCESS
+ * when the event has been triggered.
+ */
+#define EVENT_REGISTER	1
+#define EVENT_PROCESS	2
+
+struct kinfo_knote;
+struct proc;
+
+struct filterops {
+	int	f_isfd;		/* true if ident == filedescriptor */
+	int	(*f_attach)(struct knote *kn);
+	void	(*f_detach)(struct knote *kn);
+	int	(*f_event)(struct knote *kn, long hint);
+	void	(*f_touch)(struct knote *kn, struct kevent *kev, u_long type);
+	int	(*f_userdump)(struct proc *p, struct knote *kn,
+		    struct kinfo_knote *kin);
+	int	(*f_copy)(struct knote *kn, struct proc *p1);
+};
+
+/*
+ * An in-flux knote cannot be dropped from its kq while the kq is
+ * unlocked.  If the KN_SCAN flag is not set, a thread can only set
+ * kn_influx when it is exclusive owner of the knote state, and can
+ * modify kn_status as if it had the KQ lock.  KN_SCAN must not be set
+ * on a knote which is already in flux.
+ *
+ * kn_sfflags, kn_sdata, and kn_kevent are protected by the knlist lock.
+ */
+struct knote {
+	SLIST_ENTRY(knote)	kn_link;	/* for kq */
+	SLIST_ENTRY(knote)	kn_selnext;	/* for struct selinfo */
+	struct			knlist *kn_knlist;	/* f_attach populated */
+	TAILQ_ENTRY(knote)	kn_tqe;
+	struct			kqueue *kn_kq;	/* which queue we are on */
+	struct 			kevent kn_kevent;
+	void			*kn_hook;
+	int			kn_hookid;
+	int			kn_status;	/* protected by kq lock */
+#define KN_ACTIVE	0x01			/* event has been triggered */
+#define KN_QUEUED	0x02			/* event is on queue */
+#define KN_DISABLED	0x04			/* event is disabled */
+#define KN_DETACHED	0x08			/* knote is detached */
+#define KN_MARKER	0x20			/* ignore this knote */
+#define KN_KQUEUE	0x40			/* this knote belongs to a kq */
+#define	KN_SCAN		0x100			/* flux set in kqueue_scan() */
+	int			kn_influx;
+	unsigned int		kn_sfflags;	/* saved filter flags */
+	int64_t			kn_sdata;	/* saved data field */
+	union {
+		struct		file *p_fp;	/* file data pointer */
+		struct		proc *p_proc;	/* proc pointer */
+		struct		kaiocb *p_aio;	/* AIO job pointer */
+		struct		aioliojob *p_lio;	/* LIO job pointer */
+		struct		prison *p_prison;	/* prison pointer */
+		void		*p_v;		/* generic other pointer */
+	} kn_ptr;
+	const struct		filterops *kn_fop;
+
+#define kn_id		kn_kevent.ident
+#define kn_filter	kn_kevent.filter
+#define kn_flags	kn_kevent.flags
+#define kn_fflags	kn_kevent.fflags
+#define kn_data		kn_kevent.data
+#define kn_fp		kn_ptr.p_fp
+};
+struct kevent_copyops {
+	void	*arg;
+	int	(*k_copyout)(void *arg, struct kevent *kevp, int count);
+	int	(*k_copyin)(void *arg, struct kevent *kevp, int count);
+	size_t	kevent_size;
+};
+
+struct thread;
+struct proc;
+struct knlist;
+struct mtx;
+struct rwlock;
+
+void	knote(struct knlist *list, long hint, int lockflags);
+void	knote_fork(struct knlist *list, int pid);
+int	knote_triv_copy(struct knote *kn, struct proc *p1);
+struct knlist *knlist_alloc(struct mtx *lock);
+void	knlist_detach(struct knlist *knl);
+void	knlist_add(struct knlist *knl, struct knote *kn, int islocked);
+void	knlist_remove(struct knlist *knl, struct knote *kn, int islocked);
+int	knlist_empty(struct knlist *knl);
+void	knlist_init(struct knlist *knl, void *lock, void (*kl_lock)(void *),
+	    void (*kl_unlock)(void *), void (*kl_assert_lock)(void *, int));
+void	knlist_init_mtx(struct knlist *knl, struct mtx *lock);
+void	knlist_destroy(struct knlist *knl);
+void	knlist_cleardel(struct knlist *knl, struct thread *td,
+	    int islocked, int killkn);
+#define knlist_clear(knl, islocked)				\
+	knlist_cleardel((knl), NULL, (islocked), 0)
+#define knlist_delete(knl, td, islocked)			\
+	knlist_cleardel((knl), (td), (islocked), 1)
+void	knote_fdclose(struct thread *p, int fd);
+int 	kqfd_register(int fd, struct kevent *kev, struct thread *p,
+	    int mflag);
+int	kqueue_add_filteropts(int filt, const struct filterops *filtops);
+int	kqueue_del_filteropts(int filt);
+void	kqueue_drain_schedtask(void);
+
+#else 	/* !_KERNEL */
+
+#include <sys/cdefs.h>
 struct timespec;
 
 __BEGIN_DECLS
 int     kqueue(void);
-int     kevent(int kq,
-    const struct kevent *changelist, int nchanges,
-    struct kevent *eventlist, int nevents,
-    const struct timespec *timeout);
-int     kevent64(int kq,
-    const struct kevent64_s *changelist, int nchanges,
-    struct kevent64_s *eventlist, int nevents,
-    unsigned int flags,
-    const struct timespec *timeout);
-
+int     kqueuex(unsigned flags);
+int     kqueue1(int flags);
+int     kevent(int kq, const struct kevent *changelist, int nchanges,
+	    struct kevent *eventlist, int nevents,
+	    const struct timespec *timeout);
 __END_DECLS
 
-
-#endif /* KERNEL */
-
-#if defined(PRIVATE) && !defined(MODULES_SUPPORTED)
-#include <sys/event_private.h>
-#endif /* PRIVATE && !MODULES_SUPPORTED */
+#endif /* !_KERNEL */
 
 #endif /* !_SYS_EVENT_H_ */

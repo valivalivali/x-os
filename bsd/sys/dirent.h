@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2008, 2023 Apple Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,92 +27,118 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)dirent.h	8.3 (Berkeley) 8/10/94
  */
 
+#ifndef	_SYS_DIRENT_H_
+#define	_SYS_DIRENT_H_
+
+#include <sys/cdefs.h>
+#include <sys/_types.h>
+
+#ifndef _INO_T_DECLARED
+typedef	__ino_t		ino_t;
+#define	_INO_T_DECLARED
+#endif
+
+#ifndef _OFF_T_DECLARED
+typedef	__off_t		off_t;
+#define	_OFF_T_DECLARED
+#endif
+
 /*
- * The dirent structure defines the format of directory entries.
+ * The dirent structure defines the format of directory entries returned by
+ * the getdirentries(2) system call.
  *
  * A directory entry has a struct dirent at the front of it, containing its
  * inode number, the length of the entry, and the length of the name
- * contained in the entry.  These are followed by the name padded to a 4
+ * contained in the entry.  These are followed by the name padded to an 8
  * byte boundary with null bytes.  All names are guaranteed null terminated.
- * The maximum length of a name in a directory is MAXNAMLEN when 32-bit
- * ino_t is in effect; (MAXPATHLEN - 1) when 64-bit ino_t is in effect.
+ * The maximum length of a name in a directory is MAXNAMLEN.
+ *
+ * Explicit padding between the last member of the header (d_namlen) and
+ * d_name avoids ABI padding at the end of dirent on LP64 architectures.
+ * There is code depending on d_name being last.
  */
 
-#ifndef _SYS_DIRENT_H
-#define _SYS_DIRENT_H
-
-#include <sys/_types.h>
-#include <sys/cdefs.h>
-
-#include <sys/_types/_ino_t.h>
-
-
-#define __DARWIN_MAXNAMLEN      255
-
-#pragma pack(4)
-
-#if !__DARWIN_64_BIT_INO_T
 struct dirent {
-	ino_t d_ino;                    /* file number of entry */
-	__uint16_t d_reclen;            /* length of this record */
-	__uint8_t  d_type;              /* file type, see below */
-	__uint8_t  d_namlen;            /* length of string in d_name */
-	char d_name[__DARWIN_MAXNAMLEN + 1];    /* name must be no longer than this */
-};
-#endif /* !__DARWIN_64_BIT_INO_T */
-
-#pragma pack()
-
-#define __DARWIN_MAXPATHLEN     1024
-
-#define __DARWIN_STRUCT_DIRENTRY { \
-	__uint64_t  d_ino;      /* file number of entry */ \
-	__uint64_t  d_seekoff;  /* seek offset (optional, used by servers) */ \
-	__uint16_t  d_reclen;   /* length of this record */ \
-	__uint16_t  d_namlen;   /* length of string in d_name */ \
-	__uint8_t   d_type;     /* file type, see below */ \
-	char      d_name[__DARWIN_MAXPATHLEN]; /* entry name (up to MAXPATHLEN bytes) */ \
-}
-
-#if __DARWIN_64_BIT_INO_T
-struct dirent __DARWIN_STRUCT_DIRENTRY;
-#endif /* __DARWIN_64_BIT_INO_T */
-
-#ifdef KERNEL
-/* Extended directory entry */
-struct direntry __DARWIN_STRUCT_DIRENTRY;
+	ino_t      d_fileno;		/* file number of entry */
+	off_t      d_off;		/* directory offset of next entry */
+	__uint16_t d_reclen;		/* length of this record */
+	__uint8_t  d_type;		/* file type, see below */
+	__uint8_t  d_pad0;
+	__uint16_t d_namlen;		/* length of string in d_name */
+	__uint16_t d_pad1;
+#if __BSD_VISIBLE
+#define	MAXNAMLEN	255
+	char	d_name[MAXNAMLEN + 1];	/* name must be no longer than this */
+#else
+	char	d_name[255 + 1];	/* name must be no longer than this */
 #endif
+};
 
+#if defined(_WANT_FREEBSD11_DIRENT) || defined(_KERNEL)
+struct freebsd11_dirent {
+	__uint32_t d_fileno;		/* file number of entry */
+	__uint16_t d_reclen;		/* length of this record */
+	__uint8_t  d_type;		/* file type, see below */
+	__uint8_t  d_namlen;		/* length of string in d_name */
+	char	d_name[255 + 1];	/* name must be no longer than this */
+};
+#endif /* _WANT_FREEBSD11_DIRENT || _KERNEL */
 
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define d_fileno        d_ino           /* backward compatibility */
-#define MAXNAMLEN       __DARWIN_MAXNAMLEN
+#if __BSD_VISIBLE
+
 /*
  * File types
  */
-#define DT_UNKNOWN       0
-#define DT_FIFO          1
-#define DT_CHR           2
-#define DT_DIR           4
-#define DT_BLK           6
-#define DT_REG           8
-#define DT_LNK          10
-#define DT_SOCK         12
-#define DT_WHT          14
+#define	DT_UNKNOWN	 0
+#define	DT_FIFO		 1
+#define	DT_CHR		 2
+#define	DT_DIR		 4
+#define	DT_BLK		 6
+#define	DT_REG		 8
+#define	DT_LNK		10
+#define	DT_SOCK		12
+#define	DT_WHT		14
 
 /*
  * Convert between stat structure types and directory types.
  */
-#define IFTODT(mode)    (((mode) & 0170000) >> 12)
-#define DTTOIF(dirtype) ((dirtype) << 12)
+#define	IFTODT(mode)	(((mode) & 0170000) >> 12)
+#define	DTTOIF(dirtype)	((dirtype) << 12)
+
+/*
+ * The _GENERIC_DIRSIZ macro gives the minimum record length which will hold
+ * the directory entry.  This returns the amount of space in struct dirent
+ * without the d_name field, plus enough space for the name with a terminating
+ * null byte (dp->d_namlen+1), rounded up to a 8 byte boundary.
+ *
+ * XXX although this macro is in the implementation namespace, it requires
+ * a manifest constant that is not.
+ */
+#define	_GENERIC_DIRLEN(namlen)					\
+	((__offsetof(struct dirent, d_name) + (namlen) + 1 + 7) & ~7)
+#define	_GENERIC_DIRSIZ(dp)	_GENERIC_DIRLEN((dp)->d_namlen)
+#define	_GENERIC_MINDIRSIZ	_GENERIC_DIRLEN(1) /* Name must not be empty */
+#define	_GENERIC_MAXDIRSIZ	_GENERIC_DIRLEN(MAXNAMLEN)
+#endif /* __BSD_VISIBLE */
+
+#ifdef _KERNEL
+#define	GENERIC_DIRSIZ(dp)	_GENERIC_DIRSIZ(dp)
+#define	GENERIC_MINDIRSIZ	_GENERIC_MINDIRSIZ
+#define	GENERIC_MAXDIRSIZ	_GENERIC_MAXDIRSIZ
+/*
+ * Ensure that padding bytes are zeroed and that the name is NUL-terminated.
+ */
+static inline void
+dirent_terminate(struct dirent *dp)
+{
+
+	dp->d_pad0 = 0;
+	dp->d_pad1 = 0;
+	memset(dp->d_name + dp->d_namlen, 0,
+	    dp->d_reclen - (__offsetof(struct dirent, d_name) + dp->d_namlen));
+}
 #endif
 
-#if defined(PRIVATE) && !defined(MODULES_SUPPORTED)
-#include <sys/dirent_private.h>
-#endif /* PRIVATE && !MODULES_SUPPORTED */
-
-#endif /* _SYS_DIRENT_H  */
+#endif /* !_SYS_DIRENT_H_ */

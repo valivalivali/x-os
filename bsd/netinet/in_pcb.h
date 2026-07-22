@@ -1,33 +1,13 @@
-/*
- * Copyright (c) 2000-2024 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1982, 1986, 1990, 1993
- *	The Regents of the University of California.  All rights reserved.
+ *	The Regents of the University of California.
+ * Copyright (c) 2010-2011 Juniper Networks, Inc.
+ * All rights reserved.
+ *
+ * Portions of this software were developed by Robert N. M. Watson under
+ * contract to Juniper Networks, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -37,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -56,51 +32,276 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)in_pcb.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD: src/sys/netinet/in_pcb.h,v 1.32.2.4 2001/08/13 16:26:17 ume Exp $
- */
-/*
- * NOTICE: This file was modified by SPARTA, Inc. in 2007 to introduce
- * support for mandatory and extensible security protections.  This notice
- * is included in support of clause 2.2 (b) of the Apple Public License,
- * Version 2.0.
  */
 
 #ifndef _NETINET_IN_PCB_H_
 #define _NETINET_IN_PCB_H_
-#include <sys/appleapiopts.h>
 
-#include <netinet/in.h>
-#include <sys/socketvar.h>
-#include <sys/types.h>
+/*
+ * PCB with AF_INET6 null bind'ed laddr can receive AF_INET input packet.
+ * So, AF_INET6 null laddr is also used as AF_INET null laddr, by utilizing
+ * the following structure.  This requires padding always be zeroed out,
+ * which is done right after inpcb allocation and stays through its lifetime.
+ */
+struct in_addr_4in6 {
+	uint32_t	ia46_pad32[3];
+	struct in_addr	ia46_addr4;
+};
+
+union in_dependaddr {
+	struct in_addr_4in6 id46_addr;
+	struct in6_addr	id6_addr;
+};
+
+/*
+ * NOTE: ipv6 addrs should be 64-bit aligned, per RFC 2553.  in_conninfo has
+ * some extra padding to accomplish this.
+ * NOTE 2: tcp_syncache.c uses first 5 32-bit words, which identify fport,
+ * lport, faddr to generate hash, so these fields shouldn't be moved.
+ */
+struct in_endpoints {
+	uint16_t	ie_fport;		/* foreign port */
+	uint16_t	ie_lport;		/* local port */
+	/* protocol dependent part, local and foreign addr */
+	union in_dependaddr ie_dependfaddr;	/* foreign host table entry */
+	union in_dependaddr ie_dependladdr;	/* local host table entry */
+#define	ie_faddr	ie_dependfaddr.id46_addr.ia46_addr4
+#define	ie_laddr	ie_dependladdr.id46_addr.ia46_addr4
+#define	ie6_faddr	ie_dependfaddr.id6_addr
+#define	ie6_laddr	ie_dependladdr.id6_addr
+	uint32_t	ie6_zoneid;		/* scope zone id */
+};
+
+/*
+ * XXX The defines for inc_* are hacks and should be changed to direct
+ * references.
+ */
+struct in_conninfo {
+	uint8_t		inc_flags;
+	uint8_t		inc_len;
+	uint16_t	inc_fibnum;	/* XXX was pad, 16 bits is plenty */
+	/* protocol dependent part */
+	struct in_endpoints inc_ie;
+};
+
+/*
+ * Flags for inc_flags.
+ */
+#define	INC_ISIPV6	0x01
+#define	INC_IPV6MINMTU	0x02
+
+#define	inc_fport	inc_ie.ie_fport
+#define	inc_lport	inc_ie.ie_lport
+#define	inc_faddr	inc_ie.ie_faddr
+#define	inc_laddr	inc_ie.ie_laddr
+#define	inc6_faddr	inc_ie.ie6_faddr
+#define	inc6_laddr	inc_ie.ie6_laddr
+#define	inc6_zoneid	inc_ie.ie6_zoneid
+
+#define	inp_fport	inp_inc.inc_fport
+#define	inp_lport	inp_inc.inc_lport
+#define	inp_faddr	inp_inc.inc_faddr
+#define	inp_laddr	inp_inc.inc_laddr
+
+#define	in6p_faddr	inp_inc.inc6_faddr
+#define	in6p_laddr	inp_inc.inc6_laddr
+#define	in6p_zoneid	inp_inc.inc6_zoneid
+
+#ifdef _SYS_SOCKETVAR_H_	/* XXX: requires xsocket to be known */
+/*
+ * Interface exported to userland by various protocols which use inpcbs.  Hack
+ * alert -- only define if struct xsocket is in scope.
+ * Fields prefixed with "xi_" are unique to this structure, and the rest
+ * match fields in the struct inpcb, to ease coding and porting.
+ *
+ * Legend:
+ * (s) - used by userland utilities in src
+ * (p) - used by utilities in ports
+ * (3) - is known to be used by third party software not in ports
+ * (n) - no known usage
+ */
+typedef	uint64_t	inp_gen_t;		/* compat */
+struct xinpcb {
+	ksize_t		xi_len;			/* length of this structure */
+	struct xsocket	xi_socket;		/* (s,p) */
+	struct in_conninfo inp_inc;		/* (s,p) */
+	uint64_t	inp_gencnt;		/* (s,p) */
+	int64_t		inp_spare64[5];
+	uint32_t	inp_flow;		/* (s) */
+	uint32_t	inp_flowid;		/* (s) */
+	uint32_t	inp_flowtype;		/* (s) */
+	int32_t		inp_flags;		/* (s,p) */
+	int32_t		inp_flags2;		/* (s) */
+	uint32_t	inp_unused;
+	int32_t		in6p_cksum;		/* (n) */
+	int32_t		inp_spare32[4];
+	uint16_t	in6p_hops;		/* (n) */
+	uint8_t		inp_ip_tos;		/* (n) */
+	int8_t		pad8;
+	uint8_t		inp_vflag;		/* (s,p) */
+	uint8_t		inp_ip_ttl;		/* (n) */
+	uint8_t		inp_ip_p;		/* (n) */
+	uint8_t		inp_ip_minttl;		/* (n) */
+	int8_t		inp_spare8[4];
+} __aligned(8);
+
+struct xinpgen {
+	ksize_t	xig_len;	/* length of this structure */
+	u_int		xig_count;	/* number of PCBs at this time */
+	uint32_t	_xig_spare32;
+	uint64_t	xig_gen;	/* generation count at this time */
+	so_gen_t	xig_sogen;	/* socket generation count this time */
+	uint64_t	_xig_spare64[4];
+} __aligned(8);
+#endif /* _SYS_SOCKETVAR_H_ */
+
+/*
+ * Flags for inp_vflags -- historically version flags only
+ */
+#define	INP_IPV4	0x1
+#define	INP_IPV6	0x2
+#define	INP_IPV6PROTO	0x4		/* opened under IPv6 protocol */
+
+/* inp_vflags description for use with printf(9) %b identifier. */
+#define	INP_VFLAGS_BITS	"\20\1INP_IPV4\2INP_IPV6\3INP_IPV6PROTO"
+
+/*
+ * Flags for inp_flags.
+ */
+#define	INP_RECVOPTS		0x00000001 /* receive incoming IP options */
+#define	INP_RECVRETOPTS		0x00000002 /* receive IP options for reply */
+#define	INP_RECVDSTADDR		0x00000004 /* receive IP dst address */
+#define	INP_HDRINCL		0x00000008 /* user supplies entire IP header */
+#define	INP_HIGHPORT		0x00000010 /* user wants "high" port binding */
+#define	INP_LOWPORT		0x00000020 /* user wants "low" port binding */
+#define	INP_ANONPORT		0x00000040 /* read by netstat(1) */
+#define	INP_RECVIF		0x00000080 /* receive incoming interface */
+#define	INP_MTUDISC		0x00000100 /* user can do MTU discovery */
+/*	INP_FREED		0x00000200 private to in_pcb.c */
+#define	INP_RECVTTL		0x00000400 /* receive incoming IP TTL */
+#define	INP_DONTFRAG		0x00000800 /* don't fragment packet */
+#define	INP_BINDANY		0x00001000 /* allow bind to any address */
+/* 	available		0x00002000 */
+#define	INP_RECVTOS		0x00004000 /* receive incoming IP TOS */
+#define	IN6P_IPV6_V6ONLY	0x00008000 /* restrict AF_INET6 socket for v6 */
+#define	IN6P_PKTINFO		0x00010000 /* receive IP6 dst and I/F */
+#define	IN6P_HOPLIMIT		0x00020000 /* receive hoplimit */
+#define	IN6P_HOPOPTS		0x00040000 /* receive hop-by-hop options */
+#define	IN6P_DSTOPTS		0x00080000 /* receive dst options after rthdr */
+#define	IN6P_RTHDR		0x00100000 /* receive routing header */
+#define	IN6P_RTHDRDSTOPTS	0x00200000 /* receive dstoptions before rthdr */
+#define	IN6P_TCLASS		0x00400000 /* receive traffic class value */
+#define	IN6P_AUTOFLOWLABEL	0x00800000 /* attach flowlabel automatically */
+/*	INP_INLBGROUP		0x01000000 private to in_pcb.c */
+#define	INP_ONESBCAST		0x02000000 /* send all-ones broadcast */
+/*	INP_UNCONNECTED		0x04000000 private to in_pcb.c/in6_pcb.c */
+#define	INP_SOCKREF		0x08000000 /* strong socket reference */
+#define	INP_RESERVED_0          0x10000000 /* reserved field */
+#define	INP_BOUNDFIB		0x20000000 /* Bound to a specific FIB. */
+#define	IN6P_RFC2292		0x40000000 /* used RFC2292 API on the socket */
+#define	IN6P_MTU		0x80000000 /* receive path MTU */
+
+#define	INP_CONTROLOPTS		(INP_RECVOPTS|INP_RECVRETOPTS|INP_RECVDSTADDR|\
+				 INP_RECVIF|INP_RECVTTL|INP_RECVTOS|\
+				 IN6P_PKTINFO|IN6P_HOPLIMIT|IN6P_HOPOPTS|\
+				 IN6P_DSTOPTS|IN6P_RTHDR|IN6P_RTHDRDSTOPTS|\
+				 IN6P_TCLASS|IN6P_AUTOFLOWLABEL|IN6P_RFC2292|\
+				 IN6P_MTU)
+
+/* inp_flags description for use with printf(9) %b identifier. */
+#define	INP_FLAGS_BITS	"\20" \
+    "\1INP_RECVOPTS\2INP_RECVRETOPTS\3INP_RECVDSTADDR\4INP_HDRINCL" \
+    "\5INP_HIGHPORT\6INP_LOWPORT\7INP_ANONPORT\10INP_RECVIF" \
+    "\11INP_MTUDISC\12INP_FREED\13INP_RECVTTL\14INP_DONTFRAG" \
+    "\15INP_BINDANY\17INP_RECVTOS\20IN6P_IPV6_V6ONLY" \
+    "\21IN6P_PKTINFO\22IN6P_HOPLIMIT\23IN6P_HOPOPTS\24IN6P_DSTOPTS" \
+    "\25IN6P_RTHDR\26IN6P_RTHDRDSTOPTS\27IN6P_TCLASS\30IN6P_AUTOFLOWLABEL" \
+    "\31INP_INLBGROUP\32INP_ONESBCAST\33INP_UNCONNECTED\34INP_SOCKREF" \
+    "\35INP_RESERVED_0\36INP_BOUNDFIB\37IN6P_RFC2292\40IN6P_MTU"
+
+/*
+ * Flags for inp_flags2.
+ */
+/*				0x00000001 */
+/*				0x00000002 */
+/*				0x00000004 */
+/*				0x00000008 */
+/*				0x00000010 */
+/*				0x00000020 */
+/*				0x00000040 */
+/*				0x00000080 */
+#define	INP_RECVFLOWID		0x00000100 /* populate recv datagram with flow info */
+#define	INP_RECVRSSBUCKETID	0x00000200 /* populate recv datagram with bucket id */
+#define	INP_RATE_LIMIT_CHANGED	0x00000400 /* rate limit needs attention */
+#define	INP_ORIGDSTADDR		0x00000800 /* receive IP dst address/port */
+/*				0x00001000 */
+/*				0x00002000 */
+/*				0x00004000 */
+/*				0x00008000 */
+/*				0x00010000 */
+#define INP_2PCP_SET		0x00020000 /* If the Eth PCP should be set explicitly */
+#define INP_2PCP_BIT0		0x00040000 /* Eth PCP Bit 0 */
+#define INP_2PCP_BIT1		0x00080000 /* Eth PCP Bit 1 */
+#define INP_2PCP_BIT2		0x00100000 /* Eth PCP Bit 2 */
+#define INP_2PCP_BASE	INP_2PCP_BIT0
+#define INP_2PCP_MASK	(INP_2PCP_BIT0 | INP_2PCP_BIT1 | INP_2PCP_BIT2)
+#define INP_2PCP_SHIFT		18         /* shift PCP field in/out of inp_flags2 */
+
+/* inp_flags2 description for use with printf(9) %b identifier. */
+#define	INP_FLAGS2_BITS	"\20" \
+    "\11INP_RECVFLOWID\12INP_RECVRSSBUCKETID" \
+    "\13INP_RATE_LIMIT_CHANGED\14INP_ORIGDSTADDR" \
+    "\22INP_2PCP_SET\23INP_2PCP_BIT0\24INP_2PCP_BIT1" \
+    "\25INP_2PCP_BIT2"
+
+struct sockopt_parameters {
+	struct in_conninfo sop_inc;
+	uint64_t sop_id;
+	int sop_level;
+	int sop_optname;
+	char sop_optval[];
+};
+
+#ifdef _SYS_KTLS_H_
+struct xktls_session {
+	uint32_t tsz;	/* total sz of elm, next elm is at this+tsz */
+	uint32_t fsz;	/* size of the struct up to keys */
+	uint64_t inp_gencnt;
+	kvaddr_t so_pcb;
+	struct in_conninfo coninf;
+	u_short rx_vlan_id;
+	struct xktls_session_onedir rcv;
+	struct xktls_session_onedir snd;
+/*
+ * Next are
+ * - keydata for rcv, first cipher of length rcv.cipher_key_len, then
+ *    authentication of length rcv.auth_key_len;
+ * - driver data (string) of length rcv.drv_st_len, if the rcv session is
+ *    offloaded to ifnet rcv.ifnet;
+ * - keydata for snd, first cipher of length snd.cipher_key_len, then
+ *    authentication of length snd.auth_key_len;
+ * - driver data (string) of length snd.drv_st_len, if the snd session is
+ *    offloaded to ifnet snd.ifnet;
+ */
+};
+#endif /* _SYS_KTLS_H_ */
+
+#ifdef _KERNEL
+/*
+ * No user visible declarations below.
+ */
 #include <sys/queue.h>
-#ifdef BSD_KERNEL_PRIVATE
-#include <sys/bitstring.h>
-#include <sys/tree.h>
-#include <kern/locks.h>
-#include <kern/uipc_domain.h>
-#include <kern/zalloc.h>
-#include <netinet/in_stat.h>
-#include <net/if_ports_used.h>
-#endif /* BSD_KERNEL_PRIVATE */
-#if !KERNEL
-#include <TargetConditionals.h>
-#endif
+#include <sys/epoch.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
+#include <sys/rwlock.h>
+#include <sys/_smr.h>
+#include <net/route.h>
+#include <sys/proc.h>
+#include <sys/sysctl.h>
+#include <vm/uma.h>
+#include <sys/ck.h>
 
-#if IPSEC
-#include <netinet6/ipsec.h> /* for IPSEC */
-#endif /* IPSEC */
-
-#if NECP
-#include <net/necp.h>
-#endif
-
-#if SKYWALK
-#include <skywalk/namespace/netns.h>
-#endif /* SKYWALK */
-
-#ifdef BSD_KERNEL_PRIVATE
 /*
  * struct inpcb is the common protocol control block structure used in most
  * IP transport protocols.
@@ -109,919 +310,441 @@
  * numbers, and pointers up (to a socket structure) and down (to a
  * protocol-specific control block) are stored here.
  */
-LIST_HEAD(inpcbhead, inpcb);
-LIST_HEAD(inpcbporthead, inpcbport);
-#endif /* BSD_KERNEL_PRIVATE */
-typedef u_quad_t        inp_gen_t;
+CK_LIST_HEAD(inpcbhead, inpcb);
+CK_LIST_HEAD(inpcblbgrouphead, inpcblbgroup);
 
 /*
- * PCB with AF_INET6 null bind'ed laddr can receive AF_INET input packet.
- * So, AF_INET6 null laddr is also used as AF_INET null laddr, by utilizing
- * the following structure.
- */
-struct in_addr_4in6 {
-	u_int32_t       ia46_pad32[3];
-	struct  in_addr ia46_addr4;
-};
-
-#ifdef BSD_KERNEL_PRIVATE
-/*
- * NB: the zone allocator is type-stable EXCEPT FOR THE FIRST TWO LONGS
- * of the structure.  Therefore, it is important that the members in
- * that position not contain any information which is required to be
- * stable.
- */
-struct  icmp6_filter;
-struct ifnet;
-
-typedef enum {
-	stats_functional_type_untracked         = 0,    /* Deliberately ignored for detailed stats, e.g. loopback */
-	stats_functional_type_cell              = 1,
-	stats_functional_type_wifi_infra        = 2,
-	stats_functional_type_wifi_non_infra    = 3,
-	stats_functional_type_wired             = 4,
-	stats_functional_type_bluetooth         = 5,
-	stats_functional_type_unclassified      = 6,    /* Catch-all, appearance may need further investigation */
-} stats_functional_type;
-
-struct inp_necp_attributes {
-	char *inp_domain __null_terminated;
-	char *inp_account __null_terminated;
-	char *inp_domain_owner __null_terminated;
-	char *inp_tracker_domain __null_terminated;
-	char *inp_domain_context __null_terminated;
-};
-
-/*
- * struct inpcb captures the network layer state for TCP, UDP and raw IPv6
- * and IPv6 sockets.  In the case of TCP, further per-connection state is
- * hung off of inp_ppcb most of the time.
- */
-struct inpcb {
-	decl_lck_mtx_data(, inpcb_mtx); /* inpcb per-socket mutex */
-	LIST_ENTRY(inpcb) inp_hash;     /* hash list */
-	LIST_ENTRY(inpcb) inp_list;     /* list for all PCBs of this proto */
-	void    *inp_ppcb;              /* pointer to per-protocol pcb */
-	struct inpcbinfo *inp_pcbinfo;  /* PCB list info */
-	struct socket *inp_socket;      /* back pointer to socket */
-	LIST_ENTRY(inpcb) inp_portlist; /* list for this PCB's local port */
-	RB_ENTRY(inpcb) infc_link;      /* link for flowhash RB tree */
-	struct inpcbport *inp_phd;      /* head of this list */
-	inp_gen_t inp_gencnt;           /* generation count of this instance */
-	int     inp_hash_element;       /* array index of pcb's hash list */
-	int     inp_wantcnt;            /* wanted count; atomically updated */
-	int     inp_state;              /* state (INUSE/CACHED/DEAD) */
-	u_short inp_fport;              /* foreign port */
-	u_short inp_lport;              /* local port */
-	uint32_t inp_flags;            /* generic IP/datagram flags */
-	uint32_t inp_flags2;           /* generic IP/datagram flags #2 */
-	uint32_t inp_log_flags;
-	uint32_t inp_flow;             /* IPv6 flow information */
-	uint32_t inp_lifscope;          /* IPv6 scope ID of the local address */
-	uint32_t inp_fifscope;          /* IPv6 scope ID of the foreign address */
-
-	uint32_t inp_sndingprog_waiters;/* waiters for outstanding send */
-	u_char  inp_sndinprog_cnt;      /* outstanding send operations */
-	u_char  inp_vflag;              /* INP_IPV4 or INP_IPV6 */
-
-	u_char inp_ip_ttl;              /* time to live proto */
-	u_char inp_ip_p;                /* protocol proto */
-
-	struct ifnet *inp_boundifp;     /* interface for INP_BOUND_IF */
-	struct ifnet *inp_last_outifp;  /* last known outgoing interface */
-	uint32_t inp_flowhash;         /* flow hash */
-
-	/* Protocol-dependent part */
-	union {
-		/* foreign host table entry */
-		struct in_addr_4in6 inp46_foreign;
-		struct in6_addr inp6_foreign;
-	} inp_dependfaddr;
-	union {
-		/* local host table entry */
-		struct in_addr_4in6 inp46_local;
-		struct in6_addr inp6_local;
-	} inp_dependladdr;
-	union {
-		/* placeholder for routing entry */
-		struct route inp4_route;
-		struct route_in6 inp6_route;
-	} inp_dependroute;
-	struct {
-		/* type of service proto */
-		u_char inp4_ip_tos;
-		/* IP options */
-		struct mbuf *inp4_options;
-		/* IP multicast options */
-		struct ip_moptions *inp4_moptions;
-	} inp_depend4;
-	struct {
-		/* IP options */
-		struct mbuf *inp6_options;
-		/* IP6 options for outgoing packets */
-		struct  ip6_pktopts *inp6_outputopts;
-		/* IP multicast options */
-		struct  ip6_moptions *inp6_moptions;
-		/* ICMPv6 code type filter */
-		struct  icmp6_filter *inp6_icmp6filt;
-		/* IPV6_CHECKSUM setsockopt */
-		int     inp6_cksum;
-		short   inp6_hops;
-	} inp_depend6;
-
-	uint64_t       inp_fadv_total_time;
-	uint64_t       inp_fadv_start_time;
-	uint64_t       inp_fadv_cnt;
-
-#if IPSEC
-	struct inpcbpolicy *inp_sp;     /* for IPsec */
-#endif /* IPSEC */
-#if NECP
-	struct inp_necp_attributes inp_necp_attributes;
-	struct necp_inpcb_result inp_policyresult;
-	uuid_t necp_client_uuid;
-
-	uint32_t inp_bind_in_progress_waiters;
-	thread_t inp_bind_in_progress_last_waiter_thread;
-
-	thread_t inp_bind_in_progress_thread;
-
-	necp_client_flow_cb necp_cb;
-	size_t inp_resolver_signature_length;
-	uint8_t *inp_resolver_signature __sized_by(inp_resolver_signature_length);
-#endif
-#if SKYWALK
-	netns_token inp_netns_token;    /* shared namespace state */
-	/* optional IPv4 wildcard namespace reservation for an IPv6 socket */
-	netns_token inp_wildcard_netns_token;
-#endif /* SKYWALK */
-	u_char *__sized_by(inp_keepalive_datalen) inp_keepalive_data;     /* for keepalive offload */
-	uint8_t inp_keepalive_datalen; /* keepalive data length */
-	uint8_t inp_keepalive_type;    /* type of application */
-	uint16_t inp_keepalive_interval; /* keepalive interval */
-	struct  nstat_sock_locus *inp_nstat_locus  __attribute__((aligned(sizeof(u_int64_t))));
-	struct media_stats  inp_mstat __attribute__((aligned(8)));    /* All counts, total/cell/wifi etc */
-	uint64_t inp_start_timestamp;
-	uint64_t inp_connect_timestamp;
-
-	char inp_last_proc_name[MAXCOMLEN + 1];
-	char inp_e_proc_name[MAXCOMLEN + 1];
-
-	uint64_t inp_max_pacing_rate; /* Per-connection maximumg pacing rate to be enforced (Bytes/second) */
-};
-
-#define IFNET_COUNT_TYPE(_ifp)                                              \
-	IFNET_IS_LOOPBACK(_ifp) ?  stats_functional_type_untracked:             \
-	IFNET_IS_CELLULAR(_ifp) ?  stats_functional_type_cell:                  \
-	IFNET_IS_WIFI(_ifp) ?                                                   \
-	        IFNET_IS_WIFI_INFRA(_ifp) ? stats_functional_type_wifi_infra:   \
-	                                    stats_functional_type_wifi_non_infra:    \
-	IFNET_IS_WIRED(_ifp) ?     stats_functional_type_wired:                 \
-	IFNET_IS_COMPANION_LINK_BLUETOOTH(_ifp)? stats_functional_type_bluetooth: stats_functional_type_unclassified;
-
-#define INP_ADD_RXSTAT(_inp, _stats_functional_type, _p, _b)          \
-do {                                                                    \
-	locked_add_64(&((_inp)->inp_mstat.ms_total.ts_rxpackets), (_p)); \
-	locked_add_64(&((_inp)->inp_mstat.ms_total.ts_rxbytes), (_b));   \
-	in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_total.ts_bitmap), net_uptime());  \
-	switch(_stats_functional_type) {                                    \
-	        case stats_functional_type_cell:                            \
-	            locked_add_64(&((_inp)->inp_mstat.ms_cellular.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_cellular.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_cellular.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wifi_infra:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_infra.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_infra.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wifi_infra.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wifi_non_infra:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wired:                           \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wired.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wired.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wired.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_bluetooth:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_bluetooth.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_bluetooth.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_bluetooth.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_unclassified:                    \
-	            locked_add_64(&((_inp)->inp_mstat.ms_alternate.ts_rxpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_alternate.ts_rxbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_alternate.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        default:                                                    \
-	            break;                                                  \
-	};                                                              \
-} while (0);
-
-#define INP_ADD_TXSTAT(_inp, _stats_functional_type, _p, _b)          \
-do {                                                                    \
-	locked_add_64(&((_inp)->inp_mstat.ms_total.ts_txpackets), (_p)); \
-	locked_add_64(&((_inp)->inp_mstat.ms_total.ts_txbytes), (_b));   \
-	in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_total.ts_bitmap), net_uptime());  \
-	switch(_stats_functional_type) {                                    \
-	        case stats_functional_type_cell:                            \
-	            locked_add_64(&((_inp)->inp_mstat.ms_cellular.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_cellular.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_cellular.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wifi_infra:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_infra.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_infra.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wifi_infra.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wifi_non_infra:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wifi_non_infra.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_wired:                           \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wired.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_wired.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_wired.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_bluetooth:                       \
-	            locked_add_64(&((_inp)->inp_mstat.ms_bluetooth.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_bluetooth.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_bluetooth.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        case stats_functional_type_unclassified:                    \
-	            locked_add_64(&((_inp)->inp_mstat.ms_alternate.ts_txpackets), (_p)); \
-	            locked_add_64(&((_inp)->inp_mstat.ms_alternate.ts_txbytes), (_b));  \
-	            in_stat_set_activity_bitmap(&((_inp)->inp_mstat.ms_alternate.ts_bitmap), net_uptime());  \
-	            break;                                                  \
-	        default:                                                    \
-	            break;                                                  \
-	};                                                              \
-} while (0);
-
-
-#endif /* BSD_KERNEL_PRIVATE */
-
-/*
- * Interface exported to userland by various protocols which use
- * inpcbs.  Hack alert -- only define if struct xsocket is in scope.
- */
-#pragma pack(4)
-
-#if defined(__LP64__)
-struct _inpcb_list_entry {
-	u_int32_t   le_next;
-	u_int32_t   le_prev;
-};
-#define _INPCB_PTR(x)           u_int32_t
-#define _INPCB_LIST_ENTRY(x)    struct _inpcb_list_entry
-#else /* !__LP64__ */
-#define _INPCB_PTR(x)           x
-#define _INPCB_LIST_ENTRY(x)    LIST_ENTRY(x)
-#endif /* !__LP64__ */
-
-#ifdef XNU_KERNEL_PRIVATE
-/*
- * This is a copy of the inpcb as it shipped in Panther. This structure
- * is filled out in a copy function. This allows the inpcb to change
- * without breaking userland tools.
+ * struct inpcb captures the network layer state for TCP, UDP, and raw IPv4 and
+ * IPv6 sockets.  In the case of TCP and UDP, further per-connection state is
+ * located in a larger protocol specific structure that embeds inpcb in it.
+ * Almost all fields of struct inpcb are static after creation or protected by
+ * a per-inpcb rwlock, inp_lock.
  *
- * CAUTION: Many fields may not be filled out. Fewer may be filled out
- * in the future. Code defensively.
+ * A inpcb database consists of two hash tables: one for connected pcbs and the
+ * other for wildcard-bound pcbs.  The newborn pcbs reside on the unconnected
+ * list.  Although a pcb can be on either of these three lists, we can't share
+ * the linkage pointers because unlocked readers might be iterating over them.
+ * The only thing that can be unionized is the load-balance table and exact
+ * hash, as a pcb can never participate in both tables through its entire life
+ * time.  Database lookups or list traversals are to be performed inside SMR
+ * section.  Once desired PCB is found its own lock is to be obtained and SMR
+ * section exited.
+ *
+ * Key:
+ * (c) - Constant after initialization
+ * (e) - Protected by the SMR section
+ * (i) - Protected by the inpcb lock
+ * (p) - Protected by the pcbinfo lock for the inpcb
+ * (h) - Protected by the pcbhash lock for the inpcb
+ * (s) - Protected by another subsystem's locks
+ * (x) - Undefined locking
+ *
+ * A few other notes:
+ *
+ * When a read lock is held, stability of the field is guaranteed; to write
+ * to a field, a write lock must generally be held.
+ *
+ * netinet/netinet6-layer code should not assume that the inp_socket pointer
+ * is safe to dereference without inp_lock being held, there may be
+ * close(2)-related races.
+ *
+ * The inp_vflag field is overloaded, and would otherwise ideally be (c).
  */
-struct inpcb_compat {
-#else
-struct inpcbinfo;
-struct inpcbport;
-struct mbuf;
-struct ip6_pktopts;
-struct ip6_moptions;
 struct icmp6_filter;
 struct inpcbpolicy;
-
+struct m_snd_tag;
 struct inpcb {
-#endif /* KERNEL_PRIVATE */
-	_INPCB_LIST_ENTRY(inpcb) inp_hash;      /* hash list */
-	struct in_addr reserved1;               /* reserved */
-	struct in_addr reserved2;               /* reserved */
-	u_short inp_fport;                      /* foreign port */
-	u_short inp_lport;                      /* local port */
-	_INPCB_LIST_ENTRY(inpcb) inp_list;      /* list for all peer PCBs */
-	_INPCB_PTR(caddr_t) inp_ppcb;           /* per-protocol pcb */
-	_INPCB_PTR(struct inpcbinfo *) inp_pcbinfo;     /* PCB list info */
-	_INPCB_PTR(void *) inp_socket;  /* back pointer to socket */
-	u_char nat_owner;               /* Used to NAT TCP/UDP traffic */
-	u_int32_t nat_cookie;           /* Cookie stored and returned to NAT */
-	_INPCB_LIST_ENTRY(inpcb) inp_portlist;  /* this PCB's local port list */
-	_INPCB_PTR(struct inpcbport *) inp_phd; /* head of this list */
-	inp_gen_t inp_gencnt;           /* generation count of this instance */
-	int inp_flags;                  /* generic IP/datagram flags */
-	u_int32_t inp_flow;
-
-	u_char inp_vflag;
-
-	u_char inp_ip_ttl;              /* time to live proto */
-	u_char inp_ip_p;                /* protocol proto */
-	/* protocol dependent part */
 	union {
-		/* foreign host table entry */
-		struct in_addr_4in6 inp46_foreign;
-		struct in6_addr inp6_foreign;
-	} inp_dependfaddr;
-	union {
-		/* local host table entry */
-		struct in_addr_4in6 inp46_local;
-		struct in6_addr inp6_local;
-	} inp_dependladdr;
-	union {
-		/* placeholder for routing entry */
-		u_char inp4_route[20];
-		u_char inp6_route[32];
-	} inp_dependroute;
+		CK_LIST_ENTRY(inpcb)	inp_hash_exact;
+		LIST_ENTRY(inpcb)	inp_lbgroup_list;
+	};
+	CK_LIST_ENTRY(inpcb)	inp_hash_wild;
+	CK_LIST_ENTRY(inpcb)	inp_unconn_list;
+	struct rwlock	inp_lock;
+#define	inp_start_zero	inp_refcount
+#define	inp_zero_size	(sizeof(struct inpcb) - \
+			    offsetof(struct inpcb, inp_start_zero))
+	u_int	inp_refcount;		/* (i) refcount */
+	int	inp_flags;		/* (i) generic IP/datagram flags */
+	int	inp_flags2;		/* (i) generic IP/datagram flags #2*/
+	uint8_t inp_numa_domain;	/* numa domain */
+	struct	socket *inp_socket;	/* (i) back pointer to socket */
+	struct	inpcbinfo *inp_pcbinfo;	/* (c) PCB list info */
+	struct	ucred	*inp_cred;	/* (c) cache of socket cred */
+	u_int32_t inp_flow;		/* (i) IPv6 flow information */
+	u_char	inp_vflag;		/* (i) IP version flag (v4/v6) */
+	u_char	inp_ip_ttl;		/* (i) time to live proto */
+	u_char	inp_ip_p;		/* (c) protocol proto */
+	u_char	inp_ip_minttl;		/* (i) minimum TTL or drop */
+	uint32_t inp_flowid;		/* (x) flow id / queue id */
+	smr_seq_t inp_smr;		/* (i) sequence number at disconnect */
+	struct m_snd_tag *inp_snd_tag;	/* (i) send tag for outgoing mbufs */
+	uint32_t inp_flowtype;		/* (x) M_HASHTYPE value */
+
+	/* Local and foreign ports, local and foreign addr. */
+	struct	in_conninfo inp_inc;	/* (i,h) list for PCB's local port */
+
+	/* MAC and IPSEC policy information. */
+	struct	label *inp_label;	/* (i) MAC label */
+	struct	inpcbpolicy *inp_sp;    /* (s) for IPSEC */
+
+	/* Protocol-dependent part; options. */
 	struct {
-		/* type of service proto */
-		u_char inp4_ip_tos;
-		/* IP options */
-		_INPCB_PTR(struct mbuf *) inp4_options;
-		/* IP multicast options */
-		_INPCB_PTR(struct ip_moptions *) inp4_moptions;
-	} inp_depend4;
-
+		u_char	inp_ip_tos;		/* (i) type of service proto */
+		struct mbuf		*inp_options;	/* (i) IP options */
+		struct ip_moptions	*inp_moptions;	/* (i) mcast options */
+	};
 	struct {
-		/* IP options */
-		_INPCB_PTR(struct mbuf *) inp6_options;
-		u_int8_t inp6_hlim;
-		u_int8_t unused_uint8_1;
-		ushort unused_uint16_1;
-		/* IP6 options for outgoing packets */
-		_INPCB_PTR(struct ip6_pktopts *) inp6_outputopts;
-		/* IP multicast options */
-		_INPCB_PTR(struct ip6_moptions *) inp6_moptions;
-		/* ICMPv6 code type filter */
-		_INPCB_PTR(struct icmp6_filter *) inp6_icmp6filt;
-		/* IPV6_CHECKSUM setsockopt */
-		int     inp6_cksum;
-		u_short inp6_ifindex;
-		short   inp6_hops;
-	} inp_depend6;
-
-	int hash_element;               /* Array index of pcb's hash list */
-	_INPCB_PTR(caddr_t) inp_saved_ppcb; /* pointer while cached */
-	_INPCB_PTR(struct inpcbpolicy *) inp_sp;
-	u_int32_t       reserved[3];    /* reserved */
+		/* (i) IP options */
+		struct mbuf		*in6p_options;
+		/* (i) IP6 options for outgoing packets */
+		struct ip6_pktopts	*in6p_outputopts;
+		/* (i) IP multicast options */
+		struct ip6_moptions	*in6p_moptions;
+		/* (i) ICMPv6 code type filter */
+		struct icmp6_filter	*in6p_icmp6filt;
+		/* (i) IPV6_CHECKSUM setsockopt */
+		int	in6p_cksum;
+		short	in6p_hops;
+	};
+	CK_LIST_ENTRY(inpcb) inp_portlist;	/* (r:e/w:h) port list */
+	uint64_t	inp_gencnt;	/* (c) generation count */
+	void		*spare_ptr;	/* Spare pointer. */
+	rt_gen_t	inp_rt_cookie;	/* generation for route entry */
+	union {				/* cached L3 information */
+		struct route inp_route;
+		struct route_in6 inp_route6;
+	};
 };
-
-struct  xinpcb {
-	u_int32_t       xi_len;         /* length of this structure */
-#ifdef XNU_KERNEL_PRIVATE
-	struct  inpcb_compat xi_inp;
-#else
-	struct  inpcb xi_inp;
-#endif
-	struct  xsocket xi_socket;
-	u_quad_t        xi_alignment_hack;
-};
-
-#if XNU_TARGET_OS_OSX || KERNEL || !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
-struct inpcb64_list_entry {
-	u_int64_t   le_next;
-	u_int64_t   le_prev;
-};
-
-struct  xinpcb64 {
-	u_int64_t       xi_len;         /* length of this structure */
-	u_int64_t       xi_inpp;
-	u_short         inp_fport;      /* foreign port */
-	u_short         inp_lport;      /* local port */
-	struct inpcb64_list_entry inp_list; /* list for all PCBs */
-	u_int64_t       inp_ppcb;       /* ptr to per-protocol PCB */
-	u_int64_t       inp_pcbinfo;    /* PCB list info */
-	struct inpcb64_list_entry inp_portlist; /* this PCB's local port list */
-	u_int64_t       inp_phd;        /* head of this list */
-	inp_gen_t       inp_gencnt;     /* current generation count */
-	int             inp_flags;      /* generic IP/datagram flags */
-	u_int32_t       inp_flow;
-	u_char          inp_vflag;
-	u_char          inp_ip_ttl;     /* time to live */
-	u_char          inp_ip_p;       /* protocol */
-	union {                         /* foreign host table entry */
-		struct  in_addr_4in6    inp46_foreign;
-		struct  in6_addr        inp6_foreign;
-	} inp_dependfaddr;
-	union {                         /* local host table entry */
-		struct  in_addr_4in6    inp46_local;
-		struct  in6_addr        inp6_local;
-	} inp_dependladdr;
-	struct {
-		u_char  inp4_ip_tos;    /* type of service */
-	} inp_depend4;
-	struct {
-		u_int8_t inp6_hlim;
-		int     inp6_cksum;
-		u_short inp6_ifindex;
-		short   inp6_hops;
-	} inp_depend6;
-	struct  xsocket64 xi_socket;
-	u_quad_t        xi_alignment_hack;
-};
-#endif /* XNU_TARGET_OS_OSX || KERNEL || !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR) */
-
-#ifdef PRIVATE
-struct xinpcb_list_entry {
-	u_int64_t   le_next;
-	u_int64_t   le_prev;
-};
-
-struct  xinpcb_n {
-	u_int32_t       xi_len;         /* length of this structure */
-	u_int32_t       xi_kind;        /* XSO_INPCB */
-	u_int64_t       xi_inpp;
-	u_short         inp_fport;      /* foreign port */
-	u_short         inp_lport;      /* local port */
-	u_int64_t       inp_ppcb;       /* pointer to per-protocol pcb */
-	inp_gen_t       inp_gencnt;     /* generation count of this instance */
-	int             inp_flags;      /* generic IP/datagram flags */
-	u_int32_t       inp_flow;
-	u_char          inp_vflag;
-	u_char          inp_ip_ttl;     /* time to live */
-	u_char          inp_ip_p;       /* protocol */
-	union {                         /* foreign host table entry */
-		struct in_addr_4in6     inp46_foreign;
-		struct in6_addr         inp6_foreign;
-	} inp_dependfaddr;
-	union {                         /* local host table entry */
-		struct in_addr_4in6     inp46_local;
-		struct in6_addr         inp6_local;
-	} inp_dependladdr;
-	struct {
-		u_char  inp4_ip_tos;    /* type of service */
-	} inp_depend4;
-	struct {
-		u_int8_t inp6_hlim;
-		int     inp6_cksum;
-		u_short inp6_ifindex;
-		short   inp6_hops;
-	} inp_depend6;
-	u_int32_t               inp_flowhash;
-	u_int32_t       inp_flags2;
-};
-#endif /* PRIVATE */
-
-struct  xinpgen {
-	u_int32_t       xig_len;        /* length of this structure */
-	u_int           xig_count;      /* number of PCBs at this time */
-	inp_gen_t       xig_gen;        /* generation count at this time */
-	so_gen_t        xig_sogen;      /* current socket generation count */
-};
-
-#pragma pack()
 
 /*
- * These defines are for use with the inpcb.
- */
-#define INP_IPV4        0x1
-#define INP_IPV6        0x2
-#define INP_V4MAPPEDV6  0x4
-#define inp_faddr       inp_dependfaddr.inp46_foreign.ia46_addr4
-#define inp_laddr       inp_dependladdr.inp46_local.ia46_addr4
-#define in6p_faddr      inp_dependfaddr.inp6_foreign
-#define in6p_laddr      inp_dependladdr.inp6_local
-
-#ifdef BSD_KERNEL_PRIVATE
-#define inp_route       inp_dependroute.inp4_route
-#define inp_ip_tos      inp_depend4.inp4_ip_tos
-#define inp_options     inp_depend4.inp4_options
-#define inp_moptions    inp_depend4.inp4_moptions
-#define in6p_route      inp_dependroute.inp6_route
-#define in6p_ip6_hlim   inp_depend6.inp6_hlim
-#define in6p_hops       inp_depend6.inp6_hops   /* default hop limit */
-#define in6p_ip6_nxt    inp_ip_p
-#define in6p_vflag      inp_vflag
-#define in6p_options    inp_depend6.inp6_options
-#define in6p_outputopts inp_depend6.inp6_outputopts
-#define in6p_moptions   inp_depend6.inp6_moptions
-#define in6p_icmp6filt  inp_depend6.inp6_icmp6filt
-#define in6p_cksum      inp_depend6.inp6_cksum
-#define in6p_ifindex    inp_depend6.inp6_ifindex
-#define in6p_flags      inp_flags
-#define in6p_flags2     inp_flags2
-#define in6p_socket     inp_socket
-#define in6p_lport      inp_lport
-#define in6p_fport      inp_fport
-#define in6p_ppcb       inp_ppcb
-#define in6p_state      inp_state
-#define in6p_wantcnt    inp_wantcnt
-#define in6p_last_outifp inp_last_outifp
-#define in6pcb          inpcb
-#if IPSEC
-#define in6p_sp         inp_sp
-#endif /* IPSEC */
-#define INP_INC_IFNET_STAT(_inp_, _stat_) { \
-	if ((_inp_)->inp_last_outifp != NULL) { \
-	        if ((_inp_)->inp_vflag & INP_IPV6) { \
-	                (_inp_)->inp_last_outifp->if_ipv6_stat->_stat_++;\
-	        } else { \
-	                (_inp_)->inp_last_outifp->if_ipv4_stat->_stat_++;\
-	        }\
-	}\
-}
-
-struct inpcbport {
-	LIST_ENTRY(inpcbport) phd_hash;
-	struct inpcbhead phd_pcblist;
-	u_short phd_port;
-};
-
-struct intimercount {
-	u_int32_t intimer_lazy; /* lazy requests for timer scheduling */
-	u_int32_t intimer_fast; /* fast requests, can be coalesced */
-	u_int32_t intimer_nodelay; /* fast requests, never coalesced */
-};
-
-typedef void (*inpcb_timer_func_t)(struct inpcbinfo *);
-
-/*
- * Global data structure for each high-level protocol (UDP, TCP, ...) in both
- * IPv4 and IPv6.  Holds inpcb lists and information for managing them.  Each
- * pcbinfo is protected by a RW lock: ipi_lock.
+ * Per-VNET pcb database for each high-level protocol (UDP, TCP, ...) in both
+ * IPv4 and IPv6.
  *
- * All INPCB pcbinfo entries are linked together via ipi_entry.
+ * The pcbs are protected with SMR section and thus all lists in inpcbinfo
+ * are CK-lists.  Locking is required to insert a pcb into database.
+ *
+ * Locking key:
+ *
+ * (c) Constant or nearly constant after initialisation
+ * (e) Protected by SMR section
+ * (h) Locked by ipi_hash_lock
  */
 struct inpcbinfo {
-	/*
-	 * Glue to all PCB infos, as well as garbage collector and
-	 * timer callbacks, protected by inpcb_lock.  Callout request
-	 * counts are atomically updated.
-	 */
-	TAILQ_ENTRY(inpcbinfo)  ipi_entry;
-	inpcb_timer_func_t      ipi_gc;
-	inpcb_timer_func_t      ipi_timer;
-	struct intimercount     ipi_gc_req;
-	struct intimercount     ipi_timer_req;
+	u_int			 ipi_count;		/* (h) */
 
 	/*
-	 * Per-protocol lock protecting pcb list, pcb count, etc.
+	 * Generation count -- incremented each time a connection is allocated
+	 * or freed.
 	 */
-	lck_rw_t                ipi_lock;
-
-	/*
-	 * List and count of pcbs on the protocol.
-	 */
-	struct inpcbhead        *ipi_listhead;
-	uint32_t                ipi_count;
-
-	/*
-	 * Count of pcbs marked with INP2_TIMEWAIT flag.
-	 */
-	uint32_t                ipi_twcount;
-
-	/*
-	 * Generation count -- incremented each time a connection is
-	 * allocated or freed.
-	 */
-	uint64_t                ipi_gencnt;
+	uint64_t		 ipi_gencnt;		/* (h) */
 
 	/*
 	 * Fields associated with port lookup and allocation.
 	 */
-	uint16_t                ipi_lastport;
-	uint16_t                ipi_lastlow;
-	uint16_t                ipi_lasthi;
+	u_short			 ipi_lastport;		/* (h) */
+	u_short			 ipi_lastlow;		/* (h) */
+	u_short			 ipi_lasthi;		/* (h) */
 
 	/*
-	 * Zone from which inpcbs are allocated for this protocol.
+	 * UMA zone from which inpcbs are allocated for this protocol.
 	 */
-#if BSD_KERNEL_PRIVATE
-	kalloc_type_view_t       ipi_zone;
+	uma_zone_t		 ipi_zone;		/* (c) */
+	uma_zone_t		 ipi_portzone;		/* (c) */
+	smr_t			 ipi_smr;		/* (c) */
+
+	/*
+	 * Global hash of inpcbs, hashed by local and foreign addresses and
+	 * port numbers.  The "exact" hash holds PCBs connected to a foreign
+	 * address, and "wild" holds the rest.
+	 */
+	struct mtx		 ipi_hash_lock;
+	struct inpcbhead	 ipi_list_unconn;	/* (r:e/w:h) */
+	struct inpcbhead 	*ipi_hash_exact;	/* (r:e/w:h) */
+	struct inpcbhead 	*ipi_hash_wild;		/* (r:e/w:h) */
+	u_long			 ipi_hashmask;		/* (c) */
+	u_long			 ipi_porthashmask;	/* (c) */
+	u_long			 ipi_lbgrouphashmask;	/* (c) */
+
+	/*
+	 * Global hash of inpcbs, hashed by only local port number.
+	 */
+	struct inpcbhead	*ipi_porthashbase;	/* (h) */
+
+	/*
+	 * Load balance groups used for the SO_REUSEPORT_LB option,
+	 * hashed by local port.
+	 */
+	struct	inpcblbgrouphead *ipi_lbgrouphashbase;	/* (r:e/w:h) */
+};
+
+/*
+ * Global allocation storage for each high-level protocol (UDP, TCP, ...).
+ * Each corresponding per-VNET inpcbinfo points into this one.
+ */
+struct inpcbstorage {
+	uma_zone_t	ips_zone;
+	uma_init	ips_pcbinit;
+	size_t		ips_size;
+	const char *	ips_zone_name;
+	const char *	ips_hashlock_name;
+};
+
+#define INPCBSTORAGE_DEFINE(prot, ppcb, lname, zname, hname)		\
+static int								\
+prot##_inpcb_init(void *mem, int size __unused, int flags __unused)	\
+{									\
+	struct inpcb *inp = mem;					\
+									\
+	rw_init_flags(&inp->inp_lock, lname, RW_RECURSE | RW_DUPOK);	\
+	return (0);							\
+}									\
+static struct inpcbstorage prot = {					\
+	.ips_size = sizeof(struct ppcb),				\
+	.ips_pcbinit = prot##_inpcb_init,				\
+	.ips_zone_name = zname,						\
+	.ips_hashlock_name = hname,					\
+};									\
+SYSINIT(prot##_inpcbstorage_init, SI_SUB_PROTO_DOMAIN,			\
+    SI_ORDER_SECOND, in_pcbstorage_init, &prot);			\
+SYSUNINIT(prot##_inpcbstorage_uninit, SI_SUB_PROTO_DOMAIN,		\
+    SI_ORDER_SECOND, in_pcbstorage_destroy, &prot)
+
+#define INP_LOCK_DESTROY(inp)	rw_destroy(&(inp)->inp_lock)
+#define INP_RLOCK(inp)		rw_rlock(&(inp)->inp_lock)
+#define INP_WLOCK(inp)		rw_wlock(&(inp)->inp_lock)
+#define INP_TRY_RLOCK(inp)	rw_try_rlock(&(inp)->inp_lock)
+#define INP_TRY_WLOCK(inp)	rw_try_wlock(&(inp)->inp_lock)
+#define INP_RUNLOCK(inp)	rw_runlock(&(inp)->inp_lock)
+#define INP_WUNLOCK(inp)	rw_wunlock(&(inp)->inp_lock)
+#define INP_UNLOCK(inp)		rw_unlock(&(inp)->inp_lock)
+#define	INP_TRY_UPGRADE(inp)	rw_try_upgrade(&(inp)->inp_lock)
+#define	INP_DOWNGRADE(inp)	rw_downgrade(&(inp)->inp_lock)
+#define	INP_WLOCKED(inp)	rw_wowned(&(inp)->inp_lock)
+#define	INP_LOCK_ASSERT(inp)	rw_assert(&(inp)->inp_lock, RA_LOCKED)
+#define	INP_RLOCK_ASSERT(inp)	rw_assert(&(inp)->inp_lock, RA_RLOCKED)
+#define	INP_WLOCK_ASSERT(inp)	rw_assert(&(inp)->inp_lock, RA_WLOCKED)
+#define	INP_UNLOCK_ASSERT(inp)	rw_assert(&(inp)->inp_lock, RA_UNLOCKED)
+
+/*
+ * These locking functions are for inpcb consumers outside of sys/netinet,
+ * more specifically, they were added for the benefit of TOE drivers. The
+ * macros are reserved for use by the stack.
+ */
+void inp_wlock(struct inpcb *);
+void inp_wunlock(struct inpcb *);
+void inp_rlock(struct inpcb *);
+void inp_runlock(struct inpcb *);
+
+#ifdef INVARIANT_SUPPORT
+void inp_lock_assert(struct inpcb *);
+void inp_unlock_assert(struct inpcb *);
 #else
-	struct zone             *ipi_zone;
+#define	inp_lock_assert(inp)	do {} while (0)
+#define	inp_unlock_assert(inp)	do {} while (0)
 #endif
 
-	/*
-	 * Per-protocol hash of pcbs, hashed by local and foreign
-	 * addresses and port numbers.
-	 */
-	struct inpcbhead        *__counted_by(ipi_hashbase_count) ipi_hashbase;
-	size_t                  ipi_hashbase_count;
-	u_long                  ipi_hashmask;
+void	inp_apply_all(struct inpcbinfo *, void (*func)(struct inpcb *, void *),
+	    void *arg);
+struct socket *
+	inp_inpcbtosocket(struct inpcb *inp);
+void 	inp_4tuple_get(struct inpcb *inp, uint32_t *laddr, uint16_t *lp,
+		uint32_t *faddr, uint16_t *fp);
 
-	/*
-	 * Per-protocol hash of pcbs, hashed by only local port number.
-	 */
-	struct inpcbporthead    *__counted_by(ipi_porthashbase_count) ipi_porthashbase;
-	size_t                  ipi_porthashbase_count;
-	u_long                  ipi_porthashmask;
+#define	INP_HASH_WLOCK(ipi)		mtx_lock(&(ipi)->ipi_hash_lock)
+#define	INP_HASH_WUNLOCK(ipi)		mtx_unlock(&(ipi)->ipi_hash_lock)
+#define	INP_HASH_LOCK_ASSERT(ipi)	MPASS(SMR_ENTERED((ipi)->ipi_smr) || \
+					mtx_owned(&(ipi)->ipi_hash_lock))
+#define	INP_HASH_WLOCK_ASSERT(ipi)	mtx_assert(&(ipi)->ipi_hash_lock, \
+					MA_OWNED)
 
-	/*
-	 * Misc.
-	 */
-	lck_attr_t              ipi_lock_attr;
-	lck_grp_t               *ipi_lock_grp;
+VNET_DECLARE(uint32_t, in_pcbhashseed);
+#define	V_in_pcbhashseed	VNET(in_pcbhashseed)
 
-#define INPCBINFO_UPDATE_MSS    0x1
-#define INPCBINFO_HANDLE_LQM_ABORT      0x2
-	u_int32_t               ipi_flags;
+/*
+ * Wildcard matching hash is not just a microoptimisation!  The hash for
+ * wildcard IPv4 and wildcard IPv6 must be the same, otherwise AF_INET6
+ * wildcard bound pcb won't be able to receive AF_INET connections, while:
+ * jenkins_hash(&zeroes, 1, s) != jenkins_hash(&zeroes, 4, s)
+ * See also comment above struct in_addr_4in6.
+ */
+#define	IN_ADDR_JHASH32(addr)						\
+	((addr)->s_addr == INADDR_ANY ? V_in_pcbhashseed :		\
+	    jenkins_hash32((&(addr)->s_addr), 1, V_in_pcbhashseed))
+#define	IN6_ADDR_JHASH32(addr)						\
+	(memcmp((addr), &in6addr_any, sizeof(in6addr_any)) == 0 ?	\
+	    V_in_pcbhashseed :						\
+	    jenkins_hash32((addr)->__u6_addr.__u6_addr32,		\
+	    nitems((addr)->__u6_addr.__u6_addr32), V_in_pcbhashseed))
+
+#define INP_PCBHASH(faddr, lport, fport, mask)				\
+	((IN_ADDR_JHASH32(faddr) ^ ntohs((lport) ^ (fport))) & (mask))
+#define	INP6_PCBHASH(faddr, lport, fport, mask)				\
+	((IN6_ADDR_JHASH32(faddr) ^ ntohs((lport) ^ (fport))) & (mask))
+
+#define	INP_PCBHASH_WILD(lport, mask)					\
+	((V_in_pcbhashseed ^ ntohs(lport)) & (mask))
+
+#define	INP_PCBLBGROUP_PKTHASH(faddr, lport, fport)			\
+	(IN_ADDR_JHASH32(faddr) ^ ntohs((lport) ^ (fport)))
+#define	INP6_PCBLBGROUP_PKTHASH(faddr, lport, fport)			\
+	(IN6_ADDR_JHASH32(faddr) ^ ntohs((lport) ^ (fport)))
+
+#define INP_PCBPORTHASH(lport, mask)	(ntohs((lport)) & (mask))
+
+#if defined(INET) && defined(INET6)
+#define	RIPCB_HASH(inp)	(((inp)->inp_vflag & INP_IPV6) ?		\
+	IN6_ADDR_JHASH32(&(inp)->in6p_faddr) :				\
+	IN_ADDR_JHASH32(&(inp)->inp_faddr))
+#elif defined(INET6)
+#define	RIPCB_HASH(inp)							\
+	IN6_ADDR_JHASH32(&(inp)->in6p_faddr)
+#else
+#define	RIPCB_HASH(inp)							\
+	IN_ADDR_JHASH32(&(inp)->inp_faddr)
+#endif
+
+/*
+ * Flags passed to in_pcblookup*(), inp_smr_lock() and inp_next().
+ */
+typedef	enum {
+	INPLOOKUP_WILDCARD = 0x00000001,	/* Allow wildcard sockets. */
+	INPLOOKUP_RLOCKPCB = 0x00000002,	/* Return inpcb read-locked. */
+	INPLOOKUP_WLOCKPCB = 0x00000004,	/* Return inpcb write-locked. */
+	INPLOOKUP_FIB = 0x00000008,		/* inp must be from same FIB. */
+} inp_lookup_t;
+
+#define	INPLOOKUP_MASK	(INPLOOKUP_WILDCARD | INPLOOKUP_RLOCKPCB | \
+	    INPLOOKUP_WLOCKPCB | INPLOOKUP_FIB)
+#define	INPLOOKUP_LOCKMASK	(INPLOOKUP_RLOCKPCB | INPLOOKUP_WLOCKPCB)
+
+#define	sotoinpcb(so)	((struct inpcb *)(so)->so_pcb)
+
+#define	INP_SOCKAF(so) so->so_proto->pr_domain->dom_family
+
+#define	INP_CHECK_SOCKAF(so, af)	(INP_SOCKAF(so) == af)
+
+VNET_DECLARE(u_int, ipport_reservedhigh);
+VNET_DECLARE(u_int, ipport_reservedlow);
+VNET_DECLARE(u_int, ipport_lowfirstauto);
+VNET_DECLARE(u_int, ipport_lowlastauto);
+VNET_DECLARE(u_int, ipport_firstauto);
+VNET_DECLARE(u_int, ipport_lastauto);
+VNET_DECLARE(u_int, ipport_hifirstauto);
+VNET_DECLARE(u_int, ipport_hilastauto);
+VNET_DECLARE(bool, ipport_randomized);
+
+#define	V_ipport_reservedhigh	VNET(ipport_reservedhigh)
+#define	V_ipport_reservedlow	VNET(ipport_reservedlow)
+#define	V_ipport_lowfirstauto	VNET(ipport_lowfirstauto)
+#define	V_ipport_lowlastauto	VNET(ipport_lowlastauto)
+#define	V_ipport_firstauto	VNET(ipport_firstauto)
+#define	V_ipport_lastauto	VNET(ipport_lastauto)
+#define	V_ipport_hifirstauto	VNET(ipport_hifirstauto)
+#define	V_ipport_hilastauto	VNET(ipport_hilastauto)
+#define	V_ipport_randomized	VNET(ipport_randomized)
+
+void	in_pcbinfo_init(struct inpcbinfo *, struct inpcbstorage *,
+	    u_int, u_int, u_int);
+void	in_pcbinfo_destroy(struct inpcbinfo *);
+void	in_pcbstorage_init(void *);
+void	in_pcbstorage_destroy(void *);
+
+void	in_pcbpurgeif0(struct inpcbinfo *, struct ifnet *);
+int	in_pcballoc(struct socket *, struct inpcbinfo *);
+#define	INPBIND_FIB	0x0001	/* bind to the PCB's FIB only */
+int	in_pcbbind(struct inpcb *, struct sockaddr_in *, int, struct ucred *);
+int	in_pcbbind_setup(struct inpcb *, struct sockaddr_in *, in_addr_t *,
+	    u_short *, int, struct ucred *);
+int	in_pcbconnect(struct inpcb *, struct sockaddr_in *, struct ucred *);
+void	in_pcbdisconnect(struct inpcb *);
+void	in_pcbfree(struct inpcb *);
+int	in_pcbladdr(const struct inpcb *, struct in_addr *, struct in_addr *,
+	    struct ucred *);
+int	in_pcblbgroup_numa(struct inpcb *, int arg);
+void	in_pcblisten(struct inpcb *);
+struct inpcb *
+	in_pcblookup(struct inpcbinfo *, struct in_addr, u_int,
+	    struct in_addr, u_int, int, struct ifnet *);
+struct inpcb *
+	in_pcblookup_mbuf(struct inpcbinfo *, struct in_addr, u_int,
+	    struct in_addr, u_int, int, struct ifnet *, struct mbuf *);
+void	in_pcbref(struct inpcb *);
+bool	in_pcbrele(struct inpcb *, inp_lookup_t);
+bool	in_pcbrele_rlocked(struct inpcb *);
+bool	in_pcbrele_wlocked(struct inpcb *);
+bool	in_pcbrele_rlock(struct inpcb *inp);
+void	ripcb_connect(struct inpcb *);
+void	ripcb_disconnect(struct inpcb *);
+
+#ifdef _SYS_SOCKETVAR_H_
+void	in_pcbtoxinpcb(const struct inpcb *, struct xinpcb *);
+int	sysctl_setsockopt(SYSCTL_HANDLER_ARGS, struct inpcbinfo *pcbinfo,
+	    int (*ctloutput_set)(struct inpcb *, struct sockopt *));
+#endif
+
+/*
+ * struct inpcb_iterator is located on the stack of a function that uses
+ * inp_next().  The caller shall initialize the const members before first
+ * invocation of inp_next().  After that, until the iterator finishes the
+ * caller is supposed to only read 'inp' until it reads NULL.  Some members
+ * have constness commented out for convenience of callers, that may reuse
+ * the iterator after it finishes.
+ * (c) - caller
+ * (n) - inp_next()
+ */
+typedef bool inp_match_t(const struct inpcb *, void *);
+struct inpcb_iterator {
+	const struct inpcbinfo	*ipi;
+	struct inpcb		*inp;	/* c:r, n:rw */
+	/* const */ inp_match_t	*match;
+	/* const */ void	*ctx;
+	int			hash;	/* n:rw */
+	/* const */ int		mode;
+#define	INP_ALL_LIST		-1
+#define	INP_UNCONN_LIST		-2
+	const inp_lookup_t	lock;
 };
 
-#define INP_PCBHASH(faddr, lport, fport, mask) \
-	(((faddr) ^ ((faddr) >> 16) ^ ntohs((lport) ^ (fport))) & (mask))
-#define INP_PCBPORTHASH(lport, mask) \
-	(ntohs((lport)) & (mask))
+/* Note: sparse initializers guarantee .inp = NULL. */
+#define	INP_ITERATOR(_ipi, _lock, _match, _ctx)		\
+	{						\
+		.ipi = (_ipi),				\
+		.lock = (_lock),			\
+		.mode = INP_ALL_LIST,			\
+		.match = (_match),			\
+		.ctx = (_ctx),				\
+	}
+#define	INP_ALL_ITERATOR(_ipi, _lock)			\
+	{						\
+		.ipi = (_ipi),				\
+		.lock = (_lock),			\
+		.mode = INP_ALL_LIST,			\
+	}
 
-/*
- * 4-tuple for an IPv4/IPv6 endpoint
- */
-union in_dependaddr {
-	struct in_addr_4in6     id46_addr;
-	struct in6_addr         id6_addr;
-};
+struct inpcb *inp_next(struct inpcb_iterator *);
+void	in_losing(struct inpcb *);
+void	in_pcbsetsolabel(struct socket *so);
+int	in_getpeeraddr(struct socket *, struct sockaddr *sa);
+int	in_getsockaddr(struct socket *, struct sockaddr *sa);
+void	in_pcbsosetlabel(struct socket *so);
+#ifdef RATELIMIT
+int
+in_pcboutput_txrtlmt_locked(struct inpcb *, struct ifnet *,
+	    struct mbuf *, uint32_t);
+int	in_pcbattach_txrtlmt(struct inpcb *, struct ifnet *, uint32_t, uint32_t,
+	    uint32_t, struct m_snd_tag **);
+void	in_pcbdetach_txrtlmt(struct inpcb *);
+void    in_pcbdetach_tag(struct m_snd_tag *);
+int	in_pcbmodify_txrtlmt(struct inpcb *, uint32_t);
+int	in_pcbquery_txrtlmt(struct inpcb *, uint32_t *);
+int	in_pcbquery_txrlevel(struct inpcb *, uint32_t *);
+void	in_pcboutput_txrtlmt(struct inpcb *, struct ifnet *, struct mbuf *);
+void	in_pcboutput_eagain(struct inpcb *);
+#endif
+#ifdef DDB
+void	db_print_inpcb(struct inpcb *, const char *, int);
+#endif
+#endif /* _KERNEL */
 
-struct in_endpoints {
-	in_port_t               ie_fport;
-	in_port_t               ie_lport;
-	union in_dependaddr     ie_dependfaddr;
-	union in_dependaddr     ie_dependladdr;
-};
-#define ie_faddr        ie_dependfaddr.id46_addr.ia46_addr4
-#define ie_laddr        ie_dependladdr.id46_addr.ia46_addr4
-#define ie6_faddr       ie_dependfaddr.id6_addr
-#define ie6_laddr       ie_dependladdr.id6_addr
-
-/*
- * The following macro need to return a bool value
- */
-#define INP_IS_FLOW_CONTROLLED(_inp_) \
-	(((_inp_)->inp_flags & INP_FLOW_CONTROLLED) ? true : false)
-#define INP_IS_FLOW_SUSPENDED(_inp_) \
-	((((_inp_)->inp_flags & INP_FLOW_SUSPENDED) ||   \
-	((_inp_)->inp_socket->so_flags & SOF_SUSPENDED)) ? true : false)
-#define INP_WAIT_FOR_IF_FEEDBACK(_inp_) \
-	(((_inp_)->inp_flags & (INP_FLOW_CONTROLLED | INP_FLOW_SUSPENDED)) != 0)
-
-#define INP_NO_CELLULAR(_inp) \
-	(((_inp)->inp_flags & INP_NO_IFT_CELLULAR) ? true : false)
-#define INP_NO_EXPENSIVE(_inp) \
-	(((_inp)->inp_flags2 & INP2_NO_IFF_EXPENSIVE) ? true : false)
-#define INP_NO_CONSTRAINED(_inp) \
-	(((_inp)->inp_flags2 & INP2_NO_IFF_CONSTRAINED) ? true : false)
-#define INP_AWDL_UNRESTRICTED(_inp) \
-	(((_inp)->inp_flags2 & INP2_AWDL_UNRESTRICTED) ? true : false)
-#define INP_INTCOPROC_ALLOWED(_inp) \
-	(((_inp)->inp_flags2 & INP2_INTCOPROC_ALLOWED) ? true : false)
-/* A process that can access the INTCOPROC interface can also access the MANAGEMENT interface */
-#define INP_MANAGEMENT_ALLOWED(_inp) \
-	(((_inp)->inp_flags2 & (INP2_MANAGEMENT_ALLOWED | INP2_INTCOPROC_ALLOWED)) ? true : false)
-#define INP_ULTRA_CONSTRAINED_ALLOWED(_inp) \
-    (((_inp)->inp_flags2 & INP2_ULTRA_CONSTRAINED_ALLOWED) ? true : false)
-
-#endif /* BSD_KERNEL_PRIVATE */
-
-/*
- * Flags for inp_flags.
- *
- * Some of these are publicly defined for legacy reasons, as they are
- * (unfortunately) used by certain applications to determine, at compile
- * time, whether or not the OS supports certain features.
- */
-#ifdef BSD_KERNEL_PRIVATE
-#define INP_RECVOPTS            0x00000001 /* receive incoming IP options */
-#define INP_RECVRETOPTS         0x00000002 /* receive IP options for reply */
-#define INP_RECVDSTADDR         0x00000004 /* receive IP dst address */
-#define INP_HDRINCL             0x00000008 /* user supplies entire IP header */
-#define INP_HIGHPORT            0x00000010 /* user wants "high" port binding */
-#define INP_LOWPORT             0x00000020 /* user wants "low" port binding */
-#endif /* BSD_KERNEL_PRIVATE */
-
-#define INP_ANONPORT            0x00000040 /* port chosen for user */
-
-#ifdef BSD_KERNEL_PRIVATE
-#define INP_RECVIF              0x00000080 /* receive incoming interface */
-#define INP_MTUDISC             0x00000100 /* unused */
-#define INP_STRIPHDR            0x00000200 /* strip hdrs in raw_ip (for OT) */
-#define INP_RECV_ANYIF          0x00000400 /* don't restrict inbound iface */
-#define INP_INADDR_ANY          0x00000800 /* local address wasn't specified */
-#define INP_IN6ADDR_ANY         INP_INADDR_ANY
-#define INP_RECVTTL             0x00001000 /* receive incoming IP TTL */
-#define INP_UDP_NOCKSUM         0x00002000 /* turn off outbound UDP checksum */
-#define INP_BOUND_IF            0x00004000 /* bind socket to an interface */
-#endif /* BSD_KERNEL_PRIVATE */
-
-#define IN6P_IPV6_V6ONLY        0x00008000 /* restrict AF_INET6 socket for v6 */
-
-#ifdef BSD_KERNEL_PRIVATE
-#define IN6P_PKTINFO            0x00010000 /* receive IP6 dst and I/F */
-#define IN6P_HOPLIMIT           0x00020000 /* receive hoplimit */
-#define IN6P_HOPOPTS            0x00040000 /* receive hop-by-hop options */
-#define IN6P_DSTOPTS            0x00080000 /* receive dst options after rthdr */
-#define IN6P_RTHDR              0x00100000 /* receive routing header */
-#define IN6P_RTHDRDSTOPTS       0x00200000 /* receive dstoptions before rthdr */
-#define IN6P_TCLASS             0x00400000 /* receive traffic class value */
-#define INP_RECVTOS             IN6P_TCLASS     /* receive incoming IP TOS */
-#define IN6P_AUTOFLOWLABEL      0x00800000 /* attach flowlabel automatically */
-#endif /* BSD_KERNEL_PRIVATE */
-
-#define IN6P_BINDV6ONLY         0x01000000 /* do not grab IPv4 traffic */
-
-#ifdef BSD_KERNEL_PRIVATE
-#define IN6P_RFC2292            0x02000000 /* used RFC2292 API on the socket */
-#define IN6P_MTU                0x04000000 /* receive path MTU for IPv6 */
-#define INP_PKTINFO             0x08000000 /* rcv and snd PKTINFO for IPv4 */
-#define INP_FLOW_SUSPENDED      0x10000000 /* flow suspended */
-#define INP_NO_IFT_CELLULAR     0x20000000 /* do not use cellular interface */
-#define INP_FLOW_CONTROLLED     0x40000000 /* flow controlled */
-#define INP_FC_FEEDBACK         0x80000000 /* got interface flow adv feedback */
-
-#define INP_CONTROLOPTS \
-	(INP_RECVOPTS|INP_RECVRETOPTS|INP_RECVDSTADDR|INP_RECVIF|INP_RECVTTL| \
-	INP_PKTINFO|IN6P_PKTINFO|IN6P_HOPLIMIT|IN6P_HOPOPTS|IN6P_DSTOPTS| \
-	IN6P_RTHDR|IN6P_RTHDRDSTOPTS|IN6P_TCLASS|IN6P_RFC2292|IN6P_MTU)
-
-#define INP_UNMAPPABLEOPTS \
-	(IN6P_HOPOPTS|IN6P_DSTOPTS|IN6P_RTHDR|IN6P_AUTOFLOWLABEL)
-
-/*
- * Flags for inp_flags2.
- *
- * Overflowed INP flags; use INP2 prefix to avoid misuse.
- */
-#define INP2_TIMEWAIT                   0x00000001 /* in TIMEWAIT */
-#define INP2_IN_FCTREE                  0x00000002 /* in inp_fc_tree */
-#define INP2_WANT_APP_POLICY            0x00000004 /* necp app policy check is desired */
-#define INP2_NO_IFF_EXPENSIVE           0x00000008 /* do not use expensive interface */
-#define INP2_INHASHLIST                 0x00000010 /* pcb is in inp_hash list */
-#define INP2_AWDL_UNRESTRICTED          0x00000020 /* AWDL restricted mode allowed */
-#define INP2_KEEPALIVE_OFFLOAD          0x00000040 /* Enable UDP or TCP keepalive offload */
-#define INP2_INTCOPROC_ALLOWED          0x00000080 /* Allow communication via internal co-processor interfaces */
-#define INP2_CONNECT_IN_PROGRESS        0x00000100 /* A connect call is in progress, so binds are intermediate steps */
-#define INP2_CLAT46_FLOW                0x00000200 /* The flow is going to use CLAT46 path */
-#define INP2_EXTERNAL_PORT              0x00000400 /* The port is registered externally, for NECP listeners */
-#define INP2_NO_IFF_CONSTRAINED         0x00000800 /* do not use constrained interface */
-#define INP2_DONTFRAG                   0x00001000 /* mark the DF bit in the IP header to avoid fragmentation */
-#define INP2_SCOPED_BY_NECP             0x00002000 /* NECP scoped the pcb */
-#define INP2_LOGGING_ENABLED            0x00004000 /* logging enabled for the socket */
-#define INP2_LOGGED_SUMMARY             0x00008000 /* logged: the final summary */
-#define INP2_MANAGEMENT_ALLOWED         0x00010000 /* Allow communication over a management interface */
-#define INP2_MANAGEMENT_CHECKED         0x00020000 /* Checked entitlements for a management interface */
-#define INP2_BIND_IN_PROGRESS           0x00040000 /* A bind call is in progress */
-#define INP2_LAST_ROUTE_LOCAL           0x00080000 /* Last used route was local */
-#define INP2_ULTRA_CONSTRAINED_ALLOWED  0x00100000 /* Allow communication over ultra-constrained interfaces */
-#define INP2_ULTRA_CONSTRAINED_CHECKED  0x00200000 /* Checked entitlements for ultra-constrained interfaces */
-#define INP2_RECV_LINK_ADDR_TYPE        0x00400000 /* receive the type of the link level address */
-#define INP2_CONNECTION_IDLE            0x00800000 /* Connection is idle */
-
-/*
- * Flags passed to in_pcblookup*() functions.
- */
-#define INPLOOKUP_WILDCARD      1
-
-#define sotoinpcb(so)   ((struct inpcb *)(so)->so_pcb)
-#define sotoin6pcb(so)  sotoinpcb(so)
-
-struct sysctl_req;
-
-extern int ipport_lowfirstauto;
-extern int ipport_lowlastauto;
-extern int ipport_firstauto;
-extern int ipport_lastauto;
-extern int ipport_hifirstauto;
-extern int ipport_hilastauto;
-extern int allow_udp_port_exhaustion;
-#define UDP_RANDOM_PORT_RESERVE   4096
-
-/* freshly allocated PCB, it's in use */
-#define INPCB_STATE_INUSE       0x1
-/* this pcb is sitting in a a cache */
-#define INPCB_STATE_CACHED      0x2
-/* should treat as gone, will be garbage collected and freed */
-#define INPCB_STATE_DEAD        0x3
-
-/* marked as ready to be garbaged collected, should be treated as not found */
-#define WNT_STOPUSING           0xffff
-/* that pcb is being acquired, do not recycle this time */
-#define WNT_ACQUIRE             0x1
-/* release acquired mode, can be garbage collected when wantcnt is null */
-#define WNT_RELEASE             0x2
-
-extern void in_pcbinit(void);
-extern void in_pcbinfo_attach(struct inpcbinfo *);
-extern int in_pcbinfo_detach(struct inpcbinfo *);
-
-/* type of timer to be scheduled by inpcb_gc_sched and inpcb_timer_sched */
-enum {
-	INPCB_TIMER_LAZY = 0x1,
-	INPCB_TIMER_FAST,
-	INPCB_TIMER_NODELAY
-};
-extern void inpcb_gc_sched(struct inpcbinfo *, u_int32_t type);
-extern void inpcb_timer_sched(struct inpcbinfo *, u_int32_t type);
-
-extern void in_losing(struct inpcb *);
-extern void in_rtchange(struct inpcb *, int);
-extern int in_pcballoc(struct socket *, struct inpcbinfo *, struct proc *);
-extern int in_pcbbind(struct inpcb *, struct sockaddr *, struct sockaddr *, struct proc *);
-extern int in_pcbconnect(struct inpcb *, struct sockaddr *, struct proc *,
-    unsigned int, struct ifnet **);
-extern void in_pcbdetach(struct inpcb *);
-extern void in_pcbdispose(struct inpcb *);
-extern void in_pcbdisconnect(struct inpcb *);
-extern int in_pcbinshash(struct inpcb *, struct sockaddr *, int);
-extern int in_pcbladdr(struct inpcb *, struct sockaddr *, struct in_addr *,
-    unsigned int, struct ifnet **, int);
-extern struct inpcb *in_pcblookup_local(struct inpcbinfo *, struct in_addr,
-    u_int, int);
-extern struct inpcb *in_pcblookup_local_and_cleanup(struct inpcbinfo *,
-    struct in_addr, u_int, int);
-extern struct inpcb *in_pcblookup_hash(struct inpcbinfo *, struct in_addr,
-    u_int, struct in_addr, u_int, int, struct ifnet *);
-extern struct inpcb *in_pcblookup_hash_try(struct inpcbinfo *pcbinfo,
-    struct in_addr faddr, u_int fport_arg, struct in_addr laddr,
-    u_int lport_arg, int wildcard, struct ifnet *ifp);
-extern int in_pcblookup_hash_exists(struct inpcbinfo *, struct in_addr,
-    u_int, struct in_addr, u_int, int, uid_t *, gid_t *, struct ifnet *);
-extern void in_pcbnotifyall(struct inpcbinfo *, struct in_addr, int,
-    void (*)(struct inpcb *, int));
-extern void in_pcbrehash(struct inpcb *);
-extern int in_getpeeraddr(struct socket *, struct sockaddr **);
-extern int in_getsockaddr(struct socket *, struct sockaddr **);
-extern int in_getsockaddr_s(struct socket *, struct sockaddr_in *);
-extern int in_pcb_checkstate(struct inpcb *, int, int);
-extern void in_pcbremlists(struct inpcb *);
-extern void inpcb_to_compat(struct inpcb *, struct inpcb_compat *);
-#if XNU_TARGET_OS_OSX
-extern void inpcb_to_xinpcb64(struct inpcb *, struct xinpcb64 *);
-#endif /* XNU_TARGET_OS_OSX */
-
-extern int get_pcblist_n(short, struct sysctl_req *, struct inpcbinfo *);
-
-extern void inpcb_get_ports_used(ifnet_t, int, u_int32_t,
-    bitstr_t *__counted_by(bitstr_size(IP_PORTRANGE_SIZE)), struct inpcbinfo *);
-#define INPCB_OPPORTUNISTIC_THROTTLEON  0x0001
-#define INPCB_OPPORTUNISTIC_SETCMD      0x0002
-extern uint32_t inpcb_count_opportunistic(unsigned int, struct inpcbinfo *,
-    u_int32_t);
-extern uint32_t inpcb_find_anypcb_byaddr(struct ifaddr *, struct inpcbinfo *);
-extern void inp_route_copyout(struct inpcb *, struct route *);
-extern void inp_route_copyin(struct inpcb *, struct route *);
-extern int inp_bindif(struct inpcb *, unsigned int, struct ifnet **);
-extern int inp_bindtodevice(struct inpcb *, const char *);
-extern void inp_set_nocellular(struct inpcb *);
-extern void inp_clear_nocellular(struct inpcb *);
-extern void inp_set_noexpensive(struct inpcb *);
-extern void inp_set_noconstrained(struct inpcb *);
-extern void inp_set_awdl_unrestricted(struct inpcb *);
-extern boolean_t inp_get_awdl_unrestricted(struct inpcb *);
-extern void inp_clear_awdl_unrestricted(struct inpcb *);
-extern void inp_set_intcoproc_allowed(struct inpcb *);
-extern boolean_t inp_get_intcoproc_allowed(struct inpcb *);
-extern void inp_clear_intcoproc_allowed(struct inpcb *);
-extern void inp_set_management_allowed(struct inpcb *);
-extern boolean_t inp_get_management_allowed(struct inpcb *);
-extern void inp_clear_management_allowed(struct inpcb *);
-extern void inp_set_ultra_constrained_allowed(struct inpcb *);
-#if NECP
-extern void inp_update_necp_policy(struct inpcb *, struct sockaddr *, struct sockaddr *, u_int);
-extern void inp_set_want_app_policy(struct inpcb *);
-extern void inp_clear_want_app_policy(struct inpcb *);
-#endif /* NECP */
-extern u_int32_t inp_calc_flowhash(struct inpcb *);
-extern void inp_reset_fc_state(struct inpcb *);
-extern int inp_set_fc_state(struct inpcb *, int advcode);
-extern void inp_fc_unthrottle_tcp(struct inpcb *);
-extern void inp_fc_throttle_tcp(struct inpcb *inp);
-extern void inp_flowadv(uint32_t);
-extern int inp_flush(struct inpcb *, int);
-extern int inp_findinpcb_procinfo(struct inpcbinfo *, uint32_t, struct so_procinfo *);
-extern void inp_get_soprocinfo(struct inpcb *, struct so_procinfo *);
-extern int inp_update_policy(struct inpcb *);
-extern boolean_t inp_restricted_recv(struct inpcb *, struct ifnet *);
-extern boolean_t inp_restricted_send(struct inpcb *, struct ifnet *);
-extern void inp_incr_sndbytes_total(struct socket *, int);
-extern void inp_decr_sndbytes_total(struct socket *, int);
-extern void inp_count_sndbytes(struct inpcb *, u_int32_t);
-extern void inp_incr_sndbytes_unsent(struct socket *, int32_t);
-extern void inp_decr_sndbytes_unsent(struct socket *, int32_t);
-extern int32_t inp_get_sndbytes_allunsent(struct socket *, u_int32_t);
-extern void inp_decr_sndbytes_allunsent(struct socket *, u_int32_t);
-extern void inp_get_activity_bitmap(struct inpcb *inp, activity_bitmap_t *b);
-extern void inp_update_last_owner(struct socket *so, struct proc *p, struct proc *ep);
-extern void inp_copy_last_owner(struct socket *so, struct socket *head);
-extern void inp_enter_bind_in_progress(struct socket *so);
-extern void inp_exit_bind_in_progress(struct socket *so);
-#if SKYWALK
-extern void inp_update_netns_flags(struct socket *so);
-#endif /* SKYWALK */
-#endif /* BSD_KERNEL_PRIVATE */
-#ifdef KERNEL_PRIVATE
-/* exported for PPP */
-extern void inp_clear_INP_INADDR_ANY(struct socket *);
-extern int inp_limit_companion_link(struct inpcbinfo *pcbinfo, u_int32_t limit);
-extern int inp_recover_companion_link(struct inpcbinfo *pcbinfo);
-extern void in_management_interface_check(void);
-extern void in_pcb_check_management_entitled(struct inpcb *inp);
-extern void in_pcb_check_ultra_constrained_entitled(struct inpcb *inp);
-extern char *inp_snprintf_tuple(struct inpcb *, char *__sized_by(buflen) buf, size_t buflen);
-extern int in_pcbsetport(struct in_addr, struct sockaddr *, struct inpcb *, struct proc *, int);
-#endif /* KERNEL_PRIVATE */
 #endif /* !_NETINET_IN_PCB_H_ */

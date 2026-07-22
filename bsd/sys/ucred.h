@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2004 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995, 1997 Apple Computer, Inc. All Rights Reserved */
-/*
  * Copyright (c) 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,172 +27,259 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ucred.h	8.4 (Berkeley) 1/9/95
- */
-/*
- * NOTICE: This file was modified by SPARTA, Inc. in 2005 to introduce
- * support for mandatory and extensible security protections.  This notice
- * is included in support of clause 2.2 (b) of the Apple Public License,
- * Version 2.0.
  */
 
 #ifndef _SYS_UCRED_H_
-#define _SYS_UCRED_H_
+#define	_SYS_UCRED_H_
 
-#include <sys/appleapiopts.h>
-#include <sys/cdefs.h>
-#include <sys/param.h>
+#include <sys/types.h>
+#if defined(_KERNEL) || defined(_WANT_UCRED)
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
+#endif
 #include <bsm/audit.h>
 
-struct label;
-
-#ifdef __APPLE_API_UNSTABLE
-#ifdef KERNEL
-#include <sys/queue.h>
-#include <os/base.h>
-
-/*!
- * @struct ucred
- *
- * @brief
- * In-kernel credential structure.
- *
- * @discussion
- * Note that this structure should not be used outside the kernel,
- * nor should it or copies of it be exported outside.
- *
- * A credential has a relatively simple lifetime, with 3 phases:
- * 1. construction
- * 2. publication
- * 3. death
- *
- *
- * Construction
- * ~~~~~~~~~~~~
- *
- * The construction phase happens via various MACF hooks,
- * typically with the "associate" or "update" suffix.
- *
- * During this phase, the credential structure is completely private,
- * and can't be looked up. All "associate" and "update" callouts are
- * made serially (so no locking is required for clients to ensure
- * atomicity of updates) and keeping references on the cred is forbidden.
- *
- *
- * Publication
- * ~~~~~~~~~~~
- *
- * Once the credential has been constructed, it is being published
- * on its owning structure (typically the proc) and added into
- * a uniquing hash table.
- *
- * After this point, the credential becomes a refcounted immutable
- * "value type" data structure. MACF clients which have set labels
- * are not allowed to modify this label pointer anymore (though
- * their label itself might be mutable or contain caches).
- *
- * It means that while a client holds a reference on a credential,
- * it can consult labels without further synchronization or references.
- *
- *
- * Death
- * ~~~~~
- *
- * Credentials are managed under the smr_kauth_cred domain,
- * and retired according to the <kern/smr.h> rules.
- *
- * Once it is safe for the credential to be freed,
- * callbacks will clean up the resources the credential
- * holds onto via the MACF cred_label_destroy() hook.
- *
- * It means that under an smr_kauth_cred critical section,
- * clients can consult labels without further synchronization
- * or references, even after the credential hit a "0" refcount.
- *
- *
- * KPIs to interact with this data structure live in <sys/kauth.h>
+#if defined(_KERNEL) || defined(_WANT_UCRED)
+/*
+ * Flags for cr_flags.
  */
-struct ucred {
-#if BSD_KERNEL_PRIVATE
-	struct ucred_rw        *cr_rw;
-	void                   *cr_unused;
-#else
-	LIST_ENTRY(ucred)       cr_link; /* never modify this without KAUTH_CRED_HASH_LOCK */
-#endif
-	u_long                  cr_ref;  /* reference count */
-
-	struct posix_cred {
-		/*
-		 * The credential hash depends on everything from this point on
-		 * (see kauth_cred_get_hashkey)
-		 */
-		uid_t   cr_uid;         /* effective user id */
-		uid_t   cr_ruid;        /* real user id */
-		uid_t   cr_svuid;       /* saved user id */
-		u_short cr_ngroups;     /* number of groups in advisory list */
-#if XNU_KERNEL_PRIVATE
-		u_short __cr_padding;
-#endif
-		gid_t   cr_groups[NGROUPS];/* advisory group list */
-		gid_t   cr_rgid;        /* real group id */
-		gid_t   cr_svgid;       /* saved group id */
-		uid_t   cr_gmuid;       /* UID for group membership purposes */
-		int     cr_flags;       /* flags on credential */
-	} cr_posix;
-	struct label    * OS_PTRAUTH_SIGNED_PTR_AUTH_NULL("ucred.cr_label") cr_label;     /* MAC label */
-
-	/*
-	 * NOTE: If anything else (besides the flags)
-	 * added after the label, you must change
-	 * kauth_cred_find().
-	 */
-	struct au_session cr_audit;             /* user auditing data */
-};
-#else /* KERNEL */
-struct ucred;
-struct posix_cred;
-#endif /* KERNEL */
-
-#ifndef _KAUTH_CRED_T
-#define _KAUTH_CRED_T
-typedef struct ucred *kauth_cred_t;
-typedef struct posix_cred *posix_cred_t;
-#endif  /* !_KAUTH_CRED_T */
+#define	CRED_FLAG_CAPMODE	0x00000001	/* In capability mode. */
+#define	CRED_FLAG_GROUPSET	0x00000002	/* Groups have been set. */
 
 /*
- * Credential flags that can be set on a credential
+ * Number of groups inlined in 'struct ucred'.  It must stay reasonably low as
+ * it is also used by some functions to allocate an array of this size on the
+ * stack.
  */
-#define CRF_NOMEMBERD   0x00000001      /* memberd opt out by setgroups() */
-#define CRF_MAC_ENFORCE 0x00000002      /* force entry through MAC Framework */
-                                        /* also forces credential cache miss */
+#define	CRED_SMALLGROUPS_NB	16
+
+struct label;
+struct loginclass;
+struct prison;
+struct uidinfo;
+
+/*
+ * Credentials.
+ *
+ * Please do not inspect cr_uid directly to determine superuserness.  The
+ * priv(9) interface should be used to check for privilege.
+ *
+ * Lock reference:
+ *      c - cr_mtx
+ *
+ * Unmarked fields are constant after creation.
+ *
+ * See "Credential management" comment in kern_prot.c for more information.
+ */
+struct ucred {
+	struct mtx cr_mtx;
+	long	cr_ref;			/* (c) reference count */
+	u_int	cr_users;		/* (c) proc + thread using this cred */
+	u_int	cr_flags;		/* credential flags */
+	struct auditinfo_addr	cr_audit;	/* Audit properties. */
+	int	cr_ngroups;		/* number of supplementary groups */
+#define	cr_startcopy cr_uid
+	uid_t	cr_uid;			/* effective user id */
+	uid_t	cr_ruid;		/* real user id */
+	uid_t	cr_svuid;		/* saved user id */
+	gid_t	cr_gid;			/* effective group id */
+	gid_t	cr_rgid;		/* real group id */
+	gid_t	cr_svgid;		/* saved group id */
+	struct uidinfo	*cr_uidinfo;	/* per euid resource consumption */
+	struct uidinfo	*cr_ruidinfo;	/* per ruid resource consumption */
+	struct prison	*cr_prison;	/* jail(2) */
+	struct loginclass	*cr_loginclass; /* login class */
+	void		*cr_pspare2[2];	/* general use 2 */
+#define	cr_endcopy	cr_label
+	struct label	*cr_label;	/* MAC label */
+	gid_t	*cr_groups;		/* groups */
+	int	cr_agroups;		/* Available groups */
+	/* storage for small groups */
+	gid_t   cr_smallgroups[CRED_SMALLGROUPS_NB];
+};
+#define	NOCRED	((struct ucred *)0)	/* no credential available */
+#define	FSCRED	((struct ucred *)-1)	/* filesystem credential */
+#endif /* _KERNEL || _WANT_UCRED */
+
+#define	XU_NGROUPS	16
 
 /*
  * This is the external representation of struct ucred.
  */
 struct xucred {
-	u_int   cr_version;             /* structure layout version */
-	uid_t   cr_uid;                 /* effective user id */
-	short   cr_ngroups;             /* number of advisory groups */
-	gid_t   cr_groups[NGROUPS];     /* advisory group list */
+	u_int	cr_version;		/* structure layout version */
+	uid_t	cr_uid;			/* effective user id */
+	short	cr_ngroups;		/* number of groups (incl. cr_gid). */
+	union {
+		/*
+		 * The effective GID has been the first element of cr_groups[]
+		 * for historical reasons.  It should be accessed using the
+		 * 'cr_gid' identifier.  Supplementary groups should be accessed
+		 * using cr_sgroups[].  Note that 'cr_ngroups' currently
+		 * includes the effective GID.
+		 *
+		 * XXXOC: On the next API change (requires versioning), please
+		 * replace this union with a true unaliased field 'cr_gid' and
+		 * make sure that cr_groups[]/'cr_ngroups' only account for
+		 * supplementary groups.
+		 */
+		struct {
+			gid_t	cr_gid;		/* effective group id */
+			gid_t	cr_sgroups[XU_NGROUPS - 1];
+		};
+		gid_t	cr_groups[XU_NGROUPS];	/* groups */
+	};
+	union {
+		void	*_cr_unused1;	/* compatibility with old ucred */
+		pid_t	cr_pid;
+	};
 };
-#define XUCRED_VERSION  0
+#define	XUCRED_VERSION	0
 
-#define cr_gid cr_groups[0]
-#define NOCRED ((kauth_cred_t )0)       /* no credential available */
-#define FSCRED ((kauth_cred_t )-1)      /* filesystem credential */
+struct mac;
+/*
+ * Structure to pass as an argument to the setcred() system call.
+ */
+struct setcred {
+	uid_t	 sc_uid;		/* effective user id */
+	uid_t	 sc_ruid;		/* real user id */
+	uid_t	 sc_svuid;		/* saved user id */
+	gid_t	 sc_gid;		/* effective group id */
+	gid_t	 sc_rgid;		/* real group id */
+	gid_t	 sc_svgid;		/* saved group id */
+	u_int	 sc_pad;		/* see 32-bit compat structure */
+	u_int	 sc_supp_groups_nb;	/* number of supplementary groups */
+	gid_t	*sc_supp_groups;	/* supplementary groups */
+	struct mac *sc_label;		/* MAC label */
+};
+/*
+ * Initializer for 'struct setcred' variables.
+ */
+#define	SETCRED_INITIALIZER	{ -1, -1, -1, -1, -1, -1, 0, 0, NULL, NULL }
 
-#define IS_VALID_CRED(_cr)      ((_cr) != NOCRED && (_cr) != FSCRED)
+/*
+ * Flags to setcred().
+ */
+#define	SETCREDF_UID		(1u << 0)
+#define	SETCREDF_RUID		(1u << 1)
+#define	SETCREDF_SVUID		(1u << 2)
+#define	SETCREDF_GID		(1u << 3)
+#define	SETCREDF_RGID		(1u << 4)
+#define	SETCREDF_SVGID		(1u << 5)
+#define	SETCREDF_SUPP_GROUPS	(1u << 6)
+#define	SETCREDF_MAC_LABEL	(1u << 7)
 
-#ifdef KERNEL
-#ifdef __APPLE_API_OBSOLETE
+#ifdef _KERNEL
+/*
+ * Masks of the currently valid flags to setcred().
+ *
+ * Please consider reserving some of the high bits in the 'flags' argument for
+ * versioning when almost all of them are in use.
+ */
+#define	SETCREDF_MASK	(SETCREDF_UID | SETCREDF_RUID | SETCREDF_SVUID | \
+    SETCREDF_GID | SETCREDF_RGID | SETCREDF_SVGID | SETCREDF_SUPP_GROUPS | \
+    SETCREDF_MAC_LABEL)
+
+struct setcred32 {
+	uid_t	 sc_uid;
+	uid_t	 sc_ruid;
+	uid_t	 sc_svuid;
+	gid_t	 sc_gid;
+	gid_t	 sc_rgid;
+	gid_t	 sc_svgid;
+	u_int	 sc_pad;
+	u_int	 sc_supp_groups_nb;
+	uint32_t sc_supp_groups;	/* gid_t [*] */
+	uint32_t sc_label;		/* struct mac32 [*] */
+};
+
+#ifdef COMPAT_FREEBSD32
+/* 32-bit compatible version of xucred */
+struct xucred32 {
+	u_int	cr_version;		/* structure layout version */
+	uid_t	cr_uid;			/* effective user id */
+	short	cr_ngroups;		/* number of groups (incl. cr_gid). */
+	gid_t	cr_groups[XU_NGROUPS];	/* groups */
+	pid_t	cr_pid;
+};
+#endif
+
+struct thread;
+
+/* Common native and 32-bit compatibility entry point. */
+int	user_setcred(struct thread *td, const u_int flags,
+	    struct setcred *const wcred);
+
+struct proc;
+
+struct credbatch {
+	struct ucred *cred;
+	u_int users;
+	long ref;
+};
+
+static inline void
+credbatch_prep(struct credbatch *crb)
+{
+	crb->cred = NULL;
+	crb->users = 0;
+	crb->ref = 0;
+}
+void	credbatch_add(struct credbatch *crb, struct thread *td);
+
+static inline void
+credbatch_process(struct credbatch *crb __unused)
+{
+
+}
+
+void	credbatch_final(struct credbatch *crb);
+
+void	change_egid(struct ucred *newcred, gid_t egid);
+void	change_euid(struct ucred *newcred, struct uidinfo *euip);
+void	change_rgid(struct ucred *newcred, gid_t rgid);
+void	change_ruid(struct ucred *newcred, struct uidinfo *ruip);
+void	change_svgid(struct ucred *newcred, gid_t svgid);
+void	change_svuid(struct ucred *newcred, uid_t svuid);
+void	crcopy(struct ucred *dest, struct ucred *src);
+struct ucred	*crcopysafe(struct proc *p, struct ucred *cr);
+struct ucred	*crdup(struct ucred *cr);
+void	crextend(struct ucred *cr, int n);
+void	proc_set_cred(struct proc *p, struct ucred *newcred);
+bool	proc_set_cred_enforce_proc_lim(struct proc *p, struct ucred *newcred);
+void	proc_unset_cred(struct proc *p, bool decrement_proc_count);
+void	crfree(struct ucred *cr);
+struct ucred	*crcowsync(void);
+struct ucred	*crget(void);
+struct ucred	*crhold(struct ucred *cr);
+struct ucred	*crcowget(struct ucred *cr);
+void	crcowfree(struct thread *td);
+void	cru2x(struct ucred *cr, struct xucred *xcr);
+void	cru2xt(struct thread *td, struct xucred *xcr);
+void	crsetgroups(struct ucred *cr, int ngrp, const gid_t *groups);
+void	crsetgroups_and_egid(struct ucred *cr, int ngrp, const gid_t *groups,
+	    const gid_t default_egid);
+bool	cr_xids_subset(struct ucred *active_cred, struct ucred *obj_cred);
+
+/*
+ * Returns whether gid designates a primary group in cred.
+ */
+static inline bool
+group_is_primary(const gid_t gid, const struct ucred *const cred)
+{
+	return (gid == cred->cr_groups[0] || gid == cred->cr_rgid ||
+	    gid == cred->cr_svgid);
+}
+bool	group_is_supplementary(const gid_t gid, const struct ucred *const cred);
+bool	groupmember(gid_t gid, const struct ucred *cred);
+bool	realgroupmember(gid_t gid, const struct ucred *cred);
+
+#else /* !_KERNEL */
+
 __BEGIN_DECLS
-int             suser(kauth_cred_t cred, u_short *acflag);
-int             set_security_token(struct proc *p, struct ucred *cred);
-void            cru2x(kauth_cred_t cr, struct xucred *xcr);
+int	setcred(u_int flags, const struct setcred *wcred, size_t size);
 __END_DECLS
-#endif /* __APPLE_API_OBSOLETE */
-#endif /* KERNEL */
-#endif /* __APPLE_API_UNSTABLE */
+
+#endif /* _KERNEL */
 
 #endif /* !_SYS_UCRED_H_ */

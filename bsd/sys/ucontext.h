@@ -1,64 +1,76 @@
-/*
- * Copyright (c) 2002-2006 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
+ * Copyright (c) 1999 Marcel Moolenaar
+ * All rights reserved.
  *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer 
+ *    in this position and unchanged.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The name of the author may not be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
  *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SYS_UCONTEXT_H_
-#define _SYS_UCONTEXT_H_
+#define	_SYS_UCONTEXT_H_
 
-#include <sys/cdefs.h>
-#include <sys/_types.h>
+#include <sys/signal.h>
+#include <machine/ucontext.h>
+#include <sys/_ucontext.h>
 
-#include <machine/_mcontext.h>
-#include <sys/_types/_ucontext.h>
+#define	UCF_SWAPPED	0x00000001	/* Used by swapcontext(3). */
 
-#include <sys/_types/_sigset_t.h>
+#ifndef _KERNEL
 
-#ifdef KERNEL
-#include <machine/types.h>      /* user_addr_t, user_size_t */
+__BEGIN_DECLS
 
-/* kernel representation of struct ucontext64 for 64 bit processes */
-typedef struct user_ucontext64 {
-	int                             uc_onstack;
-	sigset_t                        uc_sigmask;     /* signal mask */
-	struct user64_sigaltstack       uc_stack;       /* stack */
-	user_addr_t                     uc_link;        /* ucontext pointer */
-	user_size_t                     uc_mcsize;      /* mcontext size */
-	user_addr_t                     uc_mcontext64;  /* machine context */
-} user_ucontext64_t;
+int	getcontext(ucontext_t *) __returns_twice;
+ucontext_t *getcontextx(void);
+int	setcontext(const ucontext_t *);
+void	makecontext(ucontext_t *, void (*)(void), int, ...);
+int	signalcontext(ucontext_t *, int, __sighandler_t *);
+int	swapcontext(ucontext_t *, const ucontext_t *);
 
-typedef struct user_ucontext32 {
-	int                             uc_onstack;
-	sigset_t                        uc_sigmask;     /* signal mask */
-	struct user32_sigaltstack       uc_stack;       /* stack */
-	user32_addr_t                   uc_link;        /* ucontext pointer */
-	user32_size_t                   uc_mcsize;      /* mcontext size */
-	user32_addr_t                   uc_mcontext;    /* machine context */
-} user_ucontext32_t;
+#if __BSD_VISIBLE
+int __getcontextx_size(void);
+int __fillcontextx(char *ctx) __returns_twice;
+int __fillcontextx2(char *ctx);
+#endif
 
-#endif  /* KERNEL */
+__END_DECLS
 
-#endif /* _SYS_UCONTEXT_H_ */
+#else /* _KERNEL */
+
+struct thread;
+
+/*
+ * Flags for get_mcontext().  The low order 4 bits (i.e a mask of 0x0f) are
+ * reserved for use by machine independent code.  All other bits are for use
+ * by machine dependent code.
+ */
+#define	GET_MC_CLEAR_RET	1
+
+/* Machine-dependent functions: */
+int	get_mcontext(struct thread *, mcontext_t *, int);
+int	set_mcontext(struct thread *, mcontext_t *);
+
+#endif /* !_KERNEL */
+
+#endif /* !_SYS_UCONTEXT_H_ */

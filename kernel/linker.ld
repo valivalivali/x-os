@@ -34,10 +34,29 @@ SECTIONS
         *(.rodata .rodata.*)
     } :rodata
 
+    .sysinit_set : {
+        PROVIDE(__sysinit_start = .);
+        KEEP(*(.sysinit_set))
+        PROVIDE(__sysinit_end = .);
+    } :rodata
+
+    .sysuninit_set : {
+        PROVIDE(__sysuninit_start = .);
+        KEEP(*(.sysuninit_set))
+        PROVIDE(__sysuninit_end = .);
+    } :rodata
+
     . = ALIGN(CONSTANT(MAXPAGESIZE));
 
     .data : {
         *(.data .data.*)
+    } :data
+
+    .set_pcpu : {
+        PROVIDE(__start_set_pcpu = .);
+        KEEP(*(.set_pcpu))
+        KEEP(*(set_pcpu))
+        PROVIDE(__stop_set_pcpu = .);
     } :data
 
     .bss : {

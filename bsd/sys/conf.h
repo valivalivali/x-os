@@ -1,34 +1,10 @@
-/*
- * Copyright (c) 2000-2012 Apple Computer, Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
+ * Copyright (c) 2000
+ *	Poul-Henning Kamp.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
  * All or some portions of this file are derived from material licensed
  * to the University of California by American Telephone and Telegraph
@@ -43,11 +19,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -62,255 +34,372 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)conf.h	8.5 (Berkeley) 1/9/95
  */
 
 #ifndef _SYS_CONF_H_
-#define _SYS_CONF_H_ 1
+#define	_SYS_CONF_H_
 
-#include <sys/appleapiopts.h>
-#include <sys/cdefs.h>
+#ifdef _KERNEL
+#include <sys/_eventhandler.h>
+#else
 #include <sys/queue.h>
-#include <stdint.h>
+#endif
+#include <sys/_timespec.h>
+
+struct snapdata;
+struct devfs_dirent;
+struct cdevsw;
+struct file;
+
+struct cdev {
+	void		*si_spare0;
+	u_int		si_flags;
+#define	SI_ETERNAL	0x0001	/* never destroyed */
+#define	SI_ALIAS	0x0002	/* carrier of alias name */
+#define	SI_NAMED	0x0004	/* make_dev{_alias} has been called */
+#define	SI_UNUSED1	0x0008	/* unused */
+#define	SI_CHILD	0x0010	/* child of another struct cdev **/
+#define	SI_DUMPDEV	0x0080	/* is kernel dumpdev */
+#define	SI_CLONELIST	0x0200	/* on a clone list */
+#define	SI_UNMAPPED	0x0400	/* can handle unmapped I/O */
+#define	SI_NOSPLIT	0x0800	/* I/O should not be split up */
+	struct timespec	si_atime;
+	struct timespec	si_ctime;
+	struct timespec	si_mtime;
+	uid_t		si_uid;
+	gid_t		si_gid;
+	mode_t		si_mode;
+	struct ucred	*si_cred;	/* cached clone-time credential */
+	int		si_drv0;
+	int		si_refcount;
+	LIST_ENTRY(cdev)	si_list;
+	LIST_ENTRY(cdev)	si_clone;
+	LIST_HEAD(, cdev)	si_children;
+	LIST_ENTRY(cdev)	si_siblings;
+	struct cdev *si_parent;
+	struct mount	*si_mountpt;
+	void		*si_drv1, *si_drv2;
+	struct cdevsw	*si_devsw;
+	int		si_iosize_max;	/* maximum I/O size (for physio &al) */
+	u_long		si_usecount;
+	u_long		si_threadcount;
+	union {
+		struct snapdata *__sid_snapdata;
+	} __si_u;
+	char		si_name[SPECNAMELEN + 1];
+};
+
+#define	si_snapdata	__si_u.__sid_snapdata
+
+#ifdef _KERNEL
 
 /*
  * Definitions of device driver entry switches
  */
 
+struct bio;
 struct buf;
-struct proc;
-struct tty;
+struct dumperinfo;
+struct kerneldumpheader;
+struct thread;
 struct uio;
+struct knote;
+struct clonedevs;
+struct vm_object;
 struct vnode;
 
-/*
- * Types for d_type.
- * These are returned by ioctl FIODTYPE
- */
-#define D_TAPE  1
-#define D_DISK  2
-#define D_TTY   3
+typedef int d_open_t(struct cdev *dev, int oflags, int devtype, struct thread *td);
+typedef int d_fdopen_t(struct cdev *dev, int oflags, struct thread *td, struct file *fp);
+typedef int d_close_t(struct cdev *dev, int fflag, int devtype, struct thread *td);
+typedef void d_strategy_t(struct bio *bp);
+typedef int d_ioctl_t(struct cdev *dev, u_long cmd, caddr_t data,
+		      int fflag, struct thread *td);
 
-#ifdef KERNEL
-/*
- * Device switch function types.
- */
-typedef int  open_close_fcn_t(dev_t dev, int flags, int devtype,
-    struct proc *p);
+typedef int d_read_t(struct cdev *dev, struct uio *uio, int ioflag);
+typedef int d_write_t(struct cdev *dev, struct uio *uio, int ioflag);
+typedef int d_poll_t(struct cdev *dev, int events, struct thread *td);
+typedef int d_kqfilter_t(struct cdev *dev, struct knote *kn);
+typedef int d_mmap_t(struct cdev *dev, vm_ooffset_t offset, vm_paddr_t *paddr,
+		     int nprot, vm_memattr_t *memattr);
+typedef int d_mmap_single_t(struct cdev *cdev, vm_ooffset_t *offset,
+    vm_size_t size, struct vm_object **object, int nprot);
+typedef void d_purge_t(struct cdev *dev);
 
-typedef struct tty *d_devtotty_t(dev_t dev);
+typedef int dumper_t(
+	void *_priv,		/* Private to the driver. */
+	void *_virtual,		/* Virtual (mapped) address. */
+	off_t _offset,		/* Byte-offset to write at. */
+	size_t _length);	/* Number of bytes to dump. */
+typedef int dumper_start_t(struct dumperinfo *di, void *key, uint32_t keysize);
+typedef int dumper_hdr_t(struct dumperinfo *di, struct kerneldumpheader *kdh);
 
-typedef void strategy_fcn_t(struct buf *bp);
-typedef int  ioctl_fcn_t(dev_t dev, u_long cmd,
-    caddr_t __sized_by(IOCPARM_LEN(cmd)) data,
-    int fflag, struct proc *p);
-typedef int  dump_fcn_t(void);     /* parameters vary by architecture */
-typedef int  psize_fcn_t(dev_t dev);
-typedef int  read_write_fcn_t(dev_t dev, struct uio *uio, int ioflag);
-typedef int  stop_fcn_t(struct tty *tp, int rw);
-typedef int  reset_fcn_t(int uban);
-typedef int  select_fcn_t(dev_t dev, int which, void * wql, struct proc *p);
-typedef int  mmap_fcn_t(void);
-typedef int  rsvd_fcn_t(void);
-
-typedef void empty_fcn_t(void);
-
-#define d_open_t        open_close_fcn_t
-#define d_close_t       open_close_fcn_t
-#define d_read_t        read_write_fcn_t
-#define d_write_t       read_write_fcn_t
-#define d_ioctl_t       ioctl_fcn_t
-#define d_stop_t        stop_fcn_t
-#define d_reset_t       reset_fcn_t
-#define d_select_t      select_fcn_t
-#define d_mmap_t        mmap_fcn_t
-#define d_strategy_t    strategy_fcn_t
-
-
-__BEGIN_DECLS
-int             enodev(void);
-void    enodev_strat(void);
-__END_DECLS
+#endif /* _KERNEL */
 
 /*
- * Versions of enodev() pointer, cast to appropriate function type. For use
- * in empty devsw slots.
+ * Types for d_flags.
  */
-#define eno_opcl                ((open_close_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_strat               ((strategy_fcn_t *)(empty_fcn_t*)&enodev_strat)
-#define eno_ioctl               ((ioctl_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_dump                ((dump_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_psize               ((psize_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_rdwrt               ((read_write_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_stop                ((stop_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_reset               ((reset_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_mmap                ((mmap_fcn_t *)(empty_fcn_t*)&enodev)
-#define eno_select              ((select_fcn_t *)(empty_fcn_t*)&enodev)
+#define	D_TAPE	0x0001
+#define	D_DISK	0x0002
+#define	D_TTY	0x0004
+#define	D_MEM	0x0008	/* /dev/(k)mem */
 
-/* For source backward compatibility only! */
-#define eno_getc                ((rsvd_fcn_t *)&enodev)
-#define eno_putc                ((rsvd_fcn_t *)&enodev)
+/* Defined uid and gid values. */
+#define		UID_ROOT	0
+#define		UID_BIN		3
+#define		UID_UUCP	66
+#define		UID_NOBODY	65534
+
+#define		GID_WHEEL	0
+#define		GID_KMEM	2
+#define		GID_TTY		4
+#define		GID_OPERATOR	5
+#define		GID_BIN		7
+#define		GID_GAMES	13
+#define		GID_AUDIO	43
+#define		GID_VIDEO	44
+#define		GID_RT_PRIO	47
+#define		GID_ID_PRIO	48
+#define		GID_DIALER	68
+#define		GID_U2F		116
+#define		GID_VMM		978
+#define		GID_NOGROUP	65533
+#define		GID_NOBODY	65534
+
+#ifdef _KERNEL
+
+#define	D_TYPEMASK	0xffff
 
 /*
- * Block device switch table
+ * Flags for d_flags which the drivers can set.
  */
-struct bdevsw {
-	open_close_fcn_t        *d_open;
-	open_close_fcn_t        *d_close;
-	strategy_fcn_t          *d_strategy;
-	ioctl_fcn_t             *d_ioctl;
-	dump_fcn_t              *d_dump;
-	psize_fcn_t             *d_psize;
-	int                     d_type;
-};
-
-
-d_devtotty_t    nodevtotty;
-d_write_t       nowrite;
-
-#ifdef KERNEL_PRIVATE
-extern struct bdevsw bdevsw[];
-extern int (*bootcache_contains_block)(dev_t device, u_int64_t blkno);
-#endif /* KERNEL_PRIVATE */
+#define	D_TRACKCLOSE	0x00080000	/* track all closes */
+#define	D_MMAP_ANON	0x00100000	/* special treatment in vm_mmap.c */
+#define	D_GIANTOK	0x00200000	/* suppress warning about using Giant */
+#define	D_NEEDGIANT	0x00400000	/* driver want Giant */
+#define	D_NEEDMINOR	0x00800000	/* driver uses clone_create() */
 
 /*
- * Contents of empty bdevsw slot.
+ * Version numbers.
  */
-#define  NO_BDEVICE                                             \
-	{ eno_opcl,	eno_opcl,	eno_strat, eno_ioctl,   \
-	  eno_dump,	eno_psize,	0       }
+#define	D_VERSION_00	0x20011966
+#define	D_VERSION_01	0x17032005	/* Add d_uid,gid,mode & kind */
+#define	D_VERSION_02	0x28042009	/* Add d_mmap_single */
+#define	D_VERSION_03	0x17122009	/* d_mmap takes memattr,vm_ooffset_t */
+#define	D_VERSION_04	0x5c48c353	/* SPECNAMELEN bumped to MAXNAMLEN */
+#define	D_VERSION	D_VERSION_04
 
+/*
+ * Flags used for internal housekeeping
+ */
+#define	D_INIT		0x80000000	/* cdevsw initialized */
 
 /*
  * Character device switch table
  */
 struct cdevsw {
-	open_close_fcn_t        *d_open;
-	open_close_fcn_t        *d_close;
-	read_write_fcn_t        *d_read;
-	read_write_fcn_t        *d_write;
-	ioctl_fcn_t             *d_ioctl;
-	stop_fcn_t              *d_stop;
-	reset_fcn_t             *d_reset;
-	struct  tty             **d_ttys;
-	select_fcn_t            *d_select;
-	mmap_fcn_t              *d_mmap;
-	strategy_fcn_t          *d_strategy;
-	rsvd_fcn_t              *d_reserved_1;
-	rsvd_fcn_t              *d_reserved_2;
-	int                     d_type;
+	int			d_version;
+	u_int			d_flags;
+	const char		*d_name;
+	d_open_t		*d_open;
+	d_fdopen_t		*d_fdopen;
+	d_close_t		*d_close;
+	d_read_t		*d_read;
+	d_write_t		*d_write;
+	d_ioctl_t		*d_ioctl;
+	d_poll_t		*d_poll;
+	d_mmap_t		*d_mmap;
+	d_strategy_t		*d_strategy;
+	void			*d_spare0;
+	d_kqfilter_t		*d_kqfilter;
+	d_purge_t		*d_purge;
+	d_mmap_single_t		*d_mmap_single;
+
+	int32_t			d_spare1[3];
+	void			*d_spare2[3];
+
+	/* These fields should not be messed with by drivers */
+	LIST_HEAD(, cdev)	d_devs;
+	int			d_spare3;
+	union {
+		struct cdevsw		*gianttrick;
+		SLIST_ENTRY(cdevsw)	postfree_list;
+	} __d_giant;
+};
+#define	d_gianttrick		__d_giant.gianttrick
+#define	d_postfree_list		__d_giant.postfree_list
+
+struct module;
+
+struct devsw_module_data {
+	int	(*chainevh)(struct module *, int, void *); /* next handler */
+	void	*chainarg;	/* arg for next event handler */
+	/* Do not initialize fields hereafter */
 };
 
-#ifdef BSD_KERNEL_PRIVATE
+#define	DEV_MODULE_ORDERED(name, evh, arg, ord)				\
+static moduledata_t name##_mod = {					\
+    #name,								\
+    evh,								\
+    arg									\
+};									\
+DECLARE_MODULE(name, name##_mod, SI_SUB_DRIVERS, ord)
 
-extern uint64_t cdevsw_flags[];
-#define CDEVSW_SELECT_KQUEUE 0x01
-#define CDEVSW_USE_OFFSET    0x02
-#define CDEVSW_IS_PTC        0x04
-#define CDEVSW_IS_PTS        0x08
+#define	DEV_MODULE(name, evh, arg)					\
+    DEV_MODULE_ORDERED(name, evh, arg, SI_ORDER_MIDDLE)
 
-struct thread;
-#endif /* BSD_KERNEL_PRIVATE */
+void clone_setup(struct clonedevs **cdp);
+void clone_cleanup(struct clonedevs **);
+#define	CLONE_UNITMASK	0xfffff
+#define	CLONE_FLAG0	(CLONE_UNITMASK + 1)
+int clone_create(struct clonedevs **, struct cdevsw *, int *unit, struct cdev **dev, int extra);
 
+#define	MAKEDEV_REF		0x01
+#define	MAKEDEV_WHTOUT		0x02
+#define	MAKEDEV_NOWAIT		0x04
+#define	MAKEDEV_WAITOK		0x08
+#define	MAKEDEV_ETERNAL		0x10
+#define	MAKEDEV_CHECKNAME	0x20
+struct make_dev_args {
+	size_t		 mda_size;
+	int		 mda_flags;
+	struct cdevsw	*mda_devsw;
+	struct ucred	*mda_cr;
+	uid_t		 mda_uid;
+	gid_t		 mda_gid;
+	int		 mda_mode;
+	int		 mda_unit;
+	void		*mda_si_drv1;
+	void		*mda_si_drv2;
+};
+void make_dev_args_init_impl(struct make_dev_args *_args, size_t _sz);
+#define	make_dev_args_init(a) \
+    make_dev_args_init_impl((a), sizeof(struct make_dev_args))
 
-/*
- * Contents of empty cdevsw slot.
- */
+void	delist_dev(struct cdev *_dev);
+void	destroy_dev(struct cdev *_dev);
+int	destroy_dev_sched(struct cdev *dev);
+int	destroy_dev_sched_cb(struct cdev *dev, void (*cb)(void *), void *arg);
+void	destroy_dev_drain(struct cdevsw *csw);
+void	dev_copyname(struct cdev *dev, char *path, size_t len);
+struct cdevsw *dev_refthread(struct cdev *_dev, int *_ref);
+struct cdevsw *devvn_refthread(struct vnode *vp, struct cdev **devp, int *_ref);
+void	dev_relthread(struct cdev *_dev, int _ref);
+void	dev_depends(struct cdev *_pdev, struct cdev *_cdev);
+void	dev_ref(struct cdev *dev);
+void	dev_refl(struct cdev *dev);
+void	dev_rel(struct cdev *dev);
+struct cdev *make_dev(struct cdevsw *_devsw, int _unit, uid_t _uid, gid_t _gid,
+		int _perms, const char *_fmt, ...) __printflike(6, 7);
+struct cdev *make_dev_cred(struct cdevsw *_devsw, int _unit,
+		struct ucred *_cr, uid_t _uid, gid_t _gid, int _perms,
+		const char *_fmt, ...) __printflike(7, 8);
+struct cdev *make_dev_credf(int _flags,
+		struct cdevsw *_devsw, int _unit,
+		struct ucred *_cr, uid_t _uid, gid_t _gid, int _mode,
+		const char *_fmt, ...) __printflike(8, 9);
+int	make_dev_p(int _flags, struct cdev **_cdev, struct cdevsw *_devsw,
+		struct ucred *_cr, uid_t _uid, gid_t _gid, int _mode,
+		const char *_fmt, ...) __printflike(8, 9);
+int	make_dev_s(struct make_dev_args *_args, struct cdev **_cdev,
+		const char *_fmt, ...) __printflike(3, 4);
+struct cdev *make_dev_alias(struct cdev *_pdev, const char *_fmt, ...)
+		__printflike(2, 3);
+int	make_dev_alias_p(int _flags, struct cdev **_cdev, struct cdev *_pdev,
+		const char *_fmt, ...) __printflike(4, 5);
+int	make_dev_physpath_alias(int _flags, struct cdev **_cdev,
+		struct cdev *_pdev, struct cdev *_old_alias,
+		const char *_physpath);
+void	dev_lock(void);
+void	dev_unlock(void);
 
-#define  NO_CDEVICE                                                      \
-    {                                                                   \
-	eno_opcl,	eno_opcl,	eno_rdwrt,	eno_rdwrt,      \
-	eno_ioctl,	eno_stop,	eno_reset,	0,              \
-	(select_fcn_t *)(void (*)(void))seltrue,	eno_mmap,       \
-	eno_strat,	eno_getc,                                       \
-	eno_putc,	0                                               \
-    }
+#ifdef KLD_MODULE
+#define	MAKEDEV_ETERNAL_KLD	0
+#else
+#define	MAKEDEV_ETERNAL_KLD	MAKEDEV_ETERNAL
+#endif
 
-#endif /* KERNEL */
+#define	dev2unit(d)	((d)->si_drv0)
 
-#ifdef  KERNEL_PRIVATE
-typedef int  l_open_t (dev_t dev, struct tty *tp);
-typedef int  l_close_t(struct tty *tp, int flags);
-typedef int  l_read_t (struct tty *tp, struct uio *uio, int flag);
-typedef int  l_write_t(struct tty *tp, struct uio *uio, int flag);
-typedef int  l_ioctl_t(struct tty *tp, u_long cmd, caddr_t data, int flag,
-    struct proc *p);
-typedef int  l_rint_t (int c, struct tty *tp);
-typedef void l_start_t(struct tty *tp);
-typedef int  l_modem_t(struct tty *tp, int flag);
+typedef void d_priv_dtor_t(void *data);
+int	devfs_get_cdevpriv(void **datap);
+int	devfs_set_cdevpriv(void *priv, d_priv_dtor_t *dtr);
+void	devfs_clear_cdevpriv(void);
+int	devfs_foreach_cdevpriv(struct cdev *dev,
+	    int (*cb)(void *data, void *arg), void *arg);
 
-/*
- * Line discipline switch table
- */
-struct linesw {
-	l_open_t        *l_open;
-	l_close_t       *l_close;
-	l_read_t        *l_read;
-	l_write_t       *l_write;
-	l_ioctl_t       *l_ioctl;
-	l_rint_t        *l_rint;
-	l_start_t       *l_start;
-	l_modem_t       *l_modem;
+ino_t	devfs_alloc_cdp_inode(void);
+void	devfs_free_cdp_inode(ino_t ino);
+
+typedef void (*dev_clone_fn)(void *arg, struct ucred *cred, char *name,
+	    int namelen, struct cdev **result);
+
+int dev_stdclone(char *_name, char **_namep, const char *_stem, int *_unit);
+EVENTHANDLER_DECLARE(dev_clone, dev_clone_fn);
+
+/* Stuff relating to kernel-dump */
+struct kerneldumpcrypto;
+struct kerneldumpheader;
+
+struct dumperinfo {
+	dumper_t *dumper;	/* Dumping function. */
+	dumper_start_t *dumper_start; /* Dumper callback for dump_start(). */
+	dumper_hdr_t *dumper_hdr; /* Dumper callback for writing headers. */
+	void	*priv;		/* Private parts. */
+	u_int	blocksize;	/* Size of block in bytes. */
+	u_int	maxiosize;	/* Max size allowed for an individual I/O */
+	off_t	mediaoffset;	/* Initial offset in bytes. */
+	off_t	mediasize;	/* Space available in bytes. */
+
+	/* MI kernel dump state. */
+	void	*blockbuf;	/* Buffer for padding shorter dump blocks */
+	off_t	dumpoff;	/* Offset of ongoing kernel dump. */
+	off_t	origdumpoff;	/* Starting dump offset. */
+	struct kerneldumpcrypto	*kdcrypto; /* Kernel dump crypto. */
+	struct kerneldumpcomp *kdcomp; /* Kernel dump compression. */
+
+	TAILQ_ENTRY(dumperinfo)	di_next;
+
+	char			di_devname[];
 };
 
+extern int dumping;		/* system is dumping */
+extern bool dumped_core;	/* system successfully dumped kernel core */
 
-extern struct linesw linesw[];
-extern const int nlinesw;
-
-int ldisc_register(int, struct linesw *);
-void ldisc_deregister(int);
-#define LDISC_LOAD      -1              /* Loadable line discipline */
-
-#endif /* KERNEL_PRIVATE */
-
-#ifdef BSD_KERNEL_PRIVATE
 /*
- * Swap device table
+ * Save registers for later extraction from a kernel dump.
+ *
+ * This must be inlined into the caller, which in turn must be the function that
+ * calls (mini)dumpsys().  Otherwise, the saved frame pointer will reference a
+ * stack frame that may be clobbered by subsequent function calls.
  */
-struct swdevt {
-	dev_t   sw_dev;
-	int     sw_flags;
-	int     sw_nblks;
-	struct  vnode *sw_vp;
-};
-#define SW_FREED        0x01
-#define SW_SEQUENTIAL   0x02
-#define sw_freed        sw_flags        /* XXX compat */
+#define	dump_savectx() do {		\
+	extern struct pcb dumppcb;	\
+	extern lwpid_t dumptid;		\
+					\
+	savectx(&dumppcb);		\
+	dumptid = curthread->td_tid;	\
+} while (0)
 
-extern struct swdevt swdevt[];
+int doadump(boolean_t);
+struct diocskerneldump_arg;
+int dumper_create(const struct dumperinfo *di_template, const char *devname,
+    const struct diocskerneldump_arg *kda, struct dumperinfo **dip);
+void dumper_destroy(struct dumperinfo *di);
+int dumper_insert(const struct dumperinfo *di_template, const char *devname,
+    const struct diocskerneldump_arg *kda);
+int dumper_remove(const char *devname, const struct diocskerneldump_arg *kda);
 
-#endif /* BSD_KERNEL_PRIVATE */
+/* For ddb(4)-time use only. */
+void dumper_ddb_insert(struct dumperinfo *);
+void dumper_ddb_remove(struct dumperinfo *);
 
+int dump_start(struct dumperinfo *di, struct kerneldumpheader *kdh);
+int dump_append(struct dumperinfo *, void *, size_t);
+int dump_write(struct dumperinfo *, void *, off_t, size_t);
+int dump_finish(struct dumperinfo *di, struct kerneldumpheader *kdh);
+void dump_init_header(const struct dumperinfo *di, struct kerneldumpheader *kdh,
+    const char *magic, uint32_t archver, uint64_t dumplen);
 
-#ifdef KERNEL
-/*
- * ***_free finds free slot;
- * ***_add adds entries to the devsw table
- * If int arg is -1; finds a free slot
- * Returns the major number if successful
- *  else -1
- */
-__BEGIN_DECLS
-#ifdef KERNEL_PRIVATE
-extern struct cdevsw cdevsw[];
-extern int cdevsw_setkqueueok(int, const struct cdevsw*, int);
-#endif /* KERNEL_PRIVATE */
+#endif /* _KERNEL */
 
-#ifdef BSD_KERNEL_PRIVATE
-extern void devsw_lock(dev_t, int);
-extern void devsw_unlock(dev_t, int);
-#endif /* BSD_KERNEL_PRIVATE */
-
-int  bdevsw_isfree(int);
-int  bdevsw_add(int, const struct bdevsw *);
-int  bdevsw_remove(int, const struct bdevsw *);
-int  cdevsw_isfree(int);
-int  cdevsw_add(int, const struct cdevsw *);
-int  cdevsw_add_with_bdev(int index, const struct cdevsw * csw, int bdev);
-int  cdevsw_remove(int, const struct cdevsw *);
-int  isdisk(dev_t, int);
-__END_DECLS
-#endif /* KERNEL */
-
-#endif /* _SYS_CONF_H_ */
+#endif /* !_SYS_CONF_H_ */

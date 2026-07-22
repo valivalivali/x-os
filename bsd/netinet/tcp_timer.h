@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2000-2024 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -37,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -56,32 +27,14 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)tcp_timer.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD: src/sys/netinet/tcp_timer.h,v 1.18 1999/12/29 04:41:03 peter Exp $
  */
 
 #ifndef _NETINET_TCP_TIMER_H_
 #define _NETINET_TCP_TIMER_H_
-#include <sys/appleapiopts.h>
 
-#ifdef BSD_KERNEL_PRIVATE
-#include <kern/thread_call.h>
-#endif /* BSD_KERNEL_PRIVATE */
-
-/* Keep the external definition the same for binary compatibility */
-#define TCPT_NTIMERS_EXT        4
+#ifdef _KERNEL
 
 /*
- * Definitions of the TCP timers.
- *
- * The TCPT_PTO timer is used for probing for a tail loss in a send window.
- * If this probe gets acknowledged using SACK, it will allow the connection
- * to enter fast-recovery instead of hitting a retransmit timeout. A probe
- * timeout will send the last unacknowledged segment to generate more acks
- * with SACK information which can be used for fast-retransmiting the lost
- * packets. This will fire in the order of 10ms.
- *
  * The TCPT_REXMT timer is used to force retransmissions.
  * The TCP has the TCPT_REXMT timer set whenever segments
  * have been sent for which ACKs are expected but not yet
@@ -92,12 +45,9 @@
  * we retransmit one unacknowledged segment, and do a backoff
  * on the retransmit timer.
  *
- * The TCPT_DELACK timer is used for transmitting delayed acknowledgements
- * if an acknowledgement was delayed in anticipation of a new segment.
- *
  * The TCPT_PERSIST timer is used to keep window size information
  * flowing even if the window goes shut.  If all previous transmissions
- * have been acknowledged(so that there are no retransmissions in progress),
+ * have been acknowledged (so that there are no retransmissions in progress),
  * and the window is too small to bother sending anything, then we start
  * the TCPT_PERSIST timer.  When it expires, if the window is nonzero,
  * we go to transmit state.  Otherwise, at intervals send a single byte
@@ -108,211 +58,135 @@
  * a window update from the peer.
  *
  * The TCPT_KEEP timer is used to keep connections alive.  If an
- * connection is idle (no segments received) for TCPTV_KEEP_INIT amount
- * of time, but not yet established, then we drop the connection.
- * Once the connection is established, if the connection is idle for
- * TCPTV_KEEP_IDLE time (and keepalives have been enabled on the socket),
- * we begin to probe the connection.  We force the peer to send us a
- * segment by sending:
+ * connection is idle (no segments received) for TCPTV_KEEP_INIT amount of time,
+ * but not yet established, then we drop the connection.  Once the connection
+ * is established, if the connection is idle for TCPTV_KEEP_IDLE time
+ * (and keepalives have been enabled on the socket), we begin to probe
+ * the connection.  We force the peer to send us a segment by sending:
  *	<SEQ=SND.UNA-1><ACK=RCV.NXT><CTL=ACK>
  * This segment is (deliberately) outside the window, and should elicit
  * an ack segment in response from the peer.  If, despite the TCPT_KEEP
- * initiated segments we cannot elicit a response from a peer in
- * TCPT_MAXIDLE amount of time probing, then we drop the connection.
- *
- * The TCPT_2MSL timer is used for keeping the conenction in Time-wait state
- * before fully closing it so that the connection 4-tuple can be reused.
+ * initiated segments we cannot elicit a response from a peer in TCPT_MAXIDLE
+ * amount of time probing, then we drop the connection.
  */
-#ifdef BSD_KERNEL_PRIVATE
 
-#define TCPT_PTO        0       /* Probe timeout */
-#define TCPT_DELAYFR    1       /* Delay recovery if there is reordering */
-#define TCPT_REORDER    2       /* Reordering timer for RACK */
-#define TCPT_REXMT      3       /* retransmit */
-#define TCPT_DELACK     4       /* delayed ack */
-#define TCPT_PERSIST    5       /* retransmit persistence */
-#define TCPT_KEEP       6       /* keep alive */
-#define TCPT_2MSL       7       /* 2*msl quiet time timer */
-#if MPTCP
-#define TCPT_JACK_RXMT  8       /* retransmit timer for join ack */
-#define TCPT_CELLICON   9       /* Timer to check for cell-activity */
-#define TCPT_MAX        9
-#else /* MPTCP */
-#define TCPT_MAX        7
-#endif /* !MPTCP */
-
-#define TCPT_NONE       (TCPT_MAX + 1)
-#define TCPT_NTIMERS    (TCPT_MAX + 1)
-
-/* External definitions */
-#define TCPT_REXMT_EXT          0
-#define TCPT_PERSIST_EXT        1
-#define TCPT_KEEP_EXT           2
-#define TCPT_2MSL_EXT           3
-#define TCPT_DELACK_EXT         4
-
-#else /* !BSD_KERNEL_PRIVATE */
-#define TCPT_REXMT      0               /* retransmit */
-#define TCPT_PERSIST    1               /* retransmit persistence */
-#define TCPT_KEEP       2               /* keep alive */
-#define TCPT_2MSL       3               /* 2*msl quiet time timer */
-#define TCPT_DELACK     4               /* delayed ack timer */
-#if MPTCP
-#define TCPT_JACK_RXMT  5       /* retransmit timer for join ack */
-#define TCPT_MAX        5
-#else /* MPTCP */
-#define TCPT_MAX        4
-#endif /* !MPTCP */
-#define TCPT_NONE       (TCPT_MAX + 1)
-#define TCPT_NTIMERS    (TCPT_MAX + 1)
-
-#endif /* BSD_KERNEL_PRIVATE */
-
-#ifdef BSD_KERNEL_PRIVATE
 /*
  * Time constants.
  */
-#define TCPTV_MSL       ( 15*TCP_RETRANSHZ)     /* max seg lifetime */
-#define TCPTV_SRTTBASE  0       /* base roundtrip time; if 0, no idea yet */
-#define TCPTV_RTOBASE   (  1*TCP_RETRANSHZ)     /* assumed RTO if no info */
-#define TCPTV_SRTTDFLT  (  1*TCP_RETRANSHZ)     /* assumed RTT if no info */
-#define TCPTV_PERSMIN   (  5*TCP_RETRANSHZ)     /* retransmit persistence */
-#define TCPTV_PERSMAX   ( 60*TCP_RETRANSHZ)     /* maximum persist interval */
+#define	TCPTV_MSL	MSEC_2_TICKS(30000)	/* max seg lifetime (hah!) */
+#define	TCPTV_MSL_LOCAL	MSEC_2_TICKS(10)	/* max seg lifetime for local comm */
+#define	TCPTV_SRTTBASE	0			/* base roundtrip time;
+						   if 0, no idea yet */
+#define	TCPTV_RTOBASE	MSEC_2_TICKS(1000)	/* assumed RTO if no info */
 
-extern int tcptv_persmin_val;
+#define	TCPTV_PERSMIN	MSEC_2_TICKS(5000)	/* minimum persist interval */
+#define	TCPTV_PERSMAX	MSEC_2_TICKS(60000)	/* maximum persist interval */
 
-#define TCPTV_KEEP_INIT ( 75*TCP_RETRANSHZ)     /* connect keep alive */
-#define TCPTV_KEEP_IDLE (120*60*TCP_RETRANSHZ)  /* time before probing */
-#define TCPTV_KEEPINTVL ( 75*TCP_RETRANSHZ)     /* default probe interval */
-#define TCPTV_KEEPCNT   8                       /* max probes before drop */
+#define	TCPTV_KEEP_INIT	MSEC_2_TICKS(75000)	/* initial connect keepalive */
+#define	TCPTV_KEEP_IDLE	MSEC_2_TICKS(120*60*1000)	/* dflt time before probing */
+#define	TCPTV_KEEPINTVL	MSEC_2_TICKS(75000)	/* default probe interval */
+#define	TCPTV_KEEPCNT	8			/* max probes before drop */
+#define	TCPTV_MAXUNACKTIME	0		/* max time without making progress */
 
-#define TCPTV_REXMTMAX  ( 64*TCP_RETRANSHZ )    /* max REXMT value */
-#define TCPTV_REXMTMIN  ( TCP_RETRANSHZ/33 )    /* min REXMT for non-local connections */
-
-#define TCPTV_FINWAIT2  ( 60*TCP_RETRANSHZ)     /* timeout to get out of FIN_WAIT_2 */
-
-#define TCPTV_TWTRUNC   8               /* RTO factor to truncate TW */
-
-#define TCP_LINGERTIME  120             /* linger at most 2 minutes */
-
-#define TCP_MAXRXTSHIFT 12              /* maximum retransmits */
-
-#ifdef  TCPTIMERS
-static char *tcptimers[] =
-{ "REXMT", "PERSIST", "KEEP", "2MSL", "DELACK"};
-#endif /* TCPTIMERS */
+#define	TCPTV_FINWAIT2_TIMEOUT	MSEC_2_TICKS(60000)	/* FIN_WAIT_2 timeout if no receiver */
 
 /*
- * Persist, keep, 2msl and MPTCP's join-ack timer as slow timers which can
- * be coalesced at a higher granularity (500 ms).
+ * Minimum retransmit timer is 3 ticks, for algorithmic stability.
+ * TCPT_RANGESET() will add another TCPTV_CPU_VAR to deal with
+ * the expected worst-case processing variances by the kernels
+ * representing the end points.  Such variances do not always show
+ * up in the srtt because the timestamp is often calculated at
+ * the interface rather then at the TCP layer.  This value is
+ * typically 50ms.  However, it is also possible that delayed
+ * acks (typically 100ms) could create issues so we set the slop
+ * to 200ms to try to cover it.  Note that, properly speaking,
+ * delayed-acks should not create a major issue for interactive
+ * environments which 'P'ush the last segment, at least as
+ * long as implementations do the required 'at least one ack
+ * for every two packets' for the non-interactive streaming case.
+ * (maybe the RTO calculation should use 2*RTT instead of RTT
+ * to handle the ack-every-other-packet case).
  *
- * Rexmt and delayed ack timers are considered as fast timers which run
- * in the order of 100ms.
- *
- * Probe timeout and RACK reordering timer are quick timers which will run in the order of 10ms.
+ * The prior minimum of 1*hz (1 second) badly breaks throughput on any
+ * networks faster then a modem that has minor (e.g. 1%) packet loss.
  */
-#define IS_TIMER_HZ_500MS(i)    ((i) >= TCPT_PERSIST)
-#define IS_TIMER_HZ_100MS(i)    ((i) >= TCPT_REXMT && (i) < TCPT_PERSIST)
-#define IS_TIMER_HZ_10MS(i)     ((i) < TCPT_REXMT)
+#define	TCPTV_MIN	MSEC_2_TICKS(30)	/* minimum allowable value */
+#define	TCPTV_CPU_VAR	MSEC_2_TICKS(200)	/* cpu variance allowed (200ms) */
+#define	TCPTV_REXMTMAX	MSEC_2_TICKS(64000)	/* max allowable REXMT value */
 
-struct tcptimerlist;
+#define	TCP_MAXRXTSHIFT	12			/* maximum retransmits */
 
-struct tcptimerentry {
-	LIST_ENTRY(tcptimerentry) te_le;   /* links for timer list */
-	uint32_t te_timer_start;   /* tcp clock when the timer was started */
-	uint16_t te_index;         /* index of lowest timer that needs to run first */
-	uint16_t te_mode;          /* Bit-wise OR of timers that are active */
-	uint32_t te_runtime;       /* deadline at which the first timer has to fire */
-};
-
-LIST_HEAD(timerlisthead, tcptimerentry);
-
-struct tcptimerlist {
-	struct timerlisthead lhead;     /* head of the list */
-	lck_mtx_t mtx;          /* lock to protect the list */
-	lck_grp_t *mtx_grp;     /* mutex group definition */
-	thread_call_t call;     /* call entry */
-	uint32_t runtime;       /* time at which this list is going to run */
-	uint32_t schedtime;     /* time at which this list was scheduled */
-	uint32_t started_at;     /* time at which this list started to run */
-	uint32_t entries;       /* Number of entries on the list */
-	uint32_t maxentries;    /* Max number of entries at any time */
-	uint32_t processed_count;       /* Number of entries that have been processed */
-
-	/* Set desired mode when timer list running */
-	boolean_t running;      /* Set when timer list is being processed */
-	boolean_t scheduled;    /* set when the timer is scheduled */
-#define TCP_TIMERLIST_10MS_MODE 0x1
-#define TCP_TIMERLIST_100MS_MODE 0x2
-#define TCP_TIMERLIST_500MS_MODE 0x4
-	uint32_t mode;          /* Current mode of the timer */
-	uint32_t pref_mode;     /* Preferred mode set by a connection */
-	uint32_t pref_offset;   /* Preferred offset set by a connection */
-	uint32_t idleruns;      /* Number of times the list has been idle in fast mode */
-	struct tcptimerentry *next_te;  /* next timer entry pointer to process */
-	u_int16_t probe_if_index; /* Interface index that needs to send probes */
-};
-
-/* number of idle runs allowed for TCP timer list in fast or quick modes */
-#define TCP_FASTMODE_IDLERUN_MAX 10
+#define	TCPTV_DELACK	MSEC_2_TICKS(40)	/* 40ms timeout */
 
 /*
- * Minimum retransmit timeout is set to 30ms. We add a slop of
- * 200 ms to the retransmit value to account for processing
- * variance and delayed ack. This extra 200ms will help to avoid
- * spurious retransmits by taking into consideration the receivers
- * that wait for delayed ack timer instead of generating an ack
- * for every two packets.
- *
- * On a local link, the minimum retransmit timeout is 100ms and
- * variance is set to 0. This will make the sender a little bit more
- * aggressive on local link. When the connection is not established yet,
- * there is no need to add an extra 200ms to retransmit timeout because
- * the initial value is high (1s) and delayed ack is not a problem in
- * that case.
+ * If we exceed this number of retransmits for a single segment, we'll consider
+ * the current srtt measurement no longer valid and will recalculate from
+ * scratch starting with the next ACK.
  */
-#define TCPTV_REXMTSLOP ( TCP_RETRANSHZ/5 )     /* extra 200 ms slop */
+#define TCP_RTT_INVALIDATE (TCP_MAXRXTSHIFT / 4)
 
-/* macro to decide when retransmit slop (described above) should be added */
-#define TCP_ADD_REXMTSLOP(tp) (tp->t_state >= TCPS_ESTABLISHED)
-
-#define TCPT_RANGESET(tv, value, tvmin, tvmax, addslop) do { \
-	(tv) = ((addslop) ? tcp_rexmt_slop : 0) + (value); \
-	if ((uint32_t)(tv) < (uint32_t)(tvmin)) \
-	        (tv) = (tvmin); \
-	else if ((uint32_t)(tv) > (uint32_t)(tvmax)) \
-	        (tv) = (tvmax); \
+/*
+ * Force a time value to be in a certain range.
+ */
+#define	TCPT_RANGESET(tv, value, tvmin, tvmax) do { \
+	(tv) = (value) + tcp_rexmit_slop; \
+	if ((u_long)(tv) < (u_long)(tvmin)) \
+		(tv) = (tvmin); \
+	if ((u_long)(tv) > (u_long)(tvmax)) \
+		(tv) = (tvmax); \
 } while(0)
 
-#define TCP_CONN_KEEPIDLE(tp) \
-	((tp)->t_keepidle && \
-	((tp)->t_inpcb->inp_socket->so_options & SO_KEEPALIVE) ? \
-	        (tp)->t_keepidle : (uint32_t)tcp_keepidle)
-#define TCP_CONN_KEEPINIT(tp) \
-	(((tp)->t_keepinit > 0) ? (tp)->t_keepinit : (uint32_t)tcp_keepinit)
-#define TCP_CONN_KEEPCNT(tp) \
-	(((tp)->t_keepcnt > 0) ? (tp)->t_keepcnt : (uint32_t)tcp_keepcnt)
-#define TCP_CONN_KEEPINTVL(tp) \
-	(((tp)->t_keepintvl > 0) ? (tp)->t_keepintvl : (uint32_t)tcp_keepintvl)
-#define TCP_CONN_MAXIDLE(tp) \
-	(TCP_CONN_KEEPCNT(tp) * TCP_CONN_KEEPINTVL(tp))
+#define	TP_KEEPINIT(tp)	((tp)->t_keepinit ? (tp)->t_keepinit : tcp_keepinit)
+#define	TP_KEEPIDLE(tp)	((tp)->t_keepidle ? (tp)->t_keepidle : tcp_keepidle)
+#define	TP_KEEPINTVL(tp) ((tp)->t_keepintvl ? (tp)->t_keepintvl : tcp_keepintvl)
+#define	TP_KEEPCNT(tp)	((tp)->t_keepcnt ? (tp)->t_keepcnt : tcp_keepcnt)
+#define	TP_MAXIDLE(tp)	(TP_KEEPCNT(tp) * TP_KEEPINTVL(tp))
+#define	TP_MAXUNACKTIME(tp)	\
+    ((tp)->t_maxunacktime ? (tp)->t_maxunacktime : tcp_maxunacktime)
 
-#define TCP_IDLETIMEOUT(tp) \
-	(((TCP_ADD_REXMTSLOP(tp)) ? 0 : tcp_rexmt_slop) + tp->t_rxtcur)
+/*
+ * Obtain the time until the restransmit timer should fire.
+ * This macro ensures the restransmit timer fires at the earlier of the
+ * t_rxtcur value or the time the maxunacktime would be exceeded.
+ */
+#define	TP_RXTCUR(tp)							\
+    ((TP_MAXUNACKTIME(tp) == 0 || tp->t_acktime == 0) ? tp->t_rxtcur :	\
+    max(1, min(tp->t_rxtcur, tp->t_acktime + TP_MAXUNACKTIME(tp) - ticks)))
 
-TAILQ_HEAD(tcptailq, tcpcb);
-
-extern int tcp_keepinit;        /* time to establish connection */
-extern int tcp_keepidle;        /* time before keepalive probes begin */
-extern int tcp_keepintvl;       /* time between keepalive probes */
-extern int tcp_keepcnt;         /* number of keepalives */
-extern int tcp_delack;          /* delayed ack timer */
+extern int tcp_persmin;			/* minimum persist interval */
+extern int tcp_persmax;			/* maximum persist interval */
+extern int tcp_keepinit;		/* time to establish connection */
+extern int tcp_keepidle;		/* time before keepalive probes begin */
+extern int tcp_keepintvl;		/* time between keepalive probes */
+extern int tcp_keepcnt;			/* number of keepalives */
+extern int tcp_delacktime;		/* time before sending a delayed ACK */
+extern int tcp_maxunacktime;		/* max time without making progress */
 extern int tcp_maxpersistidle;
-extern int tcp_msl;
-extern int tcp_ttl;             /* time to live for TCP segs */
-extern int tcp_backoff[TCP_MAXRXTSHIFT + 1];
-extern int tcp_rexmt_slop;
-extern u_int32_t tcp_max_persist_timeout;       /* Maximum persistence for Zero Window Probes */
+extern int tcp_rexmit_initial;
+extern int tcp_rexmit_min;
+extern int tcp_rexmit_max;
+extern int tcp_rexmit_slop;
+extern int tcp_ttl;			/* time to live for TCP segs */
+extern int tcp_backoff[];
+extern int tcp_totbackoff;
+extern int tcp_rexmit_drop_options;
 
-#endif /* BSD_KERNEL_PRIVATE */
+extern int tcp_finwait2_timeout;
+extern int tcp_fast_finwait2_recycle;
+
+VNET_DECLARE(int, tcp_always_keepalive);
+#define	V_tcp_always_keepalive		VNET(tcp_always_keepalive)
+VNET_DECLARE(int, tcp_pmtud_blackhole_detect);
+#define V_tcp_pmtud_blackhole_detect	VNET(tcp_pmtud_blackhole_detect)
+VNET_DECLARE(int, tcp_pmtud_blackhole_mss);
+#define	V_tcp_pmtud_blackhole_mss	VNET(tcp_pmtud_blackhole_mss)
+VNET_DECLARE(int, tcp_v6pmtud_blackhole_mss);
+#define V_tcp_v6pmtud_blackhole_mss	VNET(tcp_v6pmtud_blackhole_mss)
+VNET_DECLARE(int, tcp_msl);
+#define V_tcp_msl			VNET(tcp_msl)
+VNET_DECLARE(int, tcp_msl_local);
+#define V_tcp_msl_local			VNET(tcp_msl_local)
+
+#endif /* _KERNEL */
+
 #endif /* !_NETINET_TCP_TIMER_H_ */

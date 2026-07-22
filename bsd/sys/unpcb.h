@@ -1,31 +1,6 @@
-/*
- * Copyright (c) 2008-2020 Apple Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -37,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -56,28 +27,23 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)unpcb.h	8.1 (Berkeley) 6/2/93
  */
 
 #ifndef _SYS_UNPCB_H_
 #define _SYS_UNPCB_H_
 
-#include <sys/appleapiopts.h>
+typedef uint64_t unp_gen_t;
+
+#if defined(_KERNEL) || defined(_WANT_UNPCB)
 #include <sys/queue.h>
-#include <sys/un.h>
 #include <sys/ucred.h>
-#include <sys/socketvar.h>
-#if !KERNEL && PRIVATE
-#include <TargetConditionals.h>
-#endif
 
 /*
  * Protocol control block for an active
  * instance of a UNIX internal protocol.
  *
- * A socket may be associated with an vnode in the
- * file system.  If so, the unp_vnode pointer holds
+ * A socket may be associated with a vnode in the
+ * filesystem.  If so, the unp_vnode pointer holds
  * a reference count to this vnode, which should be irele'd
  * when the socket goes away.
  *
@@ -96,52 +62,40 @@
  * Stream sockets keep copies of receive sockbuf sb_cc and sb_mbcnt
  * so that changes in the sockbuf may be computed to modify
  * back pressure on the sender accordingly.
+ *
+ * Locking key:
+ * (a) Atomic
+ * (c) Constant
+ * (g) Locked using linkage lock
+ * (l) Locked using list lock
+ * (p) Locked using pcb lock
  */
-
-typedef u_quad_t        unp_gen_t;
-
-#if defined(__LP64__)
-struct _unpcb_list_entry {
-	u_int32_t   le_next;
-	u_int32_t   le_prev;
-};
-#define _UCPCB_LIST_HEAD(name, type)    \
-struct name {                           \
-	u_int32_t	lh_first;       \
-};
-#define _UNPCB_LIST_ENTRY(x)            struct _unpcb_list_entry
-#define _UNPCB_PTR(x)                   u_int32_t
-#else
-#define _UCPCB_LIST_HEAD(name, type)    LIST_HEAD(name, type)
-#define _UNPCB_LIST_ENTRY(x)            LIST_ENTRY(x)
-#define _UNPCB_PTR(x)                   x
-#endif
-
-#ifdef PRIVATE
-#ifndef KERNEL
-_UCPCB_LIST_HEAD(unp_head, unpcb);
-#else
 LIST_HEAD(unp_head, unpcb);
-#define sotounpcb(so)   ((struct unpcb *)((so)->so_pcb))
 
-struct  unpcb {
-	LIST_ENTRY(unpcb)       unp_link;       /* glue on list of all PCBs */
-	struct socket           *unp_socket;    /* pointer back to socket */
-	struct vnode            *unp_vnode;     /* if associated with file */
-	ino_t                   unp_ino;        /* fake inode number */
-	struct unpcb            *unp_conn;      /* control block of connected socket */
-	struct unp_head         unp_refs;       /* referencing socket linked list */
-	LIST_ENTRY(unpcb)       unp_reflink;    /* link in unp_refs list */
-	struct sockaddr_un      *unp_addr;      /* bound address of socket */
-	unp_gen_t               unp_gencnt;     /* generation count of this instance */
-	int                     unp_cc;         /* copy of rcv.sb_cc */
-	int                     unp_mbcnt;      /* copy of rcv.sb_mbcnt */
-	uint32_t                unp_flags;      /* flags */
-	uint32_t                rw_thrcount;    /* disconnect should wait for this count to become zero */
-	struct xucred           unp_peercred;   /* peer credentials, if applicable */
-	decl_lck_mtx_data(, unp_mtx);           /* per unpcb lock */
-};
-#endif /* KERNEL */
+struct unpcb {
+	/* Cache line 1 */
+	struct	mtx unp_mtx;		/* PCB mutex */
+	struct	unpcb *unp_conn;	/* (p) connected socket */
+	volatile u_int unp_refcount;	/* (a, p) atomic refcount */
+	short	unp_flags;		/* (p) PCB flags */
+	short	unp_gcflag;		/* (g) Garbage collector flags */
+	struct	sockaddr_un *unp_addr;	/* (p) bound address of socket */
+	struct	socket *unp_socket;	/* (c) pointer back to socket */
+	/* Cache line 2 */
+	u_int	unp_pairbusy;		/* (p) threads acquiring peer locks */
+	struct	vnode *unp_vnode;	/* (p) associated file if applicable */
+	struct	xucred unp_peercred;	/* (p) peer credentials if applicable */
+	LIST_ENTRY(unpcb) unp_reflink;	/* (l) link in unp_refs list */
+	LIST_ENTRY(unpcb) unp_link; 	/* (g) glue on list of all PCBs */
+	struct	unp_head unp_refs;	/* (l) referencing socket linked list */
+	unp_gen_t unp_gencnt;		/* (g) generation count of this item */
+	struct	file *unp_file;		/* (g) back-pointer to file for gc */
+	u_int	unp_msgcount;		/* (g) references from message queue */
+	u_int	unp_gcrefs;		/* (g) garbage collector refcount */
+	ino_t	unp_ino;		/* (g) fake inode number */
+	mode_t  unp_mode;		/* (g) initial pre-bind() mode */
+	LIST_ENTRY(unpcb) unp_dead;	/* (g) link in dead list */
+} __aligned(CACHE_LINE_SIZE);
 
 /*
  * Flags in unp_flags.
@@ -150,136 +104,82 @@ struct  unpcb {
  * and is really the credentials of the connected peer.  This is used
  * to determine whether the contents should be sent to the user or
  * not.
- *
- * UNP_HAVEPCCACHED - indicates that the unp_peercred member is filled
- * in, but does *not* contain the credentials of the connected peer
- * (there may not even be a peer).  This is set in unp_listen() when
- * it fills in unp_peercred for later consumption by unp_connect().
  */
-#define UNP_HAVEPC                      0x00000001
-#define UNP_HAVEPCCACHED                0x00000002
-#define UNP_DONTDISCONNECT              0x00000004
-#define UNP_NOPEERACCEPT                0x00000010
-#define UNP_TRACE_MDNS                  0x00001000
+#define	UNP_HAVEPC			0x001
+#define	UNP_WANTCRED_ALWAYS		0x002	/* credentials wanted always */
+#define	UNP_WANTCRED_ONESHOT		0x004	/* credentials wanted once */
+#define	UNP_WANTCRED_MASK	(UNP_WANTCRED_ONESHOT | UNP_WANTCRED_ALWAYS)
 
-#ifdef KERNEL
-struct  unpcb_compat {
-#else /* KERNEL */
-#define unpcb_compat unpcb
-struct  unpcb {
-#endif /* KERNEL */
-	_UNPCB_LIST_ENTRY(unpcb_compat) unp_link;       /* glue on list of all PCBs */
-	_UNPCB_PTR(struct socket *)     unp_socket;     /* pointer back to socket */
-	_UNPCB_PTR(struct vnode *)      unp_vnode;      /* if associated with file */
-	u_int32_t                       unp_ino;        /* fake inode number */
-	_UNPCB_PTR(struct unpcb_compat *) unp_conn;     /* control block of connected socket */
-#if defined(KERNEL)
-	u_int32_t                       unp_refs;
-#else
-	struct unp_head                 unp_refs;       /* referencing socket linked list */
-#endif
-	_UNPCB_LIST_ENTRY(unpcb_compat) unp_reflink;    /* link in unp_refs list */
-	_UNPCB_PTR(struct sockaddr_un *) unp_addr;      /* bound address of socket */
-	int                             unp_cc;         /* copy of rcv.sb_cc */
-	int                             unp_mbcnt;      /* copy of rcv.sb_mbcnt */
-	unp_gen_t                       unp_gencnt;     /* generation count of this instance */
-};
+/*
+ * These flags are used to handle non-atomicity in connect() and bind()
+ * operations on a socket: in particular, to avoid races between multiple
+ * threads or processes operating simultaneously on the same socket.
+ */
+#define	UNP_CONNECTING			0x010	/* Currently connecting. */
+#define	UNP_BINDING			0x020	/* Currently binding. */
+#define	UNP_WAITING			0x040	/* Peer state is changing. */
 
-/* Hack alert -- this structure depends on <sys/socketvar.h>. */
-#ifdef  _SYS_SOCKETVAR_H_
+/*
+ * Flags in unp_gcflag.
+ */
+#define	UNPGC_DEAD			0x1	/* unpcb might be dead. */
+#define	UNPGC_IGNORE_RIGHTS		0x2	/* Attached rights are freed */
 
-#pragma pack(4)
+#define	sotounpcb(so)	((struct unpcb *)((so)->so_pcb))
 
-struct  xunpcb {
-	u_int32_t                       xu_len;         /* length of this structure */
-	_UNPCB_PTR(struct unpcb_compat *) xu_unpp;      /* to help netstat, fstat */
-	struct unpcb_compat             xu_unp;         /* our information */
+#endif	/* _KERNEL || _WANT_UNPCB */
+
+/*
+ * UNPCB structure exported to user-land via sysctl(3).
+ *
+ * Fields prefixed with "xu_" are unique to the export structure, and fields
+ * with "unp_" or other prefixes match corresponding fields of 'struct unpcb'.
+ *
+ * Legend:
+ * (s) - used by userland utilities in src
+ * (p) - used by utilities in ports
+ * (3) - is known to be used by third party software not in ports
+ * (n) - no known usage
+ *
+ * Evil hack: declare only if sys/socketvar.h have been included.
+ */
+#ifdef	_SYS_SOCKETVAR_H_
+struct xunpcb {
+	ksize_t		xu_len;			/* length of this structure */
+	kvaddr_t	xu_unpp;		/* to help netstat, fstat */
+	kvaddr_t	unp_vnode;		/* (s) */
+	kvaddr_t	unp_conn;		/* (s) */
+	kvaddr_t	xu_firstref;		/* (s) */
+	kvaddr_t	xu_nextref;		/* (s) */
+	unp_gen_t	unp_gencnt;		/* (s) */
+	int64_t		xu_spare64[8];
+	int32_t		xu_spare32[8];
 	union {
-		struct sockaddr_un      xuu_addr;       /* our bound address */
-		char                    xu_dummy1[256];
-	} xu_au;
-#define xu_addr xu_au.xuu_addr
+		struct	sockaddr_un xu_addr;	/* our bound address */
+		char	xu_dummy1[256];
+	};
 	union {
-		struct sockaddr_un      xuu_caddr;      /* their bound address */
-		char                    xu_dummy2[256];
-	} xu_cau;
-#define xu_caddr xu_cau.xuu_caddr
-	struct xsocket                  xu_socket;
-	u_quad_t                        xu_alignment_hack;
-};
+		struct	sockaddr_un xu_caddr;	/* their bound address */
+		char	xu_dummy2[256];
+	};
+	struct xsocket	xu_socket;
+} __aligned(MAX(8, sizeof(void *)));
 
-#if XNU_TARGET_OS_OSX || KERNEL || !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
-
-struct xunpcb64_list_entry {
-	u_int64_t   le_next;
-	u_int64_t   le_prev;
-};
-
-struct xunpcb64 {
-	u_int32_t                       xu_len;         /* length of this structure */
-	u_int64_t                       xu_unpp;        /* to help netstat, fstat */
-	struct xunpcb64_list_entry      xunp_link;      /* glue on list of all PCBs */
-	u_int64_t                       xunp_socket;    /* pointer back to socket */
-	u_int64_t                       xunp_vnode;     /* if associated with file */
-	u_int64_t                       xunp_ino;       /* fake inode number */
-	u_int64_t                       xunp_conn;      /* control block of connected socket */
-	u_int64_t                       xunp_refs;      /* referencing socket linked list */
-	struct xunpcb64_list_entry      xunp_reflink;   /* link in unp_refs list */
-	int                             xunp_cc;                /* copy of rcv.sb_cc */
-	int                             xunp_mbcnt;     /* copy of rcv.sb_mbcnt */
-	unp_gen_t                       xunp_gencnt;    /* generation count of this instance */
-	int                             xunp_flags;     /* flags */
-	union {
-		struct sockaddr_un              xuu_addr;
-		char                            xu_dummy1[256];
-	}                               xu_au;          /* our bound address */
-#define xunp_addr xu_au.xuu_addr
-	union {
-		struct sockaddr_un              xuu_caddr;
-		char                            xu_dummy2[256];
-	}                               xu_cau;         /* their bound address */
-#define xunp_caddr xu_cau.xuu_caddr
-	struct xsocket64        xu_socket;
-};
-
-#endif /* XNU_TARGET_OS_OSX || KERNEL || !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR) */
-
-struct  xunpcb_n {
-	u_int32_t                       xunp_len;       /* length of this structure */
-	u_int32_t                       xunp_kind;      /* XSO_UNPCB */
-	u_int64_t                       xunp_unpp;      /* to help netstat, fstat */
-	u_int64_t                       xunp_vnode;     /* if associated with file */
-	u_int64_t                       xunp_ino;       /* fake inode number */
-	u_int64_t                       xunp_conn;      /* control block of connected socket */
-	u_int64_t                       xunp_refs;      /* referencing socket linked list */
-	u_int64_t                       xunp_reflink;   /* link in unp_refs list */
-	int                             xunp_cc;        /* copy of rcv.sb_cc */
-	int                             xunp_mbcnt;     /* copy of rcv.sb_mbcnt */
-	int                             xunp_flags;     /* flags */
-	unp_gen_t                       xunp_gencnt;    /* generation count of this instance */
-	union {
-		struct sockaddr_un      xuu_addr;       /* our bound address */
-		char                    xu_dummy1[256];
-	} xu_au;
-#define xu_addr xu_au.xuu_addr
-	union {
-		struct sockaddr_un      xuu_caddr;      /* their bound address */
-		char                    xu_dummy2[256];
-	} xu_cau;
-#define xu_caddr xu_cau.xuu_caddr
-};
-
-#pragma pack()
-
+struct xunpgen {
+	ksize_t	xug_len;
+	u_int	xug_count;
+	unp_gen_t xug_gen;
+	so_gen_t xug_sogen;
+} __aligned(8);
 #endif /* _SYS_SOCKETVAR_H_ */
 
-#endif /* PRIVATE */
+#if defined(_KERNEL)
+struct thread;
 
-struct  xunpgen {
-	u_int32_t       xug_len;
-	u_int           xug_count;
-	unp_gen_t       xug_gen;
-	so_gen_t        xug_sogen;
-};
+/* In uipc_userreq.c */
+void
+unp_copy_peercred(struct thread *td, struct unpcb *client_unp,
+    struct unpcb *server_unp, struct unpcb *listen_unp);
+#endif
 
 #endif /* _SYS_UNPCB_H_ */

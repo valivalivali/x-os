@@ -1,33 +1,6 @@
-/*
- * Copyright (c) 2000 Apple Computer, Inc. All rights reserved.
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/*	$NetBSD: syslimits.h,v 1.15 1997/06/25 00:48:09 lukem Exp $	*/
-
-/*
  * Copyright (c) 1988, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -39,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -58,85 +27,47 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)syslimits.h	8.1 (Berkeley) 6/2/93
  */
 
 #ifndef _SYS_SYSLIMITS_H_
 #define _SYS_SYSLIMITS_H_
 
-#include <sys/cdefs.h>
-
-#if !defined(_ANSI_SOURCE)
-
-/* max bytes for an exec function */
-#ifdef XNU_KERNEL_PRIVATE
-#if defined(XNU_TARGET_OS_OSX)
-#define ARG_MAX           (1024 * 1024)
-#else
-#define ARG_MAX            (256 * 1024)
+#if !defined(_STANDALONE) && !defined(_KERNEL) && !defined(_LIMITS_H_) && !defined(_SYS_PARAM_H_)
+#warning "No user-serviceable parts inside."
 #endif
-#else /* XNU_KERNEL_PRIVATE */
-#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__)
-#define ARG_MAX           (1024 * 1024)
-#else
-#define ARG_MAX            (256 * 1024)
-#endif
-#endif /* XNU_KERNEL_PRIVATE */
 
 /*
- * Note: CHILD_MAX *must* be less than hard_maxproc, which is set at
- * compile time; you *cannot* set it higher than the hard limit!!
+ * Do not add any new variables here.  (See the comment at the end of
+ * the file for why.)
  */
+#ifndef __ILP32__
+#define	ARG_MAX	      (2 * 256 * 1024)	/* max bytes for an exec function */
+#else
+#define	ARG_MAX		  (256 * 1024)	/* max bytes for KVA-starved archs */
+#endif
+#ifndef CHILD_MAX
+#define	CHILD_MAX		   40	/* max simultaneous processes */
+#endif
+#define	MAX_CANON		  255	/* max bytes in term canon input line */
+#define	MAX_INPUT		  255	/* max bytes in terminal input */
+#define	NAME_MAX		  255	/* max bytes in a file name */
+#ifndef NGROUPS_MAX
+#define	NGROUPS_MAX	 	 1023	/* max supplemental group id's */
+#endif
+#ifndef OPEN_MAX
+#define	OPEN_MAX		   64	/* max open files per process */
+#endif
+#define	PATH_MAX		 1024	/* max bytes in pathname */
+#define	PIPE_BUF		  512	/* max bytes for atomic pipe writes */
+#define	IOV_MAX			 1024	/* max elements in i/o vector */
 
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define CHILD_MAX                  266  /* max simultaneous processes */
-#define GID_MAX            2147483647U  /* max value for a gid_t (2^31-2) */
-#endif /* (_POSIX_C_SOURCE && !_DARWIN_C_SOURCE) */
-#define LINK_MAX                32767   /* max file link count */
-#define MAX_CANON                1024   /* max bytes in term canon input line */
-#define MAX_INPUT                1024   /* max bytes in terminal input */
 /*
- * NOTE: Many filesystems (including HFS & APFS) may support names longer than `NAME_MAX` bytes.
- * See manpage for `getdirentries` and `readdir` for details.
+ * We leave the following values undefined to force applications to either
+ * assume conservative values or call sysconf() to get the current value.
+ *
+ * HOST_NAME_MAX
+ *
+ * (We should do this for most of the values currently defined here,
+ * but many programs are not prepared to deal with this yet.)
  */
-#define NAME_MAX                  255   /* max bytes in a file name */
-#define NGROUPS_MAX                16   /* max supplemental group id's */
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define UID_MAX            2147483647U  /* max value for a uid_t (2^31-2) */
-
-#define OPEN_MAX                10240   /* max open files per process - todo, make a config option? */
-
-#endif /* (_POSIX_C_SOURCE && !_DARWIN_C_SOURCE) */
-#define PATH_MAX                 1024   /* max bytes in pathname */
-#define PIPE_BUF                  512   /* max bytes for atomic pipe writes */
-
-#define BC_BASE_MAX                99   /* max ibase/obase values in bc(1) */
-#define BC_DIM_MAX               2048   /* max array elements in bc(1) */
-#define BC_SCALE_MAX               99   /* max scale value in bc(1) */
-#define BC_STRING_MAX            1000   /* max const string length in bc(1) */
-#define CHARCLASS_NAME_MAX         14   /* max character class name size */
-#define COLL_WEIGHTS_MAX            2   /* max weights for order keyword */
-#define EQUIV_CLASS_MAX             2
-#define EXPR_NEST_MAX              32   /* max expressions nested in expr(1) */
-#define LINE_MAX                 2048   /* max bytes in an input line */
-#define RE_DUP_MAX                255   /* max RE's in interval notation */
-
-#if __DARWIN_UNIX03
-#define NZERO                      20   /* default priority [XSI] */
-                                        /* = ((PRIO_MAX - PRIO_MIN) / 2) + 1 */
-                                        /* range: 0 - 39 [(2 * NZERO) - 1] */
-                                        /* 0 is not actually used */
-#else /* !__DARWIN_UNIX03 */
-#define NZERO                       0   /* default priority */
-                                        /* range: -20 - 20 */
-                                        /* (PRIO_MIN - PRIO_MAX) */
-#endif /* __DARWIN_UNIX03 */
-
-#ifdef XNU_KERNEL_PRIVATE
-#define MAXLONGPATHLEN           8192   /* max length of a long path */
-#endif /* XNU_KERNEL_PRIVATE */
-
-#endif /* !_ANSI_SOURCE */
-
-#endif /* !_SYS_SYSLIMITS_H_ */
+#endif

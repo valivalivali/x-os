@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2007 Apple Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1988, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -43,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -62,226 +32,616 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)systm.h	8.7 (Berkeley) 3/29/95
- */
-
-/*
- * The `securelevel' variable controls the security level of the system.
- * It can only be decreased by process 1 (/sbin/init).
- *
- * Security levels are as follows:
- *   -1	permannently insecure mode - always run system in level 0 mode.
- *    0	insecure mode - immutable and append-only flags make be turned off.
- *	All devices may be read or written subject to permission modes.
- *    1	secure mode - immutable and append-only flags may not be changed;
- *	raw disks of mounted filesystems, /dev/mem, and /dev/kmem are
- *	read-only.
- *    2	highly secure mode - same as (1) plus raw disks are always
- *	read-only whether mounted or not. This level precludes tampering
- *	with filesystems by unmounting them, but also inhibits running
- *	newfs while the system is secured.
- *
- * In normal operation, the system runs in level 0 mode while single user
- * and in level 1 mode while multiuser. If level 2 mode is desired while
- * running multiuser, it can be set in the multiuser startup script
- * (/etc/rc.local) using sysctl(1). If it is desired to run the system
- * in level 0 mode while multiuser, initialize the variable securelevel
- * in /sys/kern/kern_sysctl.c to -1. Note that it is NOT initialized to
- * zero as that would allow the vmunix binary to be patched to -1.
- * Without initialization, securelevel loads in the BSS area which only
- * comes into existence when the kernel is loaded and hence cannot be
- * patched by a stalking hacker.
  */
 
 #ifndef _SYS_SYSTM_H_
-#define _SYS_SYSTM_H_
+#define	_SYS_SYSTM_H_
 
-#include <sys/appleapiopts.h>
-#include <sys/cdefs.h>
 #include <sys/types.h>
-#include <sys/time.h>
-#include <sys/ioctl.h>
-#include <sys/malloc.h>
-#ifdef BSD_KERNEL_PRIVATE
-#include <sys/tty.h>
-#include <sys/vm.h>
+#include <sys/callout.h>
+#include <sys/kassert.h>
+#include <sys/queue.h>
+#include <sys/stdint.h>		/* for people using printf mainly */
+#include <machine/atomic.h>
+#include <machine/cpufunc.h>
+
+__NULLABILITY_PRAGMA_PUSH
+
+#ifdef _KERNEL
+extern int cold;		/* nonzero if we are doing a cold boot */
+extern int suspend_blocked;	/* block suspend due to pending shutdown */
+extern int rebooting;		/* kern_reboot() has been called. */
+extern const char version[];	/* system version */
+extern const char compiler_version[];	/* compiler version */
+extern const char copyright[];	/* system copyright */
+extern int kstack_pages;	/* number of kernel stack pages */
+
+extern u_long pagesizes[];	/* supported page sizes */
+extern long physmem;		/* physical memory */
+extern long realmem;		/* 'real' memory */
+
+extern char *rootdevnames[2];	/* names of possible root devices */
+
+extern int boothowto;		/* reboot flags, from console subsystem */
+extern int bootverbose;		/* nonzero to print verbose messages */
+
+extern int maxusers;		/* system tune hint */
+extern int ngroups_max;		/* max # of supplemental groups */
+extern int vm_guest;		/* Running as virtual machine guest? */
+
+extern u_long maxphys;		/* max raw I/O transfer size */
+
+/*
+ * Detected virtual machine guest types. The intention is to expand
+ * and/or add to the VM_GUEST_VM type if specific VM functionality is
+ * ever implemented (e.g. vendor-specific paravirtualization features).
+ * Keep in sync with vm_guest_sysctl_names[].
+ */
+enum VM_GUEST { VM_GUEST_NO = 0, VM_GUEST_VM, VM_GUEST_XEN, VM_GUEST_HV,
+		VM_GUEST_VMWARE, VM_GUEST_KVM, VM_GUEST_BHYVE, VM_GUEST_VBOX,
+		VM_GUEST_PARALLELS, VM_GUEST_NVMM, VM_GUEST_LAST };
+
+#endif /* KERNEL */
+
+/*
+ * Align variables.
+ */
+#define	__read_mostly		__section(".data.read_mostly")
+#define	__read_frequently	__section(".data.read_frequently")
+#define	__exclusive_cache_line	__aligned(CACHE_LINE_SIZE) \
+				    __section(".data.exclusive_cache_line")
+#if defined(_STANDALONE)
+struct ucred;
 #endif
-#include <sys/proc.h>
-__BEGIN_DECLS
-#ifdef KERNEL
-#include <libkern/libkern.h>
+
+#ifdef _KERNEL
+#include <sys/param.h>		/* MAXCPU */
+#include <sys/pcpu.h>		/* curthread */
+#include <sys/kpilite.h>
+#include <sys/limits.h>
+
+extern bool scheduler_stopped;
+
+/*
+ * If we have already panic'd and this is the thread that called
+ * panic(), then don't block on any mutexes but silently succeed.
+ * Otherwise, the kernel will deadlock since the scheduler isn't
+ * going to run the thread that holds any lock we need.
+ */
+#define	SCHEDULER_STOPPED()	__predict_false(scheduler_stopped)
+
+extern const int osreldate;
+
+extern const void *zero_region;	/* address space maps to a zeroed page	*/
+
+extern int unmapped_buf_allowed;
+
+#ifdef __LP64__
+#define	IOSIZE_MAX		iosize_max()
+#define	DEVFS_IOSIZE_MAX	devfs_iosize_max()
+#else
+#define	IOSIZE_MAX		SSIZE_MAX
+#define	DEVFS_IOSIZE_MAX	SSIZE_MAX
 #endif
-#include <kern/thread.h>
-#include <kern/debug.h>
-__END_DECLS
 
-#ifdef BSD_KERNEL_PRIVATE
-extern char version[__null_terminated]; /* system version */
-extern const char *const copyright;     /* system copyright */
-
-
-extern int      boothowto;      /* reboot flags, from console subsystem */
-extern int      show_space;
-extern int      minimalboot;
-#if CONFIG_DARKBOOT
-extern int      darkboot;
-#endif
-
-extern const int nblkdev; /* number of entries in bdevsw */
-extern const int nchrdev; /* number of entries in cdevsw */
-#endif /* BSD_KERNEL_PRIVATE */
-
-#ifdef KERNEL_PRIVATE
-
-extern int securelevel;         /* system security level */
-extern dev_t rootdev;           /* root device */
-extern struct vnode *rootvp;    /* vnode equivalent to above */
-
-#endif /* KERNEL_PRIVATE */
-
-#define SYSINIT(a, b, c, d, e)
-#define MALLOC_DEFINE(a, b, c)
-
-#define getenv_int(a, b) (*b = 0)
-#define KASSERT(exp, msg)
 /*
  * General function declarations.
  */
-__BEGIN_DECLS
 
-#ifdef BSD_KERNEL_PRIVATE
-int     einval(void);
-void    nullsys(void);
-int     errsys(void);
-int     seltrue(dev_t dev, int which, struct proc *p);
-void    ttyprintf(struct tty *, const char *, ...) __printflike(2, 3);
-void    realitexpire(struct proc *, void*);
-int     hzto(struct timeval *tv);
-void    tablefull(const char *);
-void    uprintf(const char *, ...) __printflike(1, 2);
-int     copywithin(void *saddr, void *daddr, size_t len);
-int64_t fulong(user_addr_t addr);
-int     sulong(user_addr_t addr, int64_t longword);
-uint64_t fuulong(user_addr_t addr);
-int     suulong(user_addr_t addr, uint64_t ulongword);
-int     clone_system_shared_regions(int shared_regions_active,
-    int chain_regions,
-    int base_vnode);
-extern kern_return_t bsd_exception(int, mach_exception_data_t codes, int);
-extern void     bsdinit_task(void);
-extern void unix_syscall_return(int) __dead2;
-void    initclocks(void);
-void    startprofclock(struct proc *);
-void    stopprofclock(struct proc *);
-void    setstatclockrate(int hzrate);
-struct time_value;
-void    get_procrustime(struct time_value *tv);
-void    load_init_program(struct proc *p);
-void __pthread_testcancel(int presyscall);
-void throttle_info_get_last_io_time(mount_t mp, struct timeval *tv);
-void update_last_io_time(mount_t mp);
-void throttle_info_end_io(buf_t bp);
-#endif /* BSD_KERNEL_PRIVATE */
+struct lock_object;
+struct malloc_type;
+struct mtx;
+struct proc;
+struct thread;
+struct tty;
+struct ucred;
+struct uio;
+struct _jmp_buf;
+struct trapframe;
+struct eventtimer;
 
-#ifdef KERNEL_PRIVATE
-void    timeout(void (*)(void *), void *arg, int ticks);
-void    timeout_with_leeway(void (*)(void *), void *arg, int ticks, int leeway_ticks);
-void    untimeout(void (*)(void *), void *arg);
-int     bsd_hostname(char *, size_t, size_t*);
-int     vslock(user_addr_ut addr, user_size_ut len);
-int     vsunlock(user_addr_ut addr, user_size_ut len, int dirtied);
-#endif /* KERNEL_PRIVATE */
+int	setjmp(struct _jmp_buf *) __returns_twice;
+void	longjmp(struct _jmp_buf *, int) __dead2;
+int	dumpstatus(vm_offset_t addr, off_t count);
+int	nullop(void);
+int	eopnotsupp(void);
+int	ureadc(int, struct uio *);
+void	hashdestroy(void *, struct malloc_type *, u_long);
+void	*hashinit(int count, struct malloc_type *type, u_long *hashmask);
+void	*hashinit_flags(int count, struct malloc_type *type,
+    u_long *hashmask, int flags);
+#define	HASH_NOWAIT	0x00000001
+#define	HASH_WAITOK	0x00000002
 
-int     nullop(void);
-int     nulldev(void);
-int     enoioctl(void);
-int     enosys(void);
-int     enxio(void);
-int     eopnotsupp(void);
-void    *hashinit(int count, int type, u_long *hashmask);
-#if XNU_KERNEL_PRIVATE
-LIST_HEAD(generic_hash_head, generic);
-void    hashinit_generic(int elements,
-    struct generic_hash_head *__counted_by(*out_count) *out_ptr, size_t *out_count);
-#define hashinit_counted_by(_elements, _out_ptr, _out_count) do {         \
-	size_t __hashinit_out_count = 0;                                \
-	struct generic_hash_head *__counted_by(__hashinit_out_count) __hashinit_out_hash = NULL; \
-	hashinit_generic((_elements), &__hashinit_out_hash, &__hashinit_out_count); \
-	(_out_ptr) = (typeof(*(_out_ptr)) *)__hashinit_out_hash;        \
-	(_out_count) = __hashinit_out_count;                            \
-} while (0)
-#endif /* XNU_KERNEL_PRIVATE */
-void    hashdestroy(void *, int type, u_long hashmask);
-void    ovbcopy(const void *from, void *to, size_t len);
-int     fubyte(user_addr_t addr);
-int     fuibyte(user_addr_t addr);
-int     subyte(user_addr_t addr, int byte);
-int     suibyte(user_addr_t addr, int byte);
-long   fuword(user_addr_t addr);
-long   fuiword(user_addr_t addr);
-int    suword(user_addr_t addr, long word);
-int    suiword(user_addr_t addr, long word);
-#define fusize(_a)      ((user_size_t)fulong(_a))
-#define susize(_a, _s)  sulong((_a), (_s))
-#define fuptr(a)        ((user_addr_t)fulong(_a)
-#define suptr(_a, _p)   sulong((_a), (_p))
-int     useracc(user_addr_ut addr, user_size_ut len, int prot);
-typedef void (*timeout_fcn_t)(void *);
-void    bsd_timeout(void (*)(void *), void *arg, struct timespec * ts);
-void    bsd_untimeout(void (*)(void *), void *arg);
-void    set_fsblocksize(struct vnode *);
-uint64_t tvtoabstime(struct timeval *);
-uint64_t tstoabstime(struct timespec *);
-void    *throttle_info_create(void);
-void    throttle_info_mount_ref(mount_t mp, void * throttle_info);
-void    throttle_info_mount_rel(mount_t mp);
-void    throttle_info_release(void *throttle_info);
-void    throttle_info_update(void *throttle_info, int flags);
-uint32_t throttle_lowpri_io(int sleep_amount);
-/* returns TRUE if the throttle_lowpri_io called with the same sleep_amount would've slept */
-int     throttle_lowpri_io_will_be_throttled(int sleep_amount);
-void    throttle_set_thread_io_policy(int policy);
-int     throttle_get_thread_effective_io_policy(void);
-int     throttle_thread_io_tier_above_metadata(void);
+void	*phashinit(int count, struct malloc_type *type, u_long *nentries);
+void	*phashinit_flags(int count, struct malloc_type *type, u_long *nentries,
+    int flags);
 
-typedef struct __throttle_info_handle *throttle_info_handle_t;
-int     throttle_info_ref_by_mask(uint64_t throttle_mask, throttle_info_handle_t *throttle_info_handle);
-void    throttle_info_rel_by_mask(throttle_info_handle_t throttle_info_handle);
-void    throttle_info_update_by_mask(void *throttle_info_handle, int flags);
-void    throttle_info_disable_throttle(int devno, boolean_t isfusion);
+void	cpu_flush_dcache(void *, size_t);
+void	cpu_rootconf(void);
+void	critical_enter_KBI(void);
+void	critical_exit_KBI(void);
+void	critical_exit_preempt(void);
+void	init_param1(void);
+void	init_param2(long physpages);
+void	init_static_kenv(char *, size_t);
+void	tablefull(const char *);
+
 /*
- * 'throttle_info_handle' acquired via 'throttle_info_ref_by_mask'
- * 'policy' should be specified as either IOPOL_UTILITY or IPOL_THROTTLE,
- * all other values will be treated as IOPOL_NORMAL (i.e. no throttling)
+ * Allocate per-thread "current" state in the linuxkpi
  */
-int     throttle_info_io_will_be_throttled(void *throttle_info_handle, int policy);
+extern int (*lkpi_alloc_current)(struct thread *, int);
+int linux_alloc_current_noop(struct thread *, int);
 
-#ifdef KERNEL_PRIVATE
+#if (defined(KLD_MODULE) && !defined(KLD_TIED)) || defined(KTR_CRITICAL) || !defined(_KERNEL) || defined(GENOFFSET)
+#define critical_enter() critical_enter_KBI()
+#define critical_exit() critical_exit_KBI()
+#else
+static __inline void
+critical_enter(void)
+{
+	struct thread_lite *td;
 
-/* returned by throttle_io_will_be_throttled */
-#define THROTTLE_DISENGAGED     0
-#define THROTTLE_ENGAGED        1
-#define THROTTLE_NOW            2
+	td = (struct thread_lite *)curthread;
+	td->td_critnest++;
+	atomic_interrupt_fence();
+}
 
-int  throttle_io_will_be_throttled(int lowpri_window_msecs, mount_t mp);
-int throttle_lowpri_window(void) __attribute__((pure));
-struct uthread;
-void throttle_info_reset_window(struct uthread *ut);
-void throttle_info_update_with_type(void *throttle_info, int flags, boolean_t isssd);
+static __inline void
+critical_exit(void)
+{
+	struct thread_lite *td;
 
+	td = (struct thread_lite *)curthread;
+	KASSERT(td->td_critnest != 0,
+	    ("critical_exit: td_critnest == 0"));
+	atomic_interrupt_fence();
+	td->td_critnest--;
+	atomic_interrupt_fence();
+	if (__predict_false(td->td_owepreempt))
+		critical_exit_preempt();
+
+}
 #endif
 
-#ifdef XNU_KERNEL_PRIVATE
-void *exec_spawnattr_getmacpolicyinfo(const void *macextensions, const char *policyname, size_t *lenp);
+#ifdef  EARLY_PRINTF
+typedef void early_putc_t(int ch);
+extern early_putc_t *early_putc;
+#define	CHECK_EARLY_PRINTF(x)	\
+    __CONCAT(early_printf_, EARLY_PRINTF) == __CONCAT(early_printf_, x)
+#define	early_printf_1		1
+#define	early_printf_mvebu	2
+#define	early_printf_ns8250	3
+#define	early_printf_pl011	4
+#define	early_printf_snps	5
+#define	early_printf_sbi	6
+#else
+#define	CHECK_EARLY_PRINTF(x)	0
+#endif
+int	kvprintf(char const *, void (*)(int, void*), void *, int,
+	    __va_list) __printflike(1, 0);
+void	log(int, const char *, ...) __printflike(2, 3);
+void	log_console(struct uio *);
+void	vlog(int, const char *, __va_list) __printflike(2, 0);
+int	asprintf(char **ret, struct malloc_type *mtp, const char *format, 
+	    ...) __printflike(3, 4);
+int	printf(const char *, ...) __printflike(1, 2);
+int	snprintf(char *, size_t, const char *, ...) __printflike(3, 4);
+int	sprintf(char *buf, const char *, ...) __printflike(2, 3);
+int	uprintf(const char *, ...) __printflike(1, 2);
+int	vprintf(const char *, __va_list) __printflike(1, 0);
+int	vasprintf(char **ret, struct malloc_type *mtp, const char *format,
+	    __va_list ap) __printflike(3, 0);
+int	vsnprintf(char *, size_t, const char *, __va_list) __printflike(3, 0);
+int	vsnrprintf(char *, size_t, int, const char *, __va_list) __printflike(4, 0);
+int	vsprintf(char *buf, const char *, __va_list) __printflike(2, 0);
+int	sscanf(const char *, char const * _Nonnull, ...) __scanflike(2, 3);
+int	vsscanf(const char * _Nonnull, char const * _Nonnull, __va_list)  __scanflike(2, 0);
+long	strtol(const char *, char **, int);
+u_long	strtoul(const char *, char **, int);
+quad_t	strtoq(const char *, char **, int);
+u_quad_t strtouq(const char *, char **, int);
+void	tprintf(struct proc *p, int pri, const char *, ...) __printflike(3, 4);
+void	vtprintf(struct proc *, int, const char *, __va_list) __printflike(3, 0);
+void	hexdump(const void *ptr, int length, const char *hdr, int flags);
+#define	HD_COLUMN_MASK	0xff
+#define	HD_DELIM_MASK	0xff00
+#define	HD_OMIT_COUNT	(1 << 16)
+#define	HD_OMIT_HEX	(1 << 17)
+#define	HD_OMIT_CHARS	(1 << 18)
+
+#define ovbcopy(f, t, l) bcopy((f), (t), (l))
+void	explicit_bzero(void * _Nonnull, size_t);
+
+void	*memset(void * _Nonnull buf, int c, size_t len);
+void	*memcpy(void * _Nonnull to, const void * _Nonnull from, size_t len);
+void	*memmove(void * _Nonnull dest, const void * _Nonnull src, size_t n);
+int	memcmp(const void *b1, const void *b2, size_t len);
+#ifdef __CHERI__
+void	*memcpy_data(void * _Nonnull to, const void * _Nonnull from,
+	    size_t len);
+void	*memmove_data(void * _Nonnull dest, const void * _Nonnull src,
+	    size_t n);
+#else
+#define	memcpy_data	memcpy
+#define	memmove_data	memmove
 #endif
 
-#ifdef BSD_KERNEL_PRIVATE
+#ifdef SAN_NEEDS_INTERCEPTORS
+#define	SAN_INTERCEPTOR(func)	\
+	__CONCAT(SAN_INTERCEPTOR_PREFIX, __CONCAT(_, func))
+void	*SAN_INTERCEPTOR(memset)(void *, int, size_t);
+void	*SAN_INTERCEPTOR(memcpy)(void *, const void *, size_t);
+void	*SAN_INTERCEPTOR(memmove)(void *, const void *, size_t);
+int	SAN_INTERCEPTOR(memcmp)(const void *, const void *, size_t);
+#ifndef SAN_RUNTIME
+#define bcopy(from, to, len)	SAN_INTERCEPTOR(memmove)((to), (from), (len))
+#define bzero(buf, len)		SAN_INTERCEPTOR(memset)((buf), 0, (len))
+#define bcmp(b1, b2, len)	SAN_INTERCEPTOR(memcmp)((b1), (b2), (len))
+#define memset(buf, c, len)	SAN_INTERCEPTOR(memset)((buf), (c), (len))
+#define memcpy(to, from, len)	SAN_INTERCEPTOR(memcpy)((to), (from), (len))
+#define memmove(dest, src, n)	SAN_INTERCEPTOR(memmove)((dest), (src), (n))
+#define memcmp(b1, b2, len)	SAN_INTERCEPTOR(memcmp)((b1), (b2), (len))
+#endif /* !SAN_RUNTIME */
+#else /* !SAN_NEEDS_INTERCEPTORS */
+#define bcopy(from, to, len)	__builtin_memmove((to), (from), (len))
+#define bzero(buf, len)		__builtin_memset((buf), 0, (len))
+#define bcmp(b1, b2, len)	__builtin_memcmp((b1), (b2), (len))
+#define memset(buf, c, len)	__builtin_memset((buf), (c), (len))
+#define memcpy(to, from, len)	__builtin_memcpy((to), (from), (len))
+#define memmove(dest, src, n)	__builtin_memmove((dest), (src), (n))
+#define memcmp(b1, b2, len)	__builtin_memcmp((b1), (b2), (len))
+#endif /* SAN_NEEDS_INTERCEPTORS */
 
-void sys_override_io_throttle(boolean_t enable_override);
+void	*memset_early(void * _Nonnull buf, int c, size_t len);
+#define bzero_early(buf, len) memset_early((buf), 0, (len))
+void	*memcpy_early(void * _Nonnull to, const void * _Nonnull from, size_t len);
+void	*memmove_early(void * _Nonnull dest, const void * _Nonnull src, size_t n);
+#define bcopy_early(from, to, len) memmove_early((to), (from), (len))
 
-#endif /* BSD_KERNEL_PRIVATE */
+#define	copystr(src, dst, len, outlen)	({			\
+	size_t __r, __len, *__outlen;				\
+								\
+	__len = (len);						\
+	__outlen = (outlen);					\
+	__r = strlcpy((dst), (src), __len);			\
+	if (__outlen != NULL)					\
+		*__outlen = ((__r >= __len) ? __len : __r + 1);	\
+	((__r >= __len) ? ENAMETOOLONG : 0);			\
+})
 
-__END_DECLS
+__nodiscard int copyinstr(const void * __restrict udaddr,
+    void * _Nonnull __restrict kaddr, size_t len,
+    size_t * __restrict lencopied);
+__nodiscard int copyin(const void * __restrict udaddr,
+    void * _Nonnull __restrict kaddr, size_t len);
+__nodiscard int copyin_nofault(const void * __restrict udaddr,
+    void * _Nonnull __restrict kaddr, size_t len);
+__nodiscard int copyout(const void * _Nonnull __restrict kaddr,
+    void * __restrict udaddr, size_t len);
+__nodiscard int copyout_nofault(
+    const void * _Nonnull __restrict kaddr, void * __restrict udaddr,
+    size_t len);
 
+#ifdef __CHERI__
+__nodiscard int copyinptr(const void * __restrict udaddr,
+    void * _Nonnull __restrict kaddr, size_t len);
+__nodiscard int copyinptr_nofault(const void * __restrict udaddr,
+    void * _Nonnull __restrict kaddr, size_t len);
+__nodiscard int copyoutptr(
+    const void * _Nonnull __restrict kaddr, void * __restrict udaddr,
+    size_t len);
+__nodiscard int copyoutptr_nofault(
+    const void * _Nonnull __restrict kaddr, void * __restrict udaddr,
+    size_t len);
+#else
+#define	copyinptr		copyin
+#define	copyinptr_nofault	copyin_nofault
+#define	copyoutptr		copyout
+#define	copyoutptr_nofault	copyout_nofault
+#endif
+
+#ifdef SAN_NEEDS_INTERCEPTORS
+int	SAN_INTERCEPTOR(copyin)(const void *, void *, size_t);
+int	SAN_INTERCEPTOR(copyinstr)(const void *, void *, size_t, size_t *);
+int	SAN_INTERCEPTOR(copyout)(const void *, void *, size_t);
+#ifndef SAN_RUNTIME
+#define	copyin(u, k, l)		SAN_INTERCEPTOR(copyin)((u), (k), (l))
+#define	copyinstr(u, k, l, lc)	SAN_INTERCEPTOR(copyinstr)((u), (k), (l), (lc))
+#define	copyout(k, u, l)	SAN_INTERCEPTOR(copyout)((k), (u), (l))
+#endif /* !SAN_RUNTIME */
+#endif /* SAN_NEEDS_INTERCEPTORS */
+
+int	fubyte(volatile const void *base);
+long	fuword(volatile const void *base);
+int	fuword16(volatile const void *base);
+int32_t	fuword32(volatile const void *base);
+int64_t	fuword64(volatile const void *base);
+__nodiscard int fueword(volatile const void *base, long *val);
+__nodiscard int fueword32(volatile const void *base, int32_t *val);
+__nodiscard int fueword64(volatile const void *base, int64_t *val);
+#ifdef __CHERI__
+__nodiscard int fueptr(volatile const void *base, intptr_t *val);
+#else
+#define	fueptr(base, val)	fueword((base), (long *)(val))
+#endif
+__nodiscard int subyte(volatile void *base, int byte);
+__nodiscard int suword(volatile void *base, long word);
+__nodiscard int suword16(volatile void *base, int word);
+__nodiscard int suword32(volatile void *base, int32_t word);
+__nodiscard int suword64(volatile void *base, int64_t word);
+#ifdef __CHERI__
+__nodiscard int suptr(volatile void *base, intptr_t ptr);
+#else
+#define	suptr(base, val)	suword((base), (val))
+#endif
+uint32_t casuword32(volatile uint32_t *base, uint32_t oldval, uint32_t newval);
+u_long	casuword(volatile u_long *p, u_long oldval, u_long newval);
+int	casueword32(volatile uint32_t *base, uint32_t oldval, uint32_t *oldvalp,
+	    uint32_t newval);
+int	casueword(volatile u_long *p, u_long oldval, u_long *oldvalp,
+	    u_long newval);
+
+#if defined(SAN_NEEDS_INTERCEPTORS) && !defined(KCSAN)
+int	SAN_INTERCEPTOR(fubyte)(volatile const void *base);
+int	SAN_INTERCEPTOR(fuword16)(volatile const void *base);
+int	SAN_INTERCEPTOR(fueword)(volatile const void *base, long *val);
+int	SAN_INTERCEPTOR(fueword32)(volatile const void *base, int32_t *val);
+int	SAN_INTERCEPTOR(fueword64)(volatile const void *base, int64_t *val);
+int	SAN_INTERCEPTOR(subyte)(volatile void *base, int byte);
+int	SAN_INTERCEPTOR(suword)(volatile void *base, long word);
+int	SAN_INTERCEPTOR(suword16)(volatile void *base, int word);
+int	SAN_INTERCEPTOR(suword32)(volatile void *base, int32_t word);
+int	SAN_INTERCEPTOR(suword64)(volatile void *base, int64_t word);
+int	SAN_INTERCEPTOR(casueword32)(volatile uint32_t *base, uint32_t oldval,
+	    uint32_t *oldvalp, uint32_t newval);
+int	SAN_INTERCEPTOR(casueword)(volatile u_long *p, u_long oldval,
+	    u_long *oldvalp, u_long newval);
+#ifndef SAN_RUNTIME
+#define	fubyte(b)		SAN_INTERCEPTOR(fubyte)((b))
+#define	fuword16(b)		SAN_INTERCEPTOR(fuword16)((b))
+#define	fueword(b, v)		SAN_INTERCEPTOR(fueword)((b), (v))
+#define	fueword32(b, v)		SAN_INTERCEPTOR(fueword32)((b), (v))
+#define	fueword64(b, v)		SAN_INTERCEPTOR(fueword64)((b), (v))
+#define	subyte(b, w)		SAN_INTERCEPTOR(subyte)((b), (w))
+#define	suword(b, w)		SAN_INTERCEPTOR(suword)((b), (w))
+#define	suword16(b, w)		SAN_INTERCEPTOR(suword16)((b), (w))
+#define	suword32(b, w)		SAN_INTERCEPTOR(suword32)((b), (w))
+#define	suword64(b, w)		SAN_INTERCEPTOR(suword64)((b), (w))
+#define	casueword32(b, o, p, n)	SAN_INTERCEPTOR(casueword32)((b), (o), (p), (n))
+#define	casueword(b, o, p, n)	SAN_INTERCEPTOR(casueword)((b), (o), (p), (n))
+#endif /* !SAN_RUNTIME */
+#endif /* SAN_NEEDS_INTERCEPTORS && !KCSAN */
+
+int	sysbeep(int hertz, sbintime_t duration);
+
+void	hardclock(int cnt, int usermode);
+void	hardclock_sync(int cpu);
+void	statclock(int cnt, int usermode);
+void	profclock(int cnt, int usermode, uintfptr_t pc);
+
+int	hardclockintr(void);
+
+void	startprofclock(struct proc *);
+void	stopprofclock(struct proc *);
+void	cpu_startprofclock(void);
+void	cpu_stopprofclock(void);
+void	suspendclock(void);
+void	resumeclock(void);
+sbintime_t 	cpu_idleclock(void);
+void	cpu_activeclock(void);
+void	cpu_new_callout(int cpu, sbintime_t bt, sbintime_t bt_opt);
+void	cpu_et_frequency(struct eventtimer *et, uint64_t newfreq);
+extern int	cpu_disable_c2_sleep;
+extern int	cpu_disable_c3_sleep;
+
+char	*kern_getenv(const char *name);
+void	freeenv(char *env);
+int	getenv_int(const char *name, int *data);
+int	getenv_uint(const char *name, unsigned int *data);
+int	getenv_long(const char *name, long *data);
+int	getenv_ulong(const char *name, unsigned long *data);
+int	getenv_string(const char *name, char *data, int size);
+int	getenv_int64(const char *name, int64_t *data);
+int	getenv_uint64(const char *name, uint64_t *data);
+int	getenv_quad(const char *name, quad_t *data);
+int	getenv_bool(const char *name, bool *data);
+bool	getenv_is_true(const char *name);
+bool	getenv_is_false(const char *name);
+int	kern_setenv(const char *name, const char *value);
+int	kern_unsetenv(const char *name);
+int	testenv(const char *name);
+
+int	getenv_array(const char *name, void *data, int size, int *psize,
+    int type_size, bool allow_signed);
+#define	GETENV_UNSIGNED	false	/* negative numbers not allowed */
+#define	GETENV_SIGNED	true	/* negative numbers allowed */
+
+typedef uint64_t (cpu_tick_f)(void);
+void set_cputicker(cpu_tick_f *func, uint64_t freq, bool isvariable);
+extern cpu_tick_f *cpu_ticks;
+uint64_t cpu_tickrate(void);
+uint64_t cputick2usec(uint64_t tick);
+
+#include <sys/libkern.h>
+
+/* Initialize the world */
+void	consinit(void);
+void	cpu_initclocks(void);
+void	cpu_initclocks_bsp(void);
+void	cpu_initclocks_ap(void);
+void	usrinfoinit(void);
+
+/* Finalize the world */
+void	kern_reboot(int) __dead2;
+void	shutdown_nice(int);
+
+/* Stubs for obsolete functions that used to be for interrupt management */
+static __inline intrmask_t	splhigh(void)		{ return 0; }
+static __inline intrmask_t	splimp(void)		{ return 0; }
+static __inline intrmask_t	splnet(void)		{ return 0; }
+static __inline intrmask_t	spltty(void)		{ return 0; }
+static __inline void		splx(intrmask_t ipl __unused)	{ return; }
+
+/*
+ * Common `proc' functions are declared here so that proc.h can be included
+ * less often.
+ */
+int	_sleep(const void * _Nonnull chan, struct lock_object *lock, int pri,
+	   const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags);
+#define	msleep(chan, mtx, pri, wmesg, timo)				\
+	_sleep((chan), &(mtx)->lock_object, (pri), (wmesg),		\
+	    tick_sbt * (timo), 0, C_HARDCLOCK)
+#define	msleep_sbt(chan, mtx, pri, wmesg, bt, pr, flags)		\
+	_sleep((chan), &(mtx)->lock_object, (pri), (wmesg), (bt), (pr),	\
+	    (flags))
+int	msleep_spin_sbt(const void * _Nonnull chan, struct mtx *mtx,
+	    const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags);
+#define	msleep_spin(chan, mtx, wmesg, timo)				\
+	msleep_spin_sbt((chan), (mtx), (wmesg), tick_sbt * (timo),	\
+	    0, C_HARDCLOCK)
+int	pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr,
+	    int flags);
+static __inline int
+pause(const char *wmesg, int timo)
+{
+	return (pause_sbt(wmesg, tick_sbt * timo, 0, C_HARDCLOCK));
+}
+#define	pause_sig(wmesg, timo)						\
+	pause_sbt((wmesg), tick_sbt * (timo), 0, C_HARDCLOCK | C_CATCH)
+#define	tsleep(chan, pri, wmesg, timo)					\
+	_sleep((chan), NULL, (pri), (wmesg), tick_sbt * (timo),		\
+	    0, C_HARDCLOCK)
+#define	tsleep_sbt(chan, pri, wmesg, bt, pr, flags)			\
+	_sleep((chan), NULL, (pri), (wmesg), (bt), (pr), (flags))
+void	wakeup(const void *chan);
+void	wakeup_one(const void *chan);
+void	wakeup_any(const void *chan);
+
+/*
+ * Common `struct cdev *' stuff are declared here to avoid #include poisoning
+ */
+
+struct cdev;
+dev_t dev2udev(struct cdev *x);
+const char *devtoname(struct cdev *cdev);
+
+#ifdef __LP64__
+size_t	devfs_iosize_max(void);
+size_t	iosize_max(void);
+#endif
+
+int poll_no_poll(int events);
+
+/* XXX: Should be void nanodelay(u_int nsec); */
+void	DELAY(int usec);
+
+int kcmp_cmp(uintptr_t a, uintptr_t b);
+
+/* Root mount holdback API */
+struct root_hold_token {
+	int				flags;
+	const char			*who;
+	TAILQ_ENTRY(root_hold_token)	list;
+};
+
+struct root_hold_token *root_mount_hold(const char *identifier);
+void root_mount_hold_token(const char *identifier, struct root_hold_token *h);
+void root_mount_rel(struct root_hold_token *h);
+int root_mounted(void);
+
+/*
+ * Unit number allocation API. (kern/subr_unit.c)
+ */
+struct unrhdr;
+#define	UNR_NO_MTX	((void *)(uintptr_t)-1)
+struct unrhdr *new_unrhdr(int low, int high, struct mtx *mutex);
+void init_unrhdr(struct unrhdr *uh, int low, int high, struct mtx *mutex);
+void delete_unrhdr(struct unrhdr *uh);
+void clear_unrhdr(struct unrhdr *uh);
+void clean_unrhdr(struct unrhdr *uh);
+void clean_unrhdrl(struct unrhdr *uh);
+int alloc_unr(struct unrhdr *uh);
+int alloc_unr_specific(struct unrhdr *uh, u_int item);
+int alloc_unrl(struct unrhdr *uh);
+void free_unr(struct unrhdr *uh, u_int item);
+void *create_iter_unr(struct unrhdr *uh);
+int next_iter_unr(void *handle);
+void free_iter_unr(void *handle);
+
+struct unrhdr64 {
+        uint64_t	counter;
+};
+
+static __inline void
+new_unrhdr64(struct unrhdr64 *unr64, uint64_t low)
+{
+
+	unr64->counter = low;
+}
+
+static __inline uint64_t
+alloc_unr64(struct unrhdr64 *unr64)
+{
+
+	return (atomic_fetchadd_64(&unr64->counter, 1));
+}
+
+void	intr_prof_stack_use(struct thread *td, struct trapframe *frame);
+
+void counted_warning(unsigned *counter, const char *msg);
+
+/*
+ * Safely read one byte of kernel memory at address addr, placing the
+ * value into *valp.  Returns 0 on success, EFAULT if read was
+ * impossible, e.g. due to the address not being mapped or not having
+ * necessary permissions.
+ */
+int safe_read(vm_offset_t addr, char *valp);
+
+/*
+ * APIs to manage deprecation and obsolescence.
+ */
+void _gone_in(int major, const char *msg, ...) __printflike(2, 3);
+void _gone_in_dev(device_t dev, int major, const char *msg, ...)
+    __printflike(3, 4);
+#ifdef NO_OBSOLETE_CODE
+#define __gone_ok(m, msg)					 \
+	_Static_assert(m < P_OSREL_MAJOR(__FreeBSD_version)),	 \
+	    "Obsolete code: " msg)
+#else
+#define	__gone_ok(m, msg)
+#endif
+#define gone_in(major, msg, ...)	do {				\
+	static bool __read_mostly __gone_in_ ## __LINE__ = true;	\
+	__gone_ok(major, msg);						\
+	if (__predict_false(__gone_in_ ## __LINE__)) {			\
+		__gone_in_ ## __LINE__ = false;				\
+		_gone_in(major, msg __VA_OPT__(,) __VA_ARGS__);		\
+	}								\
+} while (0)
+#define gone_in_dev(dev, major, msg, ...)	do {			\
+	static bool __read_mostly __gone_in_ ## __LINE__ = true;	\
+	__gone_ok(major, msg);						\
+	if (__predict_false(__gone_in_ ## __LINE__)) {			\
+		__gone_in_ ## __LINE__ = false;				\
+		_gone_in_dev(dev, major, msg __VA_OPT__(,) __VA_ARGS__);\
+	}								\
+} while (0)
+
+#ifdef INVARIANTS
+#define	__diagused
+#else
+#define	__diagused	__unused
+#endif
+
+#ifdef WITNESS
+#define	__witness_used
+#else
+#define	__witness_used	__unused
+#endif
+
+#endif /* _KERNEL */
+
+__NULLABILITY_PRAGMA_POP
 #endif /* !_SYS_SYSTM_H_ */

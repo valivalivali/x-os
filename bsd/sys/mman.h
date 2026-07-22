@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2025 Apple Computer, Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,11 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -57,224 +27,335 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)mman.h	8.1 (Berkeley) 6/2/93
- */
-
-/*
- * Currently unsupported:
- *
- * [TYM]	POSIX_TYPED_MEM_ALLOCATE
- * [TYM]	POSIX_TYPED_MEM_ALLOCATE_CONTIG
- * [TYM]	POSIX_TYPED_MEM_MAP_ALLOCATABLE
- * [TYM]	struct posix_typed_mem_info
- * [TYM]	posix_mem_offset()
- * [TYM]	posix_typed_mem_get_info()
- * [TYM]	posix_typed_mem_open()
  */
 
 #ifndef _SYS_MMAN_H_
-#define _SYS_MMAN_H_
+#define	_SYS_MMAN_H_
 
-#include <sys/appleapiopts.h>
 #include <sys/cdefs.h>
-
 #include <sys/_types.h>
 
+#if __BSD_VISIBLE
 /*
- * [various] The mode_t, off_t, and size_t types shall be defined as
- * described in <sys/types.h>
+ * Inheritance for minherit()
  */
-#include <sys/_types/_mode_t.h>
-#include <sys/_types/_off_t.h>
-#include <sys/_types/_size_t.h>
-
-#ifndef KERNEL
-#if __DARWIN_C_LEVEL >= 200809L
-#include <Availability.h>
-#endif /* __DARWIN_C_LEVEL */
-#endif /* KERNEL */
+#define	INHERIT_SHARE	0
+#define	INHERIT_COPY	1
+#define	INHERIT_NONE	2
+#define	INHERIT_ZERO	3
+#endif
 
 /*
  * Protections are chosen from these bits, or-ed together
  */
-#define PROT_NONE       0x00    /* [MC2] no permissions */
-#define PROT_READ       0x01    /* [MC2] pages can be read */
-#define PROT_WRITE      0x02    /* [MC2] pages can be written */
-#define PROT_EXEC       0x04    /* [MC2] pages can be executed */
+#define	PROT_NONE	0x00	/* no permissions */
+#define	PROT_READ	0x01	/* pages can be read */
+#define	PROT_WRITE	0x02	/* pages can be written */
+#define	PROT_EXEC	0x04	/* pages can be executed */
+#if __BSD_VISIBLE
+#define	PROT_CHERI0	0x08
+#define	PROT_CHERI1	0x10
+#define	_PROT_ALL	(PROT_READ | PROT_WRITE | PROT_EXEC)
+#define	PROT_EXTRACT(prot)	((prot) & _PROT_ALL)
+
+#define	_PROT_MAX_SHIFT	16
+#define	PROT_MAX(prot)		((prot) << _PROT_MAX_SHIFT)
+#define	PROT_MAX_EXTRACT(prot)	(((prot) >> _PROT_MAX_SHIFT) & _PROT_ALL)
+#endif
 
 /*
  * Flags contain sharing type and options.
  * Sharing types; choose one.
  */
-#define MAP_SHARED      0x0001          /* [MF|SHM] share changes */
-#define MAP_PRIVATE     0x0002          /* [MF|SHM] changes are private */
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define MAP_COPY        MAP_PRIVATE     /* Obsolete */
-#endif  /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
+#define	MAP_SHARED	0x0001		/* share changes */
+#define	MAP_PRIVATE	0x0002		/* changes are private */
+#if __BSD_VISIBLE
+#define	MAP_COPY	MAP_PRIVATE	/* Obsolete */
+#endif
 
 /*
  * Other flags
  */
-#define MAP_FIXED        0x0010 /* [MF|SHM] interpret addr exactly */
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define MAP_RENAME       0x0020 /* Sun: rename private pages to file */
-#define MAP_NORESERVE    0x0040 /* Sun: don't reserve needed swap area */
-#define MAP_RESERVED0080 0x0080 /* previously unimplemented MAP_INHERIT */
-#define MAP_NOEXTEND     0x0100 /* for MAP_FILE, don't change file size */
-#define MAP_HASSEMAPHORE 0x0200 /* region may contain semaphores */
-#define MAP_NOCACHE      0x0400 /* don't cache pages for this mapping */
-#define MAP_JIT          0x0800 /* Allocate a region that will be used for JIT purposes */
+#define	MAP_FIXED	 0x0010	/* map addr must be exactly as requested */
+
+#if __BSD_VISIBLE
+#define	MAP_RESERVED0020 0x0020	/* previously unimplemented MAP_RENAME */
+#define	MAP_RESERVED0040 0x0040	/* previously unimplemented MAP_NORESERVE */
+#define	MAP_RESERVED0080 0x0080	/* previously misimplemented MAP_INHERIT */
+#define	MAP_RESERVED0100 0x0100	/* previously unimplemented MAP_NOEXTEND */
+#define	MAP_HASSEMAPHORE 0x0200	/* region may contain semaphores */
+#define	MAP_STACK	 0x0400	/* region grows down, like a stack */
+#define	MAP_NOSYNC	 0x0800 /* page to but do not sync underlying file */
 
 /*
  * Mapping type
  */
-#define MAP_FILE        0x0000  /* map from file (default) */
-#define MAP_ANON        0x1000  /* allocated from memory, swap space */
-#define MAP_ANONYMOUS   MAP_ANON
+#define	MAP_FILE	 0x0000	/* map from file (default) */
+#define	MAP_ANON	 0x1000	/* allocated from memory, swap space */
+#ifndef _KERNEL
+#define	MAP_ANONYMOUS	 MAP_ANON /* For compatibility. */
+#endif /* !_KERNEL */
 
 /*
- * The MAP_RESILIENT_* flags can be used when the caller wants to map some
- * possibly unreliable memory and be able to access it safely, possibly
- * getting the wrong contents rather than raising any exception.
- * For safety reasons, such mappings have to be read-only (PROT_READ access
- * only).
+ * Extended flags
+ */
+#define	MAP_GUARD	 0x00002000 /* reserve but don't map address range */
+#define	MAP_EXCL	 0x00004000 /* for MAP_FIXED, fail if address is used */
+#define	MAP_NOCORE	 0x00020000 /* dont include these pages in a coredump */
+#define	MAP_PREFAULT_READ 0x00040000 /* prefault mapping for reading */
+#define	MAP_32BIT	 0x00080000 /* map in the low 2GB of address space */
+
+/*
+ * Request specific alignment (n == log2 of the desired alignment).
  *
- * MAP_RESILIENT_CODESIGN:
- *      accessing this mapping will not generate code-signing violations,
- *	even if the contents are tainted.
- * MAP_RESILIENT_MEDIA:
- *	accessing this mapping will not generate an exception if the contents
- *	are not available (unreachable removable or remote media, access beyond
- *	end-of-file, ...).  Missing contents will be replaced with zeroes.
+ * MAP_ALIGNED_SUPER requests optimal superpage alignment, but does
+ * not enforce a specific alignment.
  */
-#define MAP_RESILIENT_CODESIGN  0x2000 /* no code-signing failures */
-#define MAP_RESILIENT_MEDIA     0x4000 /* no backing-store failures */
-
-#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 101500
-#define MAP_32BIT       0x8000          /* Return virtual addresses <4G only */
-#endif /* defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 101500 */
+#define	MAP_ALIGNED(n)	 ((n) << MAP_ALIGNMENT_SHIFT)
+#define	MAP_ALIGNMENT_SHIFT	24
+#define	MAP_ALIGNMENT_MASK	MAP_ALIGNED(0xff)
+#define	MAP_ALIGNED_SUPER	MAP_ALIGNED(1) /* align on a superpage */
 
 /*
- * Flags used to support translated processes.
+ * Flags provided to shm_rename
  */
-#define MAP_TRANSLATED_ALLOW_EXECUTE 0x20000 /* allow execute in translated processes */
+/* Don't overwrite dest, if it exists */
+#define	SHM_RENAME_NOREPLACE	(1 << 0)
+/* Atomically swap src and dest */
+#define	SHM_RENAME_EXCHANGE	(1 << 1)
 
-#define MAP_UNIX03       0x40000 /* UNIX03 compliance */
+#endif /* __BSD_VISIBLE */
 
-#define MAP_TPRO         0x80000 /* Allocate a region that will be protected by TPRO */
-
-#endif  /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
-
+#if __POSIX_VISIBLE >= 199309
 /*
  * Process memory locking
  */
-#define MCL_CURRENT     0x0001  /* [ML] Lock only current memory */
-#define MCL_FUTURE      0x0002  /* [ML] Lock all future memory as well */
+#define	MCL_CURRENT	0x0001	/* Lock only current memory */
+#define	MCL_FUTURE	0x0002	/* Lock all future memory as well */
+#endif
 
 /*
  * Error return from mmap()
  */
-#define MAP_FAILED      ((void *)-1)    /* [MF|SHM] mmap failed */
+#define	MAP_FAILED	((void *)-1)
 
 /*
  * msync() flags
- *
- * When making a new MS_*, update tests vm_parameter_validation_[user|kern]
- * and their expected results; they deliberately call VM functions with invalid
- * msync values and you may be turning one of those invalid msyncs valid.
  */
-#define MS_ASYNC        0x0001  /* [MF|SIO] return immediately */
-#define MS_INVALIDATE   0x0002  /* [MF|SIO] invalidate all cached data */
-#define MS_SYNC         0x0010  /* [MF|SIO] msync synchronously */
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define MS_KILLPAGES    0x0004  /* invalidate pages, leave mapped */
-#define MS_DEACTIVATE   0x0008  /* deactivate pages, leave mapped */
-
-#endif  /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
-
+#define	MS_SYNC		0x0000	/* msync synchronously */
+#define	MS_ASYNC	0x0001	/* return immediately */
+#define	MS_INVALIDATE	0x0002	/* invalidate all cached data */
 
 /*
  * Advice to madvise
- *
- * When making a new MADV_*, update tests vm_parameter_validation_[user|kern]
- * and their expected results; they deliberately call VM functions with invalid
- * madvise values and you may be turning one of those invalid madvises valid.
  */
-#define POSIX_MADV_NORMAL       0       /* [MC1] no further special treatment */
-#define POSIX_MADV_RANDOM       1       /* [MC1] expect random page refs */
-#define POSIX_MADV_SEQUENTIAL   2       /* [MC1] expect sequential page refs */
-#define POSIX_MADV_WILLNEED     3       /* [MC1] will need these pages */
-#define POSIX_MADV_DONTNEED     4       /* [MC1] dont need these pages */
+#define	_MADV_NORMAL	0	/* no further special treatment */
+#define	_MADV_RANDOM	1	/* expect random page references */
+#define	_MADV_SEQUENTIAL 2	/* expect sequential page references */
+#define	_MADV_WILLNEED	3	/* will need these pages */
+#define	_MADV_DONTNEED	4	/* dont need these pages */
 
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-#define MADV_NORMAL             POSIX_MADV_NORMAL
-#define MADV_RANDOM             POSIX_MADV_RANDOM
-#define MADV_SEQUENTIAL         POSIX_MADV_SEQUENTIAL
-#define MADV_WILLNEED           POSIX_MADV_WILLNEED
-#define MADV_DONTNEED           POSIX_MADV_DONTNEED
-#define MADV_FREE               5       /* pages unneeded, discard contents */
-#define MADV_ZERO_WIRED_PAGES   6       /* zero the wired pages that have not been unwired before the entry is deleted */
-#define MADV_FREE_REUSABLE      7       /* pages can be reused (by anyone) */
-#define MADV_FREE_REUSE         8       /* caller wants to reuse those pages */
-#define MADV_CAN_REUSE          9
-#define MADV_PAGEOUT            10      /* page out now (internal only) */
-#define MADV_ZERO               11      /* zero pages without faulting in additional pages */
+#if __BSD_VISIBLE
+#define	MADV_NORMAL	_MADV_NORMAL
+#define	MADV_RANDOM	_MADV_RANDOM
+#define	MADV_SEQUENTIAL _MADV_SEQUENTIAL
+#define	MADV_WILLNEED	_MADV_WILLNEED
+#define	MADV_DONTNEED	_MADV_DONTNEED
+#define	MADV_FREE	5	/* dont need these pages, and junk contents */
+#define	MADV_NOSYNC	6	/* try to avoid flushes to physical media */
+#define	MADV_AUTOSYNC	7	/* revert to default flushing strategy */
+#define	MADV_NOCORE	8	/* do not include these pages in a core file */
+#define	MADV_CORE	9	/* revert to including pages in a core file */
+#define	MADV_PROTECT	10	/* protect process from pageout kill */
 
 /*
  * Return bits from mincore
  */
-#define MINCORE_INCORE           0x1     /* Page is incore */
-#define MINCORE_REFERENCED       0x2     /* Page has been referenced by us */
-#define MINCORE_MODIFIED         0x4     /* Page has been modified by us */
-#define MINCORE_REFERENCED_OTHER 0x8     /* Page has been referenced */
-#define MINCORE_MODIFIED_OTHER  0x10     /* Page has been modified */
-#define MINCORE_PAGED_OUT       0x20     /* Page has been paged out */
-#define MINCORE_COPIED          0x40     /* Page has been copied */
-#define MINCORE_ANONYMOUS       0x80     /* Page belongs to an anonymous object */
-#endif  /* (!_POSIX_C_SOURCE || _DARWIN_C_SOURCE) */
+#define	MINCORE_INCORE	 	 0x1 /* Page is incore */
+#define	MINCORE_REFERENCED	 0x2 /* Page has been referenced by us */
+#define	MINCORE_MODIFIED	 0x4 /* Page has been modified by us */
+#define	MINCORE_REFERENCED_OTHER 0x8 /* Page has been referenced */
+#define	MINCORE_MODIFIED_OTHER	0x10 /* Page has been modified */
+#define	MINCORE_SUPER		0x60 /* Page is a "super" page */
+#define	MINCORE_PSIND_SHIFT	5
+#define	MINCORE_PSIND(i)	(((i) << MINCORE_PSIND_SHIFT) & MINCORE_SUPER)
+				     /* Page size */
 
+/*
+ * Anonymous object constant for shm_open().
+ */
+#define	SHM_ANON		((char *)1)
 
-#ifndef KERNEL
+/*
+ * shmflags for shm_open2()
+ */
+#define	SHM_ALLOW_SEALING		0x00000001
+#define	SHM_GROW_ON_WRITE		0x00000002
+#define	SHM_LARGEPAGE			0x00000004
+
+#define	SHM_LARGEPAGE_ALLOC_DEFAULT	0
+#define	SHM_LARGEPAGE_ALLOC_NOWAIT	1
+#define	SHM_LARGEPAGE_ALLOC_HARD	2
+
+struct shm_largepage_conf {
+	int psind;
+	int alloc_policy;
+	int pad[10];
+};
+
+/*
+ * Flags for memfd_create().
+ */
+#define	MFD_CLOEXEC			0x00000001
+#define	MFD_ALLOW_SEALING		0x00000002
+
+#define	MFD_HUGETLB			0x00000004
+
+#define	MFD_HUGE_MASK			0xFC000000
+#define	MFD_HUGE_SHIFT			26
+#define	MFD_HUGE_64KB			(16 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_512KB			(19 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_1MB			(20 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_2MB			(21 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_8MB			(23 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_16MB			(24 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_32MB			(25 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_256MB			(28 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_512MB			(29 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_1GB			(30 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_2GB			(31 << MFD_HUGE_SHIFT)
+#define	MFD_HUGE_16GB			(34 << MFD_HUGE_SHIFT)
+
+#endif /* __BSD_VISIBLE */
+
+/*
+ * XXX missing POSIX_TYPED_MEM_* macros and
+ * posix_typed_mem_info structure.
+ */
+#if __POSIX_VISIBLE >= 200112
+#define	POSIX_MADV_NORMAL	_MADV_NORMAL
+#define	POSIX_MADV_RANDOM	_MADV_RANDOM
+#define	POSIX_MADV_SEQUENTIAL	_MADV_SEQUENTIAL
+#define	POSIX_MADV_WILLNEED	_MADV_WILLNEED
+#define	POSIX_MADV_DONTNEED	_MADV_DONTNEED
+#endif
+
+#ifndef _MODE_T_DECLARED
+typedef	__mode_t	mode_t;
+#define	_MODE_T_DECLARED
+#endif
+
+#ifndef _OFF_T_DECLARED
+typedef	__off_t		off_t;
+#define	_OFF_T_DECLARED
+#endif
+
+#ifndef _SIZE_T_DECLARED
+typedef	__size_t	size_t;
+#define	_SIZE_T_DECLARED
+#endif
+
+#if defined(_KERNEL) || defined(_WANT_FILE)
+#include <sys/lock.h>
+#include <sys/mutex.h>
+#include <sys/queue.h>
+#include <sys/rangelock.h>
+#include <vm/vm.h>
+
+struct file;
+
+struct shmfd {
+	vm_ooffset_t	shm_size;
+	vm_object_t	shm_object;
+	vm_pindex_t	shm_pages;	/* allocated pages */
+	int		shm_refs;
+	uid_t		shm_uid;
+	gid_t		shm_gid;
+	mode_t		shm_mode;
+	int		shm_kmappings;
+
+	/*
+	 * Values maintained solely to make this a better-behaved file
+	 * descriptor for fstat() to run on.
+	 */
+	struct timespec	shm_atime;
+	struct timespec	shm_mtime;
+	struct timespec	shm_ctime;
+	struct timespec	shm_birthtime;
+	ino_t		shm_ino;
+
+	struct label	*shm_label;		/* MAC label */
+	const char	*shm_path;
+
+	struct rangelock shm_rl;
+	struct mtx	shm_mtx;
+
+	int		shm_flags;
+	int		shm_seals;
+
+	/* largepage config */
+	int		shm_lp_psind;
+	int		shm_lp_alloc_policy;
+};
+#endif
+
+#ifdef _KERNEL
+struct prison;
+
+int	shm_map(struct file *fp, size_t size, off_t offset, void **memp);
+int	shm_unmap(struct file *fp, void *mem, size_t size);
+
+int	shm_access(struct shmfd *shmfd, struct ucred *ucred, int flags);
+struct shmfd *shm_alloc(struct ucred *ucred, mode_t mode, bool largepage);
+struct shmfd *shm_hold(struct shmfd *shmfd);
+void	shm_drop(struct shmfd *shmfd);
+int	shm_dotruncate(struct shmfd *shmfd, off_t length);
+bool	shm_largepage(struct shmfd *shmfd);
+void	shm_remove_prison(struct prison *pr);
+int	shm_get_path(struct vm_object *obj, char *path, size_t sz);
+
+extern const struct fileops shm_ops;
+
+#define	MAP_32BIT_MAX_ADDR	((vm_offset_t)1 << 31)
+
+#else /* !_KERNEL */
 
 __BEGIN_DECLS
-/* [ML] */
-int     mlockall(int);
-int     munlockall(void);
-/* [MR] */
-int     mlock(const void *, size_t);
-#ifndef _MMAP
-#define _MMAP
-/* [MC3]*/
-void *  mmap(void *, size_t, int, int, int, off_t) __DARWIN_ALIAS(mmap);
+/*
+ * XXX not yet implemented: posix_mem_offset(), posix_typed_mem_get_info(),
+ * posix_typed_mem_open().
+ */
+#if __BSD_VISIBLE
+int	getpagesizes(size_t *, int);
+int	madvise(void *, size_t, int);
+int	mincore(const void *, size_t, char *);
+int	minherit(void *, size_t, int);
 #endif
-/* [MPR] */
-int     mprotect(void *, size_t, int) __DARWIN_ALIAS(mprotect);
-/* [MF|SIO] */
-int     msync(void *, size_t, int) __DARWIN_ALIAS_C(msync);
-/* [MR] */
-int     munlock(const void *, size_t);
-/* [MC3]*/
-int     munmap(void *, size_t) __DARWIN_ALIAS(munmap);
-/* [SHM] */
-int     shm_open(const char *, int, ...);
-int     shm_unlink(const char *);
-/* [ADV] */
-int     posix_madvise(void *, size_t, int);
-
-#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
-int     madvise(void *, size_t, int);
-int     mincore(const void *, size_t, char *);
-int     minherit(void *, size_t, int);
+int	mlock(const void *, size_t);
+#ifndef _MMAP_DECLARED
+#define	_MMAP_DECLARED
+void *	mmap(void *, size_t, int, int, int, off_t);
 #endif
-
+int	mprotect(void *, size_t, int);
+int	msync(void *, size_t, int);
+int	munlock(const void *, size_t);
+int	munmap(void *, size_t);
+#if __POSIX_VISIBLE >= 200112
+int	posix_madvise(void *, size_t, int);
+#endif
+#if __POSIX_VISIBLE >= 199309
+int	mlockall(int);
+int	munlockall(void);
+int	shm_open(const char *, int, mode_t);
+int	shm_unlink(const char *);
+#endif
+#if __BSD_VISIBLE
+int	memfd_create(const char *, unsigned int);
+int	shm_create_largepage(const char *, int, int, int, mode_t);
+int	shm_rename(const char *, const char *, int);
+#endif
 __END_DECLS
 
-#endif /* KERNEL */
-
-#if defined(PRIVATE) && !defined(MODULES_SUPPORTED)
-#include <sys/mman_private.h>
-#endif /* defined(PRIVATE) && !defined(MODULES_SUPPORTED) */
+#endif /* !_KERNEL */
 
 #endif /* !_SYS_MMAN_H_ */

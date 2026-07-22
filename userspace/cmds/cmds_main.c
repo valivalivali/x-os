@@ -127,11 +127,14 @@ static int arch_main(int argc, char **argv);
 static int pkill_main(int argc, char **argv);
 static int whoami_main(int argc, char **argv);
 static int sync_main(int argc, char **argv);
+static int ping_main(int argc, char **argv);
 
 struct cmd_entry {
     const char *name;
     int (*fn)(int argc, char **argv);
 };
+
+static int fetch_main(int argc, char **argv);
 
 static const struct cmd_entry cmd_table[] = {
     { "echo",      echo_main },
@@ -216,6 +219,8 @@ static const struct cmd_entry cmd_table[] = {
     { "pkill",     pkill_main },
     { "whoami",    whoami_main },
     { "sync",      sync_main },
+    { "ping",      ping_main },
+    { "fetch",     fetch_main },
     { NULL, NULL }
 };
 
@@ -3597,4 +3602,579 @@ static int sync_main(int argc, char **argv) {
     (void)argc;
     (void)argv;
     return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* ping — send ICMP echo requests via raw socket.
+ *
+ * Uses SOCK_DGRAM with IPPROTO_ICMP (requires root, which we always are).
+ * Based on FreeBSD/Darwin ping but heavily simplified. */
+
+#include <stdint.h>
+
+/* Socket constants — newlib doesn't have <sys/socket.h> or <netinet/in.h> */
+#define AF_INET         2
+#define SOCK_DGRAM      2
+#define SOCK_STREAM     1
+#define SOCK_RAW        3
+#define IPPROTO_ICMP    1
+#define IPPROTO_IP      0
+#define MSG_DONTWAIT    0x00000080
+
+/* Forward declarations for socket wrappers defined in libc/syscalls.c */
+extern int socket(int domain, int type, int protocol);
+extern int connect(int fd, const void *addr, int addrlen);
+extern int bind(int fd, const void *addr, int addrlen);
+extern int sendto(int fd, const void *buf, size_t len, int flags,
+                  const void *addr, int addrlen);
+extern int recvfrom(int fd, void *buf, size_t len, int flags,
+                    void *addr, int *addrlen);
+extern int send(int fd, const void *buf, size_t len, int flags);
+extern int recv(int fd, void *buf, size_t len, int flags);
+extern int setsockopt(int fd, int level, int optname, const void *optval, int optlen);
+extern int getsockopt(int fd, int level, int optname, void *optval, int *optlen);
+extern int shutdown(int fd, int how);
+extern int getsockname(int fd, void *addr, int *addrlen);
+extern int getpeername(int fd, void *addr, int *addrlen);
+extern int listen(int fd, int backlog);
+extern int accept(int fd, void *addr, int *addrlen);
+
+/* Byte order helpers — newlib has them in <machine/endian.h> but doesn't
+ * expose them through standard headers we include. */
+#ifndef htonl
+#define htonl(x) __builtin_bswap32((uint32_t)(x))
+#define ntohl(x) __builtin_bswap32((uint32_t)(x))
+#define htons(x) __builtin_bswap16((uint16_t)(x))
+#define ntohs(x) __builtin_bswap16((uint16_t)(x))
+#endif
+
+/* ICMP header */
+struct icmp_hdr {
+    uint8_t  type;
+    uint8_t  code;
+    uint16_t checksum;
+    uint16_t id;
+    uint16_t seq;
+};
+
+/* sockaddr_in — must match FreeBSD's struct sockaddr_in layout exactly:
+ * { uint8_t sin_len; uint8_t sin_family; uint16_t sin_port; uint32_t sin_addr; char sin_zero[8]; }
+ * Total size = 16 bytes. */
+struct ping_sockaddr_in {
+    uint8_t  sin_len;
+    uint8_t  sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t  sin_zero[8];
+};
+
+/* IP header (for parsing received packets in SOCK_RAW mode) */
+struct ip_hdr {
+    uint8_t  ip_hl:4, ip_v:4;
+    uint8_t  ip_tos;
+    uint16_t ip_len;
+    uint16_t ip_id;
+    uint16_t ip_off;
+    uint8_t  ip_ttl;
+    uint8_t  ip_p;
+    uint16_t ip_sum;
+    uint32_t ip_src;
+    uint32_t ip_dst;
+};
+
+static uint16_t
+ping_checksum(const void *data, int len)
+{
+    const uint16_t *p = (const uint16_t *)data;
+    uint32_t sum = 0;
+    while (len > 1) {
+        sum += *p++;
+        len -= 2;
+    }
+    if (len == 1)
+        sum += *(const uint8_t *)p;
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    sum += (sum >> 16);
+    return (uint16_t)(~sum);
+}
+
+static uint32_t
+ping_parse_ip(const char *str)
+{
+    unsigned int a, b, c, d;
+    if (sscanf(str, "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
+        return 0;
+    return (a << 24) | (b << 16) | (c << 8) | d;
+}
+
+/* Minimal DNS resolver — sends A record query to 10.0.2.3 (QEMU DNS) */
+static uint32_t
+ping_resolve_host(const char *hostname)
+{
+    /* Build DNS query packet */
+    uint8_t query[512];
+    int qlen = 0;
+
+    /* DNS header */
+    uint16_t txn_id = 0x1234;
+    query[0] = txn_id >> 8; query[1] = txn_id & 0xFF;
+    query[2] = 0x01; query[3] = 0x00;  /* flags: standard query, recursion desired */
+    query[4] = 0x00; query[5] = 0x01;  /* 1 question */
+    query[6] = 0x00; query[7] = 0x00;  /* 0 answers */
+    query[8] = 0x00; query[9] = 0x00;  /* 0 authority */
+    query[10] = 0x00; query[11] = 0x00; /* 0 additional */
+    qlen = 12;
+
+    /* Encode hostname as DNS labels */
+    const char *p = hostname;
+    while (*p) {
+        const char *dot = p;
+        while (*dot && *dot != '.') dot++;
+        int label_len = dot - p;
+        if (label_len > 63) return 0;
+        query[qlen++] = (uint8_t)label_len;
+        for (int i = 0; i < label_len; i++)
+            query[qlen++] = p[i];
+        p = dot;
+        if (*p == '.') p++;
+    }
+    query[qlen++] = 0;  /* root label */
+
+    /* Type A (1), Class IN (1) */
+    query[qlen++] = 0x00; query[qlen++] = 0x01;  /* Type A */
+    query[qlen++] = 0x00; query[qlen++] = 0x01;  /* Class IN */
+
+    /* Send via UDP to 10.0.2.3:53 */
+    int sock = socket(AF_INET, 2 /* SOCK_DGRAM */, 0 /* IPPROTO_UDP */);
+    {
+        char dbg[64];
+        int dn = 0;
+        const char *s = "[ping] DNS socket=";
+        while (*s && dn < 60) dbg[dn++] = *s++;
+        if (sock < 0) { dbg[dn++] = '-'; dbg[dn++] = '1'; }
+        else { dbg[dn++] = '0' + sock; }
+        dbg[dn++] = '\n';
+        syscall2(SYS_DEBUG_LOG, (uintptr_t)dbg, (uintptr_t)dn);
+    }
+    if (sock < 0) return 0;
+
+    struct ping_sockaddr_in dns_srv;
+    memset(&dns_srv, 0, sizeof(dns_srv));
+    dns_srv.sin_len = sizeof(dns_srv);
+    dns_srv.sin_family = AF_INET;
+    dns_srv.sin_port = htons(53);
+    dns_srv.sin_addr = htonl(0x0A000203);  /* 10.0.2.3 */
+
+    int n = sendto(sock, query, qlen, 0,
+                   (const void *)&dns_srv, sizeof(dns_srv));
+    {
+        char dbg[64];
+        int dn = 0;
+        const char *s = "[ping] DNS sendto=";
+        while (*s && dn < 60) dbg[dn++] = *s++;
+        if (n < 0) { dbg[dn++] = '-'; dbg[dn++] = '1'; }
+        else { dbg[dn++] = '0' + (n / 10); dbg[dn++] = '0' + (n % 10); }
+        dbg[dn++] = '\n';
+        syscall2(SYS_DEBUG_LOG, (uintptr_t)dbg, (uintptr_t)dn);
+    }
+    if (n < 0) {
+        close(sock);
+        return 0;
+    }
+
+    /* Wait for response (3 second timeout) */
+    uint8_t rbuf[1024];
+    struct ping_sockaddr_in from;
+    int fromlen = sizeof(from);
+
+    /* Simple busy-wait with timeout */
+    uint64_t start = 0;
+    __asm__ volatile("syscall" : "=a"(start) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+    uint64_t deadline = start + 3000;
+
+    for (;;) {
+        uint64_t now = 0;
+        __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+        if (now >= deadline) {
+            close(sock);
+            return 0;
+        }
+        n = recvfrom(sock, rbuf, sizeof(rbuf), MSG_DONTWAIT,
+                     (void *)&from, &fromlen);
+        if (n > 0)
+            break;
+        syscall0(SYS_YIELD);
+    }
+
+    close(sock);
+
+    if (n < 12) return 0;
+
+    /* Check transaction ID matches */
+    if (rbuf[0] != (txn_id >> 8) || rbuf[1] != (txn_id & 0xFF))
+        return 0;
+
+    /* Check response code (bits 15-12 of flags) */
+    int rcode = rbuf[3] & 0x0F;
+    if (rcode != 0) return 0;
+
+    /* Number of answers */
+    int ancount = (rbuf[6] << 8) | rbuf[7];
+    if (ancount == 0) return 0;
+
+    /* Skip the question section */
+    int pos = 12;
+    /* Skip QNAME */
+    while (pos < n && rbuf[pos] != 0) {
+        if ((rbuf[pos] & 0xC0) == 0xC0) { pos += 2; break; }
+        pos += rbuf[pos] + 1;
+    }
+    if (rbuf[pos] == 0) pos++;  /* skip root label */
+    pos += 4;  /* skip QTYPE and QCLASS */
+
+    /* Parse answer records */
+    for (int i = 0; i < ancount && pos < n; i++) {
+        /* Skip NAME (may be compressed) */
+        if ((rbuf[pos] & 0xC0) == 0xC0) {
+            pos += 2;
+        } else {
+            while (pos < n && rbuf[pos] != 0) pos += rbuf[pos] + 1;
+            pos++;  /* skip root label */
+        }
+
+        if (pos + 10 > n) break;
+
+        uint16_t rtype = (rbuf[pos] << 8) | rbuf[pos + 1];
+        uint16_t rdlength = (rbuf[pos + 8] << 8) | rbuf[pos + 9];
+        pos += 10;  /* skip TYPE, CLASS, TTL, RDLENGTH */
+
+        if (rtype == 1 && rdlength == 4 && pos + 4 <= n) {
+            /* A record — extract IP address */
+            uint32_t ip = (rbuf[pos] << 24) | (rbuf[pos + 1] << 16) |
+                          (rbuf[pos + 2] << 8) | rbuf[pos + 3];
+            return ip;
+        }
+
+        pos += rdlength;
+    }
+
+    return 0;
+}
+
+static int
+ping_main(int argc, char **argv)
+{
+    const char *host = NULL;
+    int count = 4;
+    int timeout_ms = 3000;
+
+    {
+        char dbg[128];
+        int dn = 0;
+        const char *s = "[ping] main argc=";
+        while (*s && dn < 120) dbg[dn++] = *s++;
+        dbg[dn++] = '0' + argc;
+        s = " host=";
+        while (*s && dn < 120) dbg[dn++] = *s++;
+        if (argc >= 2) { s = argv[1]; while (*s && dn < 120) dbg[dn++] = *s++; }
+        dbg[dn++] = '\n';
+        syscall2(SYS_DEBUG_LOG, (uintptr_t)dbg, (uintptr_t)dn);
+    }
+
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+                count = atoi(argv[++i]);
+            } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+                timeout_ms = atoi(argv[++i]) * 1000;
+            } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+                timeout_ms = atoi(argv[++i]);
+            } else {
+                fprintf(stderr, "ping: unknown option %s\n", argv[i]);
+                return 1;
+            }
+        } else {
+            host = argv[i];
+        }
+    }
+
+    if (!host) {
+        fprintf(stderr, "usage: ping [-c count] host\n");
+        return 1;
+    }
+
+    uint32_t ip = ping_parse_ip(host);
+    if (ip == 0) {
+        /* Try DNS resolution */
+        printf("Resolving %s...\n", host);
+        ip = ping_resolve_host(host);
+        if (ip == 0) {
+            fprintf(stderr, "ping: cannot resolve %s\n", host);
+            return 1;
+        }
+    }
+
+    printf("PING %s (%u.%u.%u.%u): %d data bytes\n",
+           host, (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+           (ip >> 8) & 0xFF, ip & 0xFF, 56);
+
+    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) {
+        fprintf(stderr, "ping: socket: %s\n", strerror(errno));
+        return 1;
+    }
+
+    struct ping_sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_len = sizeof(dst);
+    dst.sin_family = AF_INET;
+    dst.sin_addr = htonl(ip);
+
+    int sent = 0, recv = 0;
+    uint16_t seq = 0;
+
+    for (int i = 0; i < count; i++) {
+        /* Build ICMP echo request */
+        uint8_t pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        struct icmp_hdr *icmp = (struct icmp_hdr *)pkt;
+        icmp->type = 8;  /* ICMP_ECHO */
+        icmp->code = 0;
+        icmp->id = htons(getpid() & 0xFFFF);
+        icmp->seq = htons(++seq);
+        /* Fill payload with pattern */
+        for (int j = 8; j < (int)sizeof(pkt); j++)
+            pkt[j] = (uint8_t)(j & 0xFF);
+        icmp->checksum = ping_checksum(pkt, sizeof(pkt));
+
+        int n = sendto(sock, pkt, sizeof(pkt), 0,
+                       (const void *)&dst, sizeof(dst));
+        if (n < 0) {
+            fprintf(stderr, "ping: sendto: %s\n", strerror(errno));
+            continue;
+        }
+        sent++;
+
+        /* Wait for reply with timeout */
+        uint64_t start = 0;
+        __asm__ volatile("syscall" : "=a"(start) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+        uint64_t deadline = start + timeout_ms;
+
+        int got_reply = 0;
+        while (!got_reply) {
+            uint64_t now = 0;
+            __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+            if (now >= deadline)
+                break;
+
+            uint8_t rbuf[2048];
+            struct ping_sockaddr_in from;
+            int fromlen = sizeof(from);
+            n = recvfrom(sock, rbuf, sizeof(rbuf), MSG_DONTWAIT,
+                         (void *)&from, &fromlen);
+            if (n > 0) {
+                /* For SOCK_RAW + IPPROTO_ICMP, the received data includes
+                 * the IP header. Skip it to get to the ICMP payload. */
+                int ip_hl = 0;
+                if (n >= 20) {
+                    struct ip_hdr *iph = (struct ip_hdr *)rbuf;
+                    ip_hl = (iph->ip_hl & 0x0F) * 4; /* IHL in 32-bit words */
+                    if (ip_hl < 20 || ip_hl > n) ip_hl = 20;
+                }
+                struct icmp_hdr *ricmp = (struct icmp_hdr *)(rbuf + ip_hl);
+                int icmp_len = n - ip_hl;
+                if (icmp_len >= 8 && ricmp->type == 0 && /* ICMP_ECHOREPLY */
+                    ricmp->id == icmp->id &&
+                    ntohs(ricmp->seq) == seq) {
+                    uint64_t end = 0;
+                    __asm__ volatile("syscall" : "=a"(end) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+                    uint64_t rtt_ms = end - start;
+                    uint32_t from_ip = ntohl(from.sin_addr);
+                    printf("%d bytes from %u.%u.%u.%u: icmp_seq=%d ttl=64 time=%lums\n",
+                           icmp_len, (from_ip >> 24) & 0xFF, (from_ip >> 16) & 0xFF,
+                           (from_ip >> 8) & 0xFF, from_ip & 0xFF,
+                           seq, rtt_ms);
+                    recv++;
+                    got_reply = 1;
+                    break;
+                }
+            }
+            /* Yield to let network stack process */
+            syscall0(SYS_YIELD);
+        }
+
+        if (!got_reply) {
+            printf("Request timeout for icmp_seq %d\n", seq);
+        }
+
+        /* Delay between pings (1 second) */
+        if (i + 1 < count) {
+            uint64_t delay_end = 0;
+            __asm__ volatile("syscall" : "=a"(delay_end) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+            delay_end += 1000;
+            for (;;) {
+                uint64_t now = 0;
+                __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+                if (now >= delay_end) break;
+                syscall0(SYS_YIELD);
+            }
+        }
+    }
+
+    close(sock);
+
+    printf("\n--- %s ping statistics ---\n", host);
+    printf("%d packets transmitted, %d packets received, %.1f%% packet loss\n",
+           sent, recv, sent ? (100.0 * (sent - recv) / sent) : 0.0);
+    return (recv > 0) ? 0 : 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* fetch — simple HTTP/1.0 client.
+ *
+ * Usage: fetch <hostname> [path]
+ * Resolves hostname via DNS, opens TCP connection on port 80, sends GET,
+ * and prints the response body (skipping headers).
+ *
+ * Example: fetch example.com /         → prints HTML of example.com
+ *          fetch google.com /search?q=test */
+
+static int
+fetch_main(int argc, char **argv)
+{
+    if (argc < 2) {
+        fprintf(stderr, "usage: fetch <hostname> [path]\n");
+        return 1;
+    }
+
+    const char *host = argv[1];
+    const char *path = (argc >= 3) ? argv[2] : "/";
+
+    /* Resolve hostname */
+    uint32_t ip = ping_parse_ip(host);
+    if (ip == 0) {
+        ip = ping_resolve_host(host);
+        if (ip == 0) {
+            fprintf(stderr, "fetch: cannot resolve %s\n", host);
+            return 1;
+        }
+    }
+
+    /* Print resolved IP */
+    printf("fetch: resolving %s -> %d.%d.%d.%d\n", host,
+           (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+           (ip >> 8) & 0xFF, ip & 0xFF);
+
+    /* Create TCP socket */
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        fprintf(stderr, "fetch: socket() failed\n");
+        return 1;
+    }
+    printf("fetch: socket=%d\n", sock);
+
+    /* Connect to port 80 */
+    struct ping_sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_len = sizeof(dst);
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(80);
+    dst.sin_addr = htonl(ip);
+
+    printf("fetch: connecting to %d.%d.%d.%d:80...\n",
+           (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+           (ip >> 8) & 0xFF, ip & 0xFF);
+
+    int rc = connect(sock, (const void *)&dst, sizeof(dst));
+    if (rc < 0) {
+        fprintf(stderr, "fetch: connect() failed\n");
+        close(sock);
+        return 1;
+    }
+    printf("fetch: connected!\n");
+
+    /* Build HTTP/1.0 GET request */
+    char request[1024];
+    int reqlen = snprintf(request, sizeof(request),
+        "GET %s HTTP/1.0\r\n"
+        "Host: %s\r\n"
+        "User-Agent: x-os-fetch/1.0\r\n"
+        "Accept: */*\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        path, host);
+
+    printf("fetch: sending request (%d bytes)\n", reqlen);
+    int n = send(sock, request, reqlen, 0);
+    if (n < 0) {
+        fprintf(stderr, "fetch: send() failed\n");
+        close(sock);
+        return 1;
+    }
+    printf("fetch: sent %d bytes\n", n);
+
+    /* Receive response with 10-second timeout */
+    char rbuf[4096];
+    int total = 0;
+    int header_end = 0;
+    uint64_t deadline = 0;
+    __asm__ volatile("syscall" : "=a"(deadline) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+    deadline += 10000; /* 10 seconds */
+
+    for (;;) {
+        uint64_t now = 0;
+        __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
+        if (now >= deadline) {
+            printf("\nfetch: timeout after %d bytes\n", total);
+            break;
+        }
+
+        n = recv(sock, rbuf, sizeof(rbuf) - 1, MSG_DONTWAIT);
+        if (n > 0) {
+            rbuf[n] = '\0';
+
+            if (!header_end) {
+                /* Look for end of HTTP headers (\r\n\r\n) */
+                void *hdr_end = memmem(rbuf, n, "\r\n\r\n", 4);
+                if (hdr_end) {
+                    int hdr_len = (char *)hdr_end - rbuf + 4;
+                    /* Print status line */
+                    char *status_end = memmem(rbuf, n, "\r\n", 2);
+                    if (status_end) {
+                        int slen = (char *)status_end - rbuf;
+                        printf("fetch: %.*s\n", slen, rbuf);
+                    }
+                    /* Print body */
+                    int body_len = n - hdr_len;
+                    if (body_len > 0) {
+                        fwrite(rbuf + hdr_len, 1, body_len, stdout);
+                        total += body_len;
+                    }
+                    header_end = 1;
+                } else {
+                    /* Still receiving headers — print status line if we have it */
+                    if (total == 0) {
+                        char *status_end = memmem(rbuf, n, "\r\n", 2);
+                        if (status_end) {
+                            int slen = (char *)status_end - rbuf;
+                            printf("fetch: %.*s\n", slen, rbuf);
+                        }
+                    }
+                }
+            } else {
+                /* Body data — print directly */
+                fwrite(rbuf, 1, n, stdout);
+                total += n;
+            }
+        } else if (n == 0) {
+            /* Connection closed by remote */
+            break;
+        }
+        syscall0(SYS_YIELD);
+    }
+
+    close(sock);
+    printf("\nfetch: received %d bytes total\n", total);
+    fflush(stdout);
+    return (total > 0) ? 0 : 1;
 }

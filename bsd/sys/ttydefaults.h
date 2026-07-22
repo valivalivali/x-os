@@ -1,32 +1,6 @@
-/*
- * Copyright (c) 2000-2002 Apple Computer, Inc. All rights reserved.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- *
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. The rights granted to you under the License
- * may not be used to create, or enable the creation or redistribution of,
- * unlawful or unlicensed copies of an Apple operating system, or to
- * circumvent, violate, or enable the circumvention or violation of, any
- * terms of an Apple operating system software license agreement.
- *
- * Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this file.
- *
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
- * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- *
- * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
- */
-/* Copyright (c) 1997 Apple Computer, Inc. All Rights Reserved */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -43,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *      This product includes software developed by the University of
- *      California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -62,51 +32,60 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ttydefaults.h	8.4 (Berkeley) 1/21/94
  */
 
 /*
  * System wide defaults for terminal state.
  */
 #ifndef _SYS_TTYDEFAULTS_H_
-#define _SYS_TTYDEFAULTS_H_
+#define	_SYS_TTYDEFAULTS_H_
 
 /*
  * Defaults on "first" open.
  */
-#define TTYDEF_IFLAG    (BRKINT	| ICRNL	| IMAXBEL | IXON | IXANY)
-#define TTYDEF_OFLAG    (OPOST | ONLCR)
-#define TTYDEF_LFLAG    (ECHO | ICANON | ISIG | IEXTEN | ECHOE|ECHOKE|ECHOCTL)
-#define TTYDEF_CFLAG    (CREAD | CS8 | HUPCL)
-#define TTYDEF_SPEED    (B9600)
+#define	TTYDEF_IFLAG	(BRKINT	| ICRNL	| IMAXBEL | IXON | IXANY | IUTF8)
+#define	TTYDEF_OFLAG	(OPOST | ONLCR)
+#define	TTYDEF_LFLAG_NOECHO (ICANON | ISIG | IEXTEN)
+#define	TTYDEF_LFLAG_ECHO (TTYDEF_LFLAG_NOECHO \
+	| ECHO | ECHOE | ECHOKE | ECHOCTL)
+#define	TTYDEF_LFLAG TTYDEF_LFLAG_ECHO
+#define	TTYDEF_CFLAG	(CREAD | CS8 | HUPCL)
+#define	TTYDEF_SPEED	(B9600)
 
 /*
  * Control Character Defaults
  */
-#define CTRL(x) (x&037)
-#define CEOF            CTRL('d')
-#define CEOL            0xff            /* XXX avoid _POSIX_VDISABLE */
-#define CERASE          0177
-#define CINTR           CTRL('c')
-#define CSTATUS         CTRL('t')
-#define CKILL           CTRL('u')
-#define CMIN            1
-#define CQUIT           034             /* FS, ^\ */
-#define CSUSP           CTRL('z')
-#define CTIME           0
-#define CDSUSP          CTRL('y')
-#define CSTART          CTRL('q')
-#define CSTOP           CTRL('s')
-#define CLNEXT          CTRL('v')
-#define CDISCARD        CTRL('o')
-#define CWERASE         CTRL('w')
-#define CREPRINT        CTRL('r')
-#define CEOT            CEOF
+/*
+ * XXX: A lot of code uses lowercase characters, but control-character
+ * conversion is actually only valid when applied to uppercase
+ * characters. We just treat lowercase characters as if they were
+ * inserted as uppercase.
+ */
+#define	CTRL(x) ((x) >= 'a' && (x) <= 'z' ? \
+	((x) - 'a' + 1) : (((x) - 'A' + 1) & 0x7f))
+#define	CEOF		CTRL('D')
+#define	CEOL		0xff		/* XXX avoid _POSIX_VDISABLE */
+#define	CERASE		CTRL('?')
+#define	CERASE2		CTRL('H')
+#define	CINTR		CTRL('C')
+#define	CSTATUS		CTRL('T')
+#define	CKILL		CTRL('U')
+#define	CMIN		1
+#define	CQUIT		CTRL('\\')
+#define	CSUSP		CTRL('Z')
+#define	CTIME		0
+#define	CDSUSP		CTRL('Y')
+#define	CSTART		CTRL('Q')
+#define	CSTOP		CTRL('S')
+#define	CLNEXT		CTRL('V')
+#define	CDISCARD	CTRL('O')
+#define	CWERASE		CTRL('W')
+#define	CREPRINT	CTRL('R')
+#define	CEOT		CEOF
 /* compat */
-#define CBRK            CEOL
-#define CRPRNT          CREPRINT
-#define CFLUSH          CDISCARD
+#define	CBRK		CEOL
+#define	CRPRNT		CREPRINT
+#define	CFLUSH		CDISCARD
 
 /* PROTECTED INCLUSION ENDS HERE */
 #endif /* !_SYS_TTYDEFAULTS_H_ */
@@ -115,10 +94,17 @@
  * #define TTYDEFCHARS to include an array of default control characters.
  */
 #ifdef TTYDEFCHARS
-static cc_t     ttydefchars[NCCS] = {
-	CEOF, CEOL, CEOL, CERASE, CWERASE, CKILL, CREPRINT,
-	_POSIX_VDISABLE, CINTR, CQUIT, CSUSP, CDSUSP, CSTART, CSTOP, CLNEXT,
-	CDISCARD, CMIN, CTIME, CSTATUS, _POSIX_VDISABLE
+
+#include <sys/cdefs.h>
+#include <sys/_termios.h>
+
+static const cc_t ttydefchars[] = {
+	CEOF, CEOL, CEOL, CERASE, CWERASE, CKILL, CREPRINT, CERASE2, CINTR,
+	CQUIT, CSUSP, CDSUSP, CSTART, CSTOP, CLNEXT, CDISCARD, CMIN, CTIME,
+	CSTATUS, _POSIX_VDISABLE
 };
+_Static_assert(sizeof(ttydefchars) / sizeof(cc_t) == NCCS,
+    "Size of ttydefchars does not match NCCS");
+
 #undef TTYDEFCHARS
-#endif
+#endif /* TTYDEFCHARS */
