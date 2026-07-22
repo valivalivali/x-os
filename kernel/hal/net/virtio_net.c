@@ -28,7 +28,6 @@ static bool g_net_ready = false;
 #define RX_BUF_COUNT  16
 static uint8_t *g_rx_bufs[RX_BUF_COUNT];
 static uint16_t g_rx_desc_idx[RX_BUF_COUNT];
-static int g_rx_next = 0;
 
 /* TX buffer — single buffer for sending */
 static uint8_t *g_tx_buf = NULL;

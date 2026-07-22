@@ -82,7 +82,6 @@ static int du_main(int argc, char **argv);
 static int mkfifo_main(int argc, char **argv);
 static int chown_main(int argc, char **argv);
 static int readlink_main(int argc, char **argv);
-static int basename_cmd_main(int argc, char **argv);
 static int sed_main(int argc, char **argv);
 static int paste_main(int argc, char **argv);
 static int fold_main(int argc, char **argv);
@@ -93,7 +92,6 @@ static int expand_main(int argc, char **argv);
 static int unexpand_main(int argc, char **argv);
 static int colrm_main(int argc, char **argv);
 static int split_main(int argc, char **argv);
-static int csplit_main(int argc, char **argv);
 static int less_main(int argc, char **argv);
 static int vi_main(int argc, char **argv);
 static int sudo_main(int argc, char **argv);
@@ -814,7 +812,6 @@ static int tee_main(int argc, char **argv) {
         }
     }
 
-    int nfiles = argc - i;
     int fds[16];
     int nfd = 0;
 
@@ -1793,6 +1790,7 @@ static int chmod_main(int argc, char **argv) {
             printf("chmod: %s: mode changed to %o\n", argv[i], mode);
         }
     }
+    (void)recursive;
     fflush(stdout);
     return rc;
 }
@@ -2297,8 +2295,6 @@ static int sed_main(int argc, char **argv) {
 
     char line[4096];
     while (fgets(line, sizeof(line), f ? f : stdin)) {
-        int printed = 0;
-
         if (is_substitute) {
             /* Simple substring replace */
             char result[8192];
@@ -2322,13 +2318,13 @@ static int sed_main(int argc, char **argv) {
             result[ri] = 0;
 
             if (!is_delete) {
-                if (!suppress) { printf("%s", result); printed = 1; }
+                if (!suppress) { printf("%s", result); }
                 if (is_print) printf("%s", result);
             }
         } else if (is_delete) {
             /* Skip line */
         } else {
-            if (!suppress) { printf("%s", line); printed = 1; }
+            if (!suppress) { printf("%s", line); }
             if (is_print) printf("%s", line);
         }
     }
@@ -2434,6 +2430,7 @@ static int fold_main(int argc, char **argv) {
         }
         i++;
     }
+    (void)count_bytes;
 
     FILE *f = NULL;
     if (i < argc) {
@@ -2846,7 +2843,7 @@ static int less_main(int argc, char **argv) {
         }
 
         /* Status bar */
-        printf("\033[7m", stdout);
+        printf("\033[7m");
         if (top + rows - 1 >= nlines)
             printf("(END)");
         else

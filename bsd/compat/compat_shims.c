@@ -6,6 +6,7 @@
  */
 
 /* Define this before including anything to get _KERNEL mode */
+#undef _KERNEL
 #define _KERNEL
 
 /* Forward declare ia32_pause — buf_ring.h (via if_var.h) calls it via

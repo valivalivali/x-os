@@ -188,7 +188,7 @@ static void create_terminal_bundle(void) {
               "  <key>CFBundleShortVersionString</key><string>1.0</string>\n"
               "  <key>CFBundleExecutable</key><string>Terminal</string>\n"
               "  <key>CFBundlePackageType</key><string>APPL</string>\n"
-              "  <key>CFBundleSignature</key><string>????</string>\n"
+              "  <key>CFBundleSignature</key><string>?\?\?\?</string>\n"
               "  <key>LSMinimumSystemVersion</key><string>1.0</string>\n"
               "  <key>NSHighResolutionCapable</key><true/>\n"
               "</dict>\n"

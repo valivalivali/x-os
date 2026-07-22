@@ -68,7 +68,7 @@ BSD_CFLAGS := \
   -ffreestanding -fno-stack-protector -fno-stack-check \
   -fno-pic -fno-pie -m64 -march=x86-64 \
   -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
-  -O2 -pipe -std=gnu11 -Wno-all \
+  -O2 -pipe -std=gnu11 -Wno-all -Wno-macro-redefined -Wno-duplicate-decl-specifier -Wno-pointer-sign -Wno-visibility -Wno-address-of-packed-member -Wno-incompatible-pointer-types \
   -D_KERNEL -DTCP_RFC7413 -DTCP_RFC7413_MAX_KEYS=10 -DTCP_RFC7413_MAX_PSKS=10 -DTCP_BLACKBOX -DSTATS \
   -I. -Ibsd/compat -Ibsd \
   -MMD -MP
@@ -262,7 +262,7 @@ LIBCXX_CXXFLAGS := \
   -I$(LIBCXX_CONFIG) -I/opt/homebrew/opt/llvm/include/c++/v1 \
   -I$(LIBCXX_SRC) \
   -isystem $(NEWLIB_PREFIX)/include \
-  -fno-exceptions -fno-rtti -fno-threadsafe-statics -O2 -std=c++20 \
+  -fno-exceptions -fno-rtti -fno-threadsafe-statics -O2 -std=c++20 -Wno-cpp \
   -D_LIBCPP_BUILDING_LIBRARY
 
 # CFLAGS for newlib-linked userspace programs

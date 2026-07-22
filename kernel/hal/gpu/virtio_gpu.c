@@ -62,7 +62,6 @@ static uint32_t g_cursor_w = 64;
 static uint32_t g_cursor_h = 64;
 
 static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len) {
-    struct virtio_gpu_ctrl_hdr *ch = (struct virtio_gpu_ctrl_hdr *)cmd;
     /* QEMU may write more than sizeof(ctrl_hdr) for some commands,
      * so use a larger response buffer to avoid truncation warnings. */
     uint8_t resp_buf[64];

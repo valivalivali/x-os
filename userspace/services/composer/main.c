@@ -271,6 +271,7 @@ static void dec_fill_circle(int cx, int cy, int r, uint32_t color) {
     }
 }
 
+__attribute__((unused))
 static void dec_draw_icon_x(int cx, int cy, uint32_t color) {
     /* Draw an X inside the close button */
     for (int i = -3; i <= 3; i++) {
@@ -284,6 +285,7 @@ static void dec_draw_icon_x(int cx, int cy, uint32_t color) {
     }
 }
 
+__attribute__((unused))
 static void dec_draw_icon_minus(int cx, int cy, uint32_t color) {
     for (int i = -3; i <= 3; i++) {
         int px = cx + i;
@@ -292,6 +294,7 @@ static void dec_draw_icon_minus(int cx, int cy, uint32_t color) {
     }
 }
 
+__attribute__((unused))
 static void dec_draw_icon_plus(int cx, int cy, uint32_t color) {
     for (int i = -3; i <= 3; i++) {
         int px = cx + i;

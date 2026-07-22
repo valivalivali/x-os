@@ -276,7 +276,6 @@ char *UP = (void *)0;
 char *BC = (void *)0;
 
 static int g_initialized = 0;
-static char g_tcap_buf[1024];  /* termcap string storage */
 static int g_tcap_pos = 0;
 
 /* ------------------------------------------------------------------ */
@@ -323,7 +322,6 @@ char *tparm(const char *str, long p1, long p2, long p3,
     long params[9] = { p1, p2, p3, p4, p5, p6, p7, p8, p9 };
     int param_idx = 0;  /* current parameter being consumed by %d etc */
     int out = 0;
-    int i_incr = 0;  /* %i flag: increment first two params */
 
     const char *p = str;
     while (*p && out < (int)sizeof(g_tparm_buf) - 1) {
@@ -340,7 +338,6 @@ char *tparm(const char *str, long p1, long p2, long p3,
             break;
 
         case 'i':
-            i_incr = 1;
             if (params[0] >= 0) params[0]++;
             if (params[1] >= 0) params[1]++;
             p++;
@@ -910,7 +907,7 @@ void *newwin(int nlines, int ncols, int begin_y, int begin_x) {
 int wrefresh(void *win) { (void)win; fflush(stdout); return 0; }
 
 /* getyx — get cursor position */
-void getyx(void *win, int y, int x) { (void)win; y = 0; x = 0; }
+void getyx(void *win, int y, int x) { (void)win; (void)y; (void)x; }
 
 /* tigetstr with tparm for parameterized strings */
 char *tiparm(const char *str, ...) {

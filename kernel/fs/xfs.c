@@ -593,7 +593,6 @@ int xfs_unlink(const char *path) {
     if (inode.flags & 1) return -1; /* is directory, use rmdir */
 
     /* Find parent directory and remove dirent */
-    const char *name = path + 1;
     const char *last_slash = path;
     for (const char *p = path; *p; p++) {
         if (*p == '/') last_slash = p;
@@ -612,8 +611,6 @@ int xfs_unlink(const char *path) {
         parent_ino = resolve_path(parent_path, &parent_inode);
         if (!parent_ino) return -1;
     }
-    name = last_slash + 1;
-
     read_inode(parent_ino, &parent_inode);
     uint8_t sector[XFS_BLOCK_SIZE];
     for (uint32_t db = 0; db < parent_inode.block_count; db++) {
