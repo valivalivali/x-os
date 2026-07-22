@@ -40,7 +40,7 @@ SRC_DIRS     := boot kernel userspace
 # Exclude Limine, ring-3 userspace sources, generated blobs, and bsd/ from normal kernel build.
 # bsd/ files are handled separately with FreeBSD compat flags.
 # kernel/bsd/syscalls.c is also handled separately (needs BSD include paths).
-CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -name '*_blob.c' -not -path './bsd/*' -not -path './kernel/bsd/*' -not -path './third_party/*' 2>/dev/null)
+CFILES       := $(shell find . -type f -name '*.c' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -path './tools/*' -not -name '*_blob.c' -not -path './bsd/*' -not -path './kernel/bsd/*' -not -path './third_party/*' 2>/dev/null)
 SFILES       := $(shell find . -type f -name '*.S' -not -path '*/limine/*' -not -path './userspace/*' -not -path './build-qemu/*' -not -path './third_party/*' -not -name '*_blob.S' 2>/dev/null)
 
 # FreeBSD network stack source files
@@ -95,31 +95,19 @@ INIT_BLOB_C := kernel/proc/init_elf_blob.c
 INIT_BLOB_O := $(OBJ_DIR)/kernel/proc/init_elf_blob.o
 
 COMPOSER_ELF   := $(BUILD_DIR)/userspace/services/composer/composer.elf
-COMPOSER_BLOB_C := kernel/proc/composer_elf_blob.c
-COMPOSER_BLOB_O := $(OBJ_DIR)/kernel/proc/composer_elf_blob.o
 
 ZSH_ELF        := $(BUILD_DIR)/userspace/shell/zsh.elf
-ZSH_BLOB_C     := kernel/proc/zsh_elf_blob.c
-ZSH_BLOB_O     := $(OBJ_DIR)/kernel/proc/zsh_elf_blob.o
 
 MENUBAR_ELF    := $(BUILD_DIR)/userspace/services/menubar/menubar.elf
-MENUBAR_BLOB_C := kernel/proc/menubar_elf_blob.c
-MENUBAR_BLOB_O := $(OBJ_DIR)/kernel/proc/menubar_elf_blob.o
 MENUBAR_SVG_H  := $(BUILD_DIR)/userspace/services/menubar/svg_data.h
 
 DOCK_ELF       := $(BUILD_DIR)/userspace/services/dock/dock.elf
-DOCK_BLOB_C    := kernel/proc/dock_elf_blob.c
-DOCK_BLOB_O    := $(OBJ_DIR)/kernel/proc/dock_elf_blob.o
 DOCK_SVG_H     := $(BUILD_DIR)/userspace/services/dock/svg_data.h
 
 CMDS_ELF       := $(BUILD_DIR)/userspace/cmds/cmds.elf
-CMDS_BLOB_C    := kernel/proc/cmds_elf_blob.c
-CMDS_BLOB_O    := $(OBJ_DIR)/kernel/proc/cmds_elf_blob.o
 
 # Terminal app (LVGL software-rendered)
 TERMINAL_ELF      := $(BUILD_DIR)/userspace/apps/terminal/terminal.elf
-TERMINAL_BLOB_C   := kernel/proc/terminal_elf_blob.c
-TERMINAL_BLOB_O   := $(OBJ_DIR)/kernel/proc/terminal_elf_blob.o
 
 # ---- newlib paths (needed early for LVGL_CFLAGS) -------------------------
 NEWLIB_PREFIX  := /opt/x-os-newlib/x86_64-elf
@@ -227,8 +215,8 @@ LVGL_CFLAGS := \
   -isystem $(NEWLIB_PREFIX)/include \
   -MMD -MP
 
-# Add generated blob objects explicitly to kernel link
-OBJS += $(INIT_BLOB_O) $(COMPOSER_BLOB_O) $(ZSH_BLOB_O) $(MENUBAR_BLOB_O) $(DOCK_BLOB_O) $(CMDS_BLOB_O) $(TERMINAL_BLOB_O)
+# Add generated init blob object explicitly to kernel link (PID 1 bootstrap)
+OBJS += $(INIT_BLOB_O)
 
 # ---- libc++ static library ------------------------------------------------
 LIBCXX_CONFIG     := userspace/lib/libcxx_config
@@ -353,26 +341,8 @@ $(COMPOSER_ELF): userspace/services/composer/start.S userspace/services/composer
 	  -o $@
 	@echo ">> linked $@"
 
-$(COMPOSER_BLOB_C): $(COMPOSER_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t composer_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *composer_elf_data = composer_elf_bytes;', 'size_t composer_elf_len = sizeof(composer_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-# Explicit blob object rules so Make knows to generate the .c first
+# Explicit blob object rule so Make knows to generate the .c first
 $(INIT_BLOB_O): $(INIT_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(COMPOSER_BLOB_O): $(COMPOSER_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(ZSH_BLOB_C): $(ZSH_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t zsh_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *zsh_elf_data = zsh_elf_bytes;', 'size_t zsh_elf_len = sizeof(zsh_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(ZSH_BLOB_O): $(ZSH_BLOB_C)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -452,15 +422,6 @@ $(MENUBAR_ELF): userspace/services/menubar/start.S userspace/services/menubar/ma
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
 
-$(MENUBAR_BLOB_C): $(MENUBAR_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t menubar_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *menubar_elf_data = menubar_elf_bytes;', 'size_t menubar_elf_len = sizeof(menubar_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(MENUBAR_BLOB_O): $(MENUBAR_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 # ---- dock service (SVG-based, ThorVG) -------------------------------------
 dock: $(DOCK_ELF)
 
@@ -485,15 +446,6 @@ $(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DO
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
 
-$(DOCK_BLOB_C): $(DOCK_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t dock_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *dock_elf_data = dock_elf_bytes;', 'size_t dock_elf_len = sizeof(dock_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(DOCK_BLOB_O): $(DOCK_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 # ---- shell commands (multi-call binary, busybox-style) -------------------
 cmds: $(CMDS_ELF)
 
@@ -512,15 +464,6 @@ $(CMDS_ELF): userspace/cmds/cmds_start.S userspace/cmds/cmds_main.c userspace/li
 	  -o $@
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
-
-$(CMDS_BLOB_C): $(CMDS_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t cmds_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *cmds_elf_data = cmds_elf_bytes;', 'size_t cmds_elf_len = sizeof(cmds_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(CMDS_BLOB_O): $(CMDS_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- libc++ static library ------------------------------------------------
 # Fetch just the libcxx/ subtree of llvm-project at LIBCXX_TAG via a sparse,
@@ -607,15 +550,6 @@ $(TERMINAL_ELF): userspace/apps/terminal/main.c userspace/apps/terminal/start.S 
 	@/opt/homebrew/opt/llvm/bin/llvm-strip $@ 2>/dev/null || true
 	@echo ">> linked $@"
 
-$(TERMINAL_BLOB_C): $(TERMINAL_ELF)
-	@mkdir -p $(dir $@)
-	@python3 -c "import os; data=open('$<','rb').read(); lines=['#include <stdint.h>', '#include <stddef.h>', '', 'static const uint8_t terminal_elf_bytes[] = {']; lines += ['    ' + ', '.join('0x%02x'%b for b in data[i:i+12]) + ',' for i in range(0,len(data),12)]; lines += ['};', '', 'const uint8_t *terminal_elf_data = terminal_elf_bytes;', 'size_t terminal_elf_len = sizeof(terminal_elf_bytes);']; open('$@','w').write('\n'.join(lines)+'\n')"
-	@echo ">> generated $@"
-
-$(TERMINAL_BLOB_O): $(TERMINAL_BLOB_C)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 # ---- link ----------------------------------------------------------------
 $(KERNEL): $(OBJS) kernel/linker.ld
 	@mkdir -p $(dir $@)
@@ -644,6 +578,18 @@ $(ISO): $(KERNEL) boot/uefi/limine.conf $(LIMINE)
 
 # ---- run -----------------------------------------------------------------
 DISK_IMG    := disk.img
+DISK_SIZE   := 16
+XFS_MKFS    := $(BUILD_DIR)/tools/xfs_mkfs
+
+# All userspace ELFs that go on disk
+DISK_ELFS := \
+  $(COMPOSER_ELF):/sbin/composer \
+  $(MENUBAR_ELF):/sbin/menubar \
+  $(DOCK_ELF):/sbin/dock \
+  $(ZSH_ELF):/sbin/zsh \
+  $(CMDS_ELF):/bin/cmds \
+  $(TERMINAL_ELF):/Applications/Terminal.app/Contents/Xos/Terminal
+
 NVME_DRIVE  := -drive file=$(DISK_IMG),if=none,id=nvme0,format=raw
 NVME_DEV    := -device nvme,drive=nvme0,serial=deadbeef
 
@@ -657,9 +603,19 @@ run-uefi: $(ISO) $(DISK_IMG)
 	  -cdrom $(ISO) -boot d $(NVME_DRIVE) $(NVME_DEV) \
 	  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 
-$(DISK_IMG):
-	@echo ">> creating 4 MiB disk image"
-	@dd if=/dev/zero of=$@ bs=1M count=4 status=none
+# Build the host-side disk seeder tool
+$(XFS_MKFS): tools/xfs_mkfs.c
+	@mkdir -p $(dir $@)
+	clang -O2 -Wall -o $@ $<
+	@echo ">> built $@"
+
+# Seed the disk image with XFS + directory hierarchy + all ELF binaries
+DISK_DEPS := $(COMPOSER_ELF) $(MENUBAR_ELF) $(DOCK_ELF) $(ZSH_ELF) $(CMDS_ELF) $(TERMINAL_ELF)
+
+$(DISK_IMG): $(XFS_MKFS) $(DISK_DEPS)
+	@echo ">> seeding disk image ($(DISK_SIZE) MiB)"
+	$(XFS_MKFS) $@ $(DISK_SIZE) $(DISK_ELFS)
+	@echo ">> built $@"
 
 # ---- one-time setup ------------------------------------------------------
 setup: limine libcxx-src

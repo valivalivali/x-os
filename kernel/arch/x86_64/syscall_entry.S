@@ -3,6 +3,21 @@
 g_kernel_rsp0:
     .quad 0
 
+/* User callee-saved GPRs saved at syscall entry for fork().
+ * The C compiler clobbers these inside syscall_dispatch, so proc_fork
+ * cannot read them from registers — it reads these globals instead. */
+.globl g_user_rbx, g_user_rbp, g_user_r12, g_user_r13, g_user_r14
+g_user_rbx:
+    .quad 0
+g_user_rbp:
+    .quad 0
+g_user_r12:
+    .quad 0
+g_user_r13:
+    .quad 0
+g_user_r14:
+    .quad 0
+
 .text
 .globl syscall_entry
 .align 16
@@ -27,6 +42,14 @@ g_kernel_rsp0:
 syscall_entry:
     /* Save callee-saved r15 on the user stack before anything else. */
     pushq %r15
+
+    /* Save user callee-saved GPRs in globals for fork().
+     * Must happen before any C code clobbers them. */
+    movq %rbx, g_user_rbx(%rip)
+    movq %rbp, g_user_rbp(%rip)
+    movq %r12, g_user_r12(%rip)
+    movq %r13, g_user_r13(%rip)
+    movq %r14, g_user_r14(%rip)
 
     /* Switch to kernel stack, saving user state in fixed slots.
      * Layout at kernel_rsp0-24..kernel_rsp0:

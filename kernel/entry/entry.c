@@ -104,9 +104,12 @@ void kmain(void) {
         bdev = ramdisk_create();
     }
     if (bdev) {
-        xfs_format(bdev);
-        xfs_mount(bdev);
-        xfs_create_hierarchy();
+        if (!xfs_mount(bdev)) {
+            boot_puts("disk not formatted, formatting + creating hierarchy\n");
+            xfs_format(bdev);
+            xfs_mount(bdev);
+            xfs_create_hierarchy();
+        }
     } else {
         boot_puts("no block device available\n");
     }

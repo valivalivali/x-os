@@ -24,7 +24,7 @@
 #define SYS_DEBUG_LOG   13
 #define SYS_GET_TICKS   14
 #define SYS_FB_INFO     15
-#define SYS_SVC_BLOB    16
+/* 16 reserved (was SYS_SVC_BLOB, removed) */
 #define SYS_MOUSE_POS   17
 #define SYS_OPEN        18
 #define SYS_READ        19

@@ -386,7 +386,7 @@ int xfs_write(int fd, const void *buf, size_t count) {
 
         /* Allocate new block if needed */
         if (block_idx >= inode.block_count) {
-            if (inode.block_count >= 240) break; /* max direct blocks */
+            if (inode.block_count >= 900) break; /* max direct blocks */
             uint64_t nb = alloc_block();
             if (!nb) break;
             inode.data_blocks[inode.block_count] = (uint32_t)nb;
@@ -660,7 +660,7 @@ int xfs_ftruncate(int fd, int size) {
     } else {
         /* Extending — allocate new blocks */
         uint32_t needed_blocks = ((uint32_t)size + XFS_BLOCK_SIZE - 1) / XFS_BLOCK_SIZE;
-        for (uint32_t i = inode.block_count; i < needed_blocks && i < 240; i++) {
+        for (uint32_t i = inode.block_count; i < needed_blocks && i < 900; i++) {
             uint64_t nb = alloc_block();
             if (!nb) break;
             inode.data_blocks[i] = (uint32_t)nb;
@@ -701,71 +701,6 @@ static void mkdir_if_missing(const char *path) {
 }
 
 void xfs_create_hierarchy(void) {
-    /* Core Unix directories */
-    mkdir_if_missing("/bin");
-    mkdir_if_missing("/sbin");
-    mkdir_if_missing("/etc");
-    mkdir_if_missing("/tmp");
-    mkdir_if_missing("/dev");
-    mkdir_if_missing("/proc");
-    mkdir_if_missing("/mnt");
-    mkdir_if_missing("/opt");
-    mkdir_if_missing("/home");
-    mkdir_if_missing("/cores");
-
-    /* /usr hierarchy */
-    mkdir_if_missing("/usr");
-    mkdir_if_missing("/usr/bin");
-    mkdir_if_missing("/usr/sbin");
-    mkdir_if_missing("/usr/lib");
-    mkdir_if_missing("/usr/libexec");
-    mkdir_if_missing("/usr/include");
-    mkdir_if_missing("/usr/share");
-    mkdir_if_missing("/usr/share/man");
-    mkdir_if_missing("/usr/share/misc");
-    mkdir_if_missing("/usr/local");
-    mkdir_if_missing("/usr/local/bin");
-    mkdir_if_missing("/usr/local/lib");
-    mkdir_if_missing("/usr/local/include");
-
-    /* /var hierarchy */
-    mkdir_if_missing("/var");
-    mkdir_if_missing("/var/log");
-    mkdir_if_missing("/var/run");
-    mkdir_if_missing("/var/tmp");
-    mkdir_if_missing("/var/spool");
-    mkdir_if_missing("/var/db");
-    mkdir_if_missing("/var/mail");
-    mkdir_if_missing("/var/empty");
-    mkdir_if_missing("/var/folders");
-    mkdir_if_missing("/var/vm");
-
-    /* macOS-style directories */
-    mkdir_if_missing("/Applications");
-    mkdir_if_missing("/Applications/Utilities");
-    mkdir_if_missing("/Library");
-    mkdir_if_missing("/Library/Preferences");
-    mkdir_if_missing("/Library/Caches");
-    mkdir_if_missing("/Library/Logs");
-    mkdir_if_missing("/Library/Frameworks");
-    mkdir_if_missing("/Library/Filesystems");
-
-    /* /System hierarchy */
-    mkdir_if_missing("/System");
-    mkdir_if_missing("/System/Library");
-
-    /* /Users hierarchy */
-    mkdir_if_missing("/Users");
-    mkdir_if_missing("/Users/Shared");
-
-    /* /private (macOS compatibility — real dirs since no symlinks) */
-    mkdir_if_missing("/private");
-    mkdir_if_missing("/private/etc");
-    mkdir_if_missing("/private/var");
-    mkdir_if_missing("/private/tmp");
-
-    /* /Volumes — mount points for removable media */
-    mkdir_if_missing("/Volumes");
-
-    kputs("[xfs] directory hierarchy ready\n");
+    /* Disk is pre-seeded by xfs_mkfs at build time.
+     * Directories are created on demand via xfs_mkdir when needed. */
 }

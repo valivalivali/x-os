@@ -175,37 +175,6 @@ static uint64_t sys_mem_map(uint64_t vaddr, uint64_t paddr, uint64_t flags,
     return 0;
 }
 
-static uint64_t sys_svc_blob(uint64_t index, uint64_t ubuf,
-                             uint64_t maxlen, uint64_t a4,
-                             uint64_t a5, uint64_t a6) {
-    (void)a4; (void)a5; (void)a6;
-    extern const uint8_t *composer_elf_data;
-    extern size_t composer_elf_len;
-    extern const uint8_t *menubar_elf_data;
-    extern size_t menubar_elf_len;
-    extern const uint8_t *dock_elf_data;
-    extern size_t dock_elf_len;
-    extern const uint8_t *zsh_elf_data;
-    extern size_t zsh_elf_len;
-    extern const uint8_t *cmds_elf_data;
-    extern size_t cmds_elf_len;
-    extern const uint8_t *terminal_elf_data;
-    extern size_t terminal_elf_len;
-    const uint8_t *data = NULL;
-    size_t len = 0;
-    if (index == 0) { data = composer_elf_data; len = composer_elf_len; }
-    else if (index == 1) { data = menubar_elf_data; len = menubar_elf_len; }
-    else if (index == 2) { data = dock_elf_data; len = dock_elf_len; }
-    else if (index == 4) { data = zsh_elf_data; len = zsh_elf_len; }
-    else if (index == 5) { data = cmds_elf_data; len = cmds_elf_len; }
-    else if (index == 7) { data = terminal_elf_data; len = terminal_elf_len; }
-    else return 0;
-    if (!ubuf) return len;
-    size_t n = maxlen < len ? maxlen : len;
-    memcpy((void *)ubuf, data, n);
-    return n;
-}
-
 static uint64_t sys_mouse_pos(uint64_t a1, uint64_t a2, uint64_t a3,
                               uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
@@ -977,7 +946,6 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_DEBUG_LOG]   = (void *)sys_debug_log,
     [SYS_GET_TICKS]   = (void *)sys_get_ticks,
     [SYS_FB_INFO]     = (void *)sys_fb_info,
-    [SYS_SVC_BLOB]    = (void *)sys_svc_blob,
     [SYS_MOUSE_POS]   = (void *)sys_mouse_pos,
     [SYS_OPEN]        = (void *)sys_open_impl,
     [SYS_READ]        = (void *)sys_read_impl,

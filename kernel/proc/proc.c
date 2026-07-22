@@ -211,14 +211,15 @@ uint64_t proc_fork(void) {
     }
     user_rsp += 8;
 
-    /* Callee-saved GPRs are still the user's values here: syscall_entry only
-     * scratch-used r15 (saved on the user stack), and C preserves the rest. */
-    uint64_t ubx, ubp, ur12, ur13, ur14;
-    __asm__ volatile("mov %%rbx, %0" : "=r"(ubx));
-    __asm__ volatile("mov %%rbp, %0" : "=r"(ubp));
-    __asm__ volatile("mov %%r12, %0" : "=r"(ur12));
-    __asm__ volatile("mov %%r13, %0" : "=r"(ur13));
-    __asm__ volatile("mov %%r14, %0" : "=r"(ur14));
+    /* Callee-saved GPRs were saved by syscall_entry in globals before any
+     * C code clobbered them. Read from there — the inline asm approach was
+     * reading the compiler's register values, not the user's. */
+    extern uint64_t g_user_rbx, g_user_rbp, g_user_r12, g_user_r13, g_user_r14;
+    uint64_t ubx  = g_user_rbx;
+    uint64_t ubp  = g_user_rbp;
+    uint64_t ur12 = g_user_r12;
+    uint64_t ur13 = g_user_r13;
+    uint64_t ur14 = g_user_r14;
     child->fork_rbx = ubx;
     child->fork_rbp = ubp;
     child->fork_r12 = ur12;

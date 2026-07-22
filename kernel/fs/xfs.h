@@ -41,7 +41,7 @@ typedef struct {
     uint32_t size;                   /* bytes of data */
     uint16_t flags;                  /* bit 0 = is_directory */
     uint16_t block_count;            /* allocated data blocks */
-    uint32_t data_blocks[240];       /* direct block pointers */
+    uint32_t data_blocks[900];       /* direct block pointers */
     uint32_t checksum;
 } xfs_inode_t;
 
