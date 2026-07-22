@@ -9,7 +9,9 @@ extern "C" {
 #define VERASE   2
 #define VKILL    3
 #define VEOF     4
+#undef VTIME
 #define VTIME    5
+#undef VMIN
 #define VMIN     6
 #define VSWTC    7
 #define VSTART   8
