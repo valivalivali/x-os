@@ -11,6 +11,7 @@ disk.img
 # fetched third-party
 boot/uefi/limine/
 third_party/llvm-project-libcxx/
+userspace/shell/zsh-src/
 
 # os cruft
 .DS_Store
