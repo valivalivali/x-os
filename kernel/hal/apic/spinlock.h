@@ -33,14 +33,21 @@ static inline void spinlock_acquire(spinlock_t *lock) {
         : "0"(1)
         : "memory"
     );
+    uint32_t spin = 0;
     while (lock->serving_ticket != ticket) {
         __asm__ volatile("pause");
+        if (++spin > 10000000) {
+            extern void kprintf(const char *, ...);
+            kprintf("[spinlock] DEADLOCK! ticket=%u serving=%u next=%u\n",
+                    ticket, lock->serving_ticket, lock->next_ticket);
+            for (;;) __asm__ volatile("hlt");
+        }
     }
 }
 
 static inline void spinlock_release(spinlock_t *lock) {
     __asm__ volatile(
-        "incl %0\n"
+        "lock incl %0\n"
         : "+m"(lock->serving_ticket)
         :: "memory"
     );
@@ -62,18 +69,47 @@ static inline void spinlock_release_irqrestore(spinlock_t *lock, uint64_t rflags
 }
 
 static inline bool spinlock_try(spinlock_t *lock) {
-    uint32_t ticket = lock->next_ticket;
-    uint32_t expected = lock->serving_ticket;
-    __asm__ volatile(
-        "lock cmpxchgl %2, %0\n"
-        : "+m"(lock->next_ticket), "+a"(expected)
-        : "r"(ticket + 1)
-        : "memory", "cc"
-    );
-    if (expected == ticket) {
-        while (lock->serving_ticket != ticket)
-            __asm__ volatile("pause");
+    /* Ticket spinlock try-acquire: only succeed if the lock is currently
+     * free (next_ticket == serving_ticket).  Atomically claim the next
+     * ticket via CAS; if another CPU grabbed it first, retry once. */
+    for (int retry = 0; retry < 2; retry++) {
+        uint32_t next = lock->next_ticket;
+        uint32_t serving = lock->serving_ticket;
+        if (next != serving)
+            return false;  /* lock is held */
+        /* Try to atomically increment next_ticket from 'next' to 'next+1'. */
+        uint32_t expected = next;
+        __asm__ volatile(
+            "lock cmpxchgl %2, %0\n"
+            : "+m"(lock->next_ticket), "+a"(expected)
+            : "r"(next + 1)
+            : "memory", "cc"
+        );
+        if (expected == next) {
+            /* CAS succeeded — we own ticket 'next'.  serving == next, so
+             * no need to spin. */
+            return true;
+        }
+        /* CAS failed — another CPU grabbed the lock.  Retry once. */
+    }
+    return false;
+}
+
+/* Try to acquire lock with interrupts disabled.  Returns rflags in *out_rflags
+     if successful (caller must spinlock_release_irqrestore), or false if the
+     lock is held (interrupts are NOT disabled in that case). */
+static inline bool spinlock_try_irqsave(spinlock_t *lock, uint64_t *out_rflags) {
+    /* Check if lock is likely free before disabling interrupts. */
+    if (lock->next_ticket != lock->serving_ticket)
+        return false;
+    uint64_t rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(rflags));
+    if (spinlock_try(lock)) {
+        *out_rflags = rflags;
         return true;
     }
+    /* Failed — re-enable interrupts if they were on. */
+    if (rflags & (1 << 9))
+        __asm__ volatile("sti");
     return false;
 }

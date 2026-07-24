@@ -12,3 +12,4 @@
  */
 void gdt_init(void);
 void gdt_set_rsp0(uint64_t rsp0);
+void *gdt_get_tss(void);

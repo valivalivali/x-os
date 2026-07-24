@@ -4,7 +4,9 @@
 #include "kernel/memory/heap.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/hal/apic/spinlock.h"
 
+static spinlock_t g_gpu_lock = SPINLOCK_INIT;
 static virtio_pci_dev_t g_vdev;
 static virtqueue_t g_ctrlq;
 static virtqueue_t g_cursorq;
@@ -70,15 +72,23 @@ static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp
     uint32_t lens[2] = { cmd_len, sizeof(resp_buf) };
     uint16_t flags[2] = { 0, VRING_DESC_F_WRITE };
     uint16_t desc_idx;
-    if (!virtqueue_add_buf(&g_ctrlq, &desc_idx, bufs, lens, flags, 2))
+    uint64_t rflags = spinlock_acquire_irqsave(&g_gpu_lock);
+    if (!virtqueue_add_buf(&g_ctrlq, &desc_idx, bufs, lens, flags, 2)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         return false;
+    }
     virtio_pci_notify_queue(&g_vdev, &g_ctrlq);
-    if (!virtio_pci_wait_for_queue(&g_vdev, &g_ctrlq, 10000000))
+    if (!virtio_pci_wait_for_queue(&g_vdev, &g_ctrlq, 10000000)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         return false;
+    }
     uint16_t used_idx;
     uint32_t used_len;
-    if (!virtqueue_get_used(&g_ctrlq, &used_idx, &used_len))
+    if (!virtqueue_get_used(&g_ctrlq, &used_idx, &used_len)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         return false;
+    }
+    spinlock_release_irqrestore(&g_gpu_lock, rflags);
     /* Copy response back to caller's buffer */
     uint32_t copy_len = resp_len < sizeof(resp_buf) ? resp_len : sizeof(resp_buf);
     memcpy(resp, resp_buf, copy_len);
@@ -92,8 +102,11 @@ static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
     uint32_t lens[1] = { cmd_len };
     uint16_t flags[1] = { 0 };
     uint16_t desc_idx;
-    if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1))
+    uint64_t rflags = spinlock_acquire_irqsave(&g_gpu_lock);
+    if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         return false;
+    }
     virtio_pci_notify_queue(&g_vdev, &g_cursorq);
     /* Fire-and-forget: don't wait for response. The cursor queue
      * processes instantly in QEMU. Drain any completed entries to
@@ -101,6 +114,7 @@ static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
     uint16_t used_idx;
     uint32_t used_len;
     virtqueue_get_used(&g_cursorq, &used_idx, &used_len);
+    spinlock_release_irqrestore(&g_gpu_lock, rflags);
     return true;
 }
 

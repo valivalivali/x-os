@@ -685,18 +685,27 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
             sys_port_send(reply_port, &smsg);
         }
     } else {
+        log("[composer] allocating surface pages\n");
         for (uint32_t p = 0; p < npages; p++) {
             uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
-            if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) { ok = 0; break; }
+            if (sys_mem_alloc(va, VMM_RW | VMM_U) < 0) {
+                log("[composer] mem_alloc failed at page ");
+                log_int("", p, "\n");
+                ok = 0; break;
+            }
         }
+        log("[composer] alloc done ok=");
+        log_int("", ok, "\n");
         if (ok) {
             sp->pixels = (uint32_t *)buf_vaddr;
             /* Share buffer with owning app and send ready message. */
             if (owner_pid != 0 && reply_port != 0) {
+                log("[composer] sharing surface pages\n");
                 for (uint32_t p = 0; p < npages; p++) {
                     uint64_t va = buf_vaddr + (uint64_t)p * PAGE_SIZE;
                     sys_mem_share(va, owner_pid, va, VMM_RW | VMM_U);
                 }
+                log("[composer] sending surface_ready\n");
                 surface_ready_msg_t sr;
                 sr.type = COMPOSER_SURFACE_READY;
                 sr.buf_vaddr = buf_vaddr;
@@ -713,6 +722,7 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
             }
         }
     }
+    if (!ok) { log("[composer] mem_alloc failed for surface\n"); }
     if (sp->pixels) {
         /* Clear content to transparent */
         for (uint32_t i = 0; i < w * h; i++) sp->pixels[i] = 0;
@@ -861,11 +871,17 @@ static int cull_dead_surfaces(void) {
 void display_main(void) {
     log("[composer] start\n");
 
+    /* Prevent preemption during GPU initialization — with 4+ CPUs,
+     * frequent timer interrupts (250Hz per CPU) can preempt the composer
+     * mid-init, causing it to hang on GPU/virtqueue operations. */
+    syscall1(97, 1);  /* SYS_NO_PREEMPT, enable */
+
     int gpu_mode = 0;
     gpu_fb_info_t gpu_info;
     fb_info_t info;
 
     if (sys_gpu_fb_info(&gpu_info) == 0) {
+        log("[composer] gpu_fb_info ok\n");
         gpu_mode = 1;
         fb_w = (int32_t)gpu_info.width;
         fb_h = (int32_t)gpu_info.height;
@@ -956,6 +972,7 @@ void display_main(void) {
     /* Paint initial desktop gradient into backing (== fb in GPU mode).
      * Fast: fill each row with solid base color (no per-pixel function call).
      * The diagonal highlight is applied on the first compositor frame. */
+    log("[composer] painting desktop\n");
     for (int32_t y = 0; y < fb_h; y++) {
         uint32_t color = 0xFF000000 | desktop_bg_base(y);
         uint32_t *row = &backing[y * stride];
@@ -964,10 +981,12 @@ void display_main(void) {
     }
 
     /* Flush initial frame to GPU scanout. */
+    log("[composer] flushing initial frame\n");
     if (gpu_mode)
         sys_gpu_flush(0, 0, (uint32_t)fb_w, (uint32_t)fb_h);
     else
         blit_rect(0, 0, fb_w, fb_h);
+    log("[composer] flush done\n");
 
     /* Initialize GPU compositing context for virgl 3D surface compositing.
      * This creates a 3D framebuffer render target and switches scanout to it.
@@ -984,22 +1003,6 @@ void display_main(void) {
 
     log("[composer] ready\n");
 
-    /* fs sanity check */
-    {
-        int fd = sys_open("/hello.txt", XFS_O_CREAT | XFS_O_RDWR);
-        if (fd >= 0) {
-            sys_write(fd, "Hello from XFS!", 17);
-            sys_close(fd);
-            fd = sys_open("/hello.txt", XFS_O_RDONLY);
-            if (fd >= 0) {
-                char buf[32];
-                int n = sys_read(fd, buf, 32);
-                log(n == 17 ? "[composer] fs ok\n" : "[composer] fs bad\n");
-                sys_close(fd);
-            } else log("[composer] fs reopen fail\n");
-        } else log("[composer] fs create fail\n");
-    }
-
     /* Create composer IPC port and register with nameserver. */
     port_handle_t composer_port = sys_port_create();
     if (composer_port) {
@@ -1009,17 +1012,32 @@ void display_main(void) {
         log("[composer] port create fail\n");
     }
 
+    /* Keep no_preempt=1 during main loop to prevent preemption during
+     * GPU operations (draw_region, flush).  If preempted while holding
+     * g_gpu_lock (irqsave), the next process on that CPU would spin
+     * with interrupts disabled, freezing the timer and all sleeps.
+     * We explicitly yield at the end of each frame to let other
+     * processes (dock, menubar, terminal) run. */
+    /* syscall1(97, 0);  -- keep no_preempt=1 */
+
     int32_t old_cx = 0, old_cy = 0;
     int first = 1;
     int cursor_settle = 0;  /* spin for N frames after cursor stops */
 
     for (;;) {
+        static int heartbeat = 0;
+        if (heartbeat < 5) {
+            log("[composer] loop ");
+            log_int("", heartbeat, "\n");
+        }
+        heartbeat++;
         /* 1. Sample mouse position FIRST — everything in this frame
          * uses the same coordinates so drag offset and movement stay
          * in sync.  */
         uint64_t packed = syscall0(SYS_MOUSE_POS);
         int32_t mx = (int32_t)(packed & 0xFFFFFFFFU);
         int32_t my = (int32_t)(packed >> 32);
+        if (heartbeat <= 5) log("[composer] step1 ok\n");
 
         /* 2. Drain input events. Use the polled (mx,my) for hit testing
          * so that drag_off_* is computed from the same position that
@@ -1371,6 +1389,7 @@ void display_main(void) {
         }
 
         /* Drain IPC messages from apps. */
+        if (heartbeat <= 5) log("[composer] step2 ok\n");
         if (composer_port) {
             ipc_msg_t msg;
             while (sys_port_recv(composer_port, &msg, 0)) {
@@ -1378,8 +1397,11 @@ void display_main(void) {
                 uint32_t msg_type = *(uint32_t *)msg.payload;
                 if (msg_type == COMPOSER_CREATE_SURFACE) {
                     log("[composer] IPC: CREATE_SURFACE\n");
+                    log("[composer] payload_len=");
+                    log_int("", msg.payload_len, "\n");
                     if (msg.payload_len >= sizeof(composer_msg_t)) {
                         composer_msg_t *cm = (composer_msg_t *)msg.payload;
+                        log("[composer] spawning surface\n");
                         spawn_surface_custom(cm->x, cm->y, cm->w, cm->h,
                                              cm->flags, cm->owner_pid,
                                              cm->reply_port, cm->title);
@@ -1810,6 +1832,7 @@ void display_main(void) {
 
         /* Redraw affected region into backing, then present. */
         if (do_present) {
+            if (heartbeat <= 5) log("[composer] render\n");
             if (dirty_x0 < 0) dirty_x0 = 0;
             if (dirty_y0 < 0) dirty_y0 = 0;
             if (dirty_x1 > fb_w) dirty_x1 = fb_w;
@@ -1848,7 +1871,9 @@ void display_main(void) {
 
             if (!overlay_only && !overlay_erase) {
                 /* L1/L2/L3 panel change — rebuild backing then upload. */
+                if (heartbeat <= 5) log("[composer] draw_region\n");
                 draw_region(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                if (heartbeat <= 5) log("[composer] draw_region done\n");
                 if (!gpu_mode)
                     blit_rect(dirty_x0, dirty_y0,
                               dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
@@ -1944,10 +1969,13 @@ void display_main(void) {
         if (gpu_mode) {
             /* Hardware cursor: QEMU composites cursor on top during scanout.
              * Just move it; no erase/redraw needed. */
-            if (do_present && has_dirty && !gpu_comp_active())
+            if (do_present && has_dirty && !gpu_comp_active()) {
+                if (heartbeat <= 5) log("[composer] flushing\n");
                 sys_gpu_flush((uint32_t)dirty_x0, (uint32_t)dirty_y0,
                               (uint32_t)(dirty_x1 - dirty_x0),
                               (uint32_t)(dirty_y1 - dirty_y0));
+                if (heartbeat <= 5) log("[composer] flush ret\n");
+            }
             if (cursor_moved)
                 sys_gpu_cursor_move(mx - CURSOR_HOT_X, my - CURSOR_HOT_Y);
         } else {
@@ -1961,5 +1989,11 @@ void display_main(void) {
 
         old_cx = draw_x; old_cy = draw_y;
         first = 0;
+        if (heartbeat <= 5) log("[composer] step3 ok\n");
+        /* Sleep 1ms to let other processes run.  no_preempt blocks timer
+         * preemption, so we must explicitly sleep each frame.  Using
+         * NSLEEP instead of SYS_YIELD reduces sched_lock contention
+         * because proc_sleep releases the lock before context_switch. */
+        syscall1(12, 1);  /* SYS_NSLEEP, 1ms */
     }
 }

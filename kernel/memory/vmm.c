@@ -36,6 +36,13 @@ uint64_t vmm_create_pml4(void) {
 
 bool vmm_map_page(uint64_t *pml4_virt, uint64_t vaddr, uint64_t paddr,
                   uint64_t flags) {
+    /* Sanity: pml4_virt must be a kernel virtual address (higher half).
+     * A physical address here means a caller passed pml4_phys by mistake. */
+    if ((uint64_t)pml4_virt < 0xFFFF800000000000ULL) {
+        kprintf("[vmm] PANIC: vmm_map_page called with physical pml4=%p "
+                "vaddr=%lx paddr=%lx\n", (void *)pml4_virt, vaddr, paddr);
+        return false;
+    }
     uint64_t f = flags | VMM_P;
 
     /* PML4 */

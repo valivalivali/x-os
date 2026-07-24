@@ -24,10 +24,11 @@
 #include "kernel/hal/net/virtio_net.h"
 #include "kernel/fs/xfs.h"
 #include "kernel/hal/apic/smp.h"
+#include "kernel/hal/apic/lapic.h"
+#include "kernel/interrupts/idt.h"
 
 extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
-extern uint64_t g_kernel_rsp0;
 
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
@@ -66,8 +67,22 @@ void kmain(void) {
     heap_init();
     gdt_init();
     idt_init();
+    sched_early_init();
     smp_init();
+
+    /* Switch BSP to LAPIC mode for unified interrupt handling with APs.
+     * Initialize LAPIC with LINT0=ExtINT so legacy PIC IRQs (keyboard,
+     * mouse, PIT timer) still work. EOI goes to both LAPIC and PIC. */
+    lapic_init(0);
+    g_lapic_mode = true;
+
     timer_init(1000);
+
+    /* Also enable LAPIC timer on BSP as a fallback — the PIT can
+     * intermittently stop delivering interrupts after APs enable their
+     * LAPICs, causing timer_ticks() to freeze and all sleeps to hang. */
+    lapic_timer_init(LAPIC_TIMER_VECTOR, 4000000); /* 4ms = 250Hz */
+
     syscall_init();
     sched_init();
     ipc_init();
@@ -135,7 +150,7 @@ void kmain(void) {
         init->name[2] = 'i';
         init->name[3] = 't';
         init->name[4] = '\0';
-        gdt_set_rsp0((uint64_t)(init->kstack + SCHED_STACK_SIZE));
+        cpu_set_rsp0((uint64_t)(init->kstack + SCHED_STACK_SIZE));
         boot_log("init spawned pid=%lu, entering ring-3\n", init->pid);
 
         /* Set up PID 0 (idle) stack frame so context_switch can resume us
@@ -158,7 +173,6 @@ void kmain(void) {
             : "memory"
         );
         idle->rip = resume;
-        g_kernel_rsp0 = (uint64_t)(init->kstack + SCHED_STACK_SIZE);
         sched_adopt_current(init);
         enter_userspace(
             init->pml4_phys, init->rip, init->sleep_until, 0

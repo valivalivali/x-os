@@ -54,7 +54,7 @@ static uint32_t g_surf_h = 0;
 
 static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create();
-    if (!g_port) return -1;
+    if (!g_port) { log("[dock] port_create failed\n"); return -1; }
 
     wm_create_msg_t cm;
     __builtin_memset(&cm, 0, sizeof(cm));
@@ -78,22 +78,32 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t *)&cm)[i];
 
     uint64_t cp = 0;
-    for (int r = 0; r < 500 && !cp; r++) {
+    for (int r = 0; r < 2000 && !cp; r++) {
         cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
-        if (!cp) syscall0(SYS_YIELD);
+        if (!cp) {
+            if (r < 5 || r == 100) {
+                log("[dock] waiting for composer port (r=");
+                log_int("", r, " ticks=");
+                log_int("", (int32_t)syscall0(14), ")\n");
+            }
+            syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
+        }
     }
-    if (!cp || !sys_port_send(cp, &msg)) return -1;
+    if (!cp) { log("[dock] composer port not found\n"); return -1; }
+    log("[dock] composer port found\n");
+    if (!sys_port_send(cp, &msg)) { log("[dock] port_send failed\n"); return -1; }
+    log("[dock] sent CREATE_SURFACE\n");
 
     ipc_msg_t re;
     int got = 0;
-    for (int r = 0; r < 300 && !got; r++) {
+    for (int r = 0; r < 1000 && !got; r++) {
         if (sys_port_recv(g_port, &re, 0)) {
             got = 1;
             break;
         }
-        syscall0(SYS_YIELD);
+        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
     }
-    if (!got) return -1;
+    if (!got) { log("[dock] reply timeout\n"); return -1; }
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
     g_px = (uint32_t *)srm->buf_vaddr;
@@ -239,11 +249,14 @@ void dock_main(void) {
     log("[dock] start\n");
 
     uint32_t screen_w = get_screen_width();
+    log("[dock] screen_w ok\n");
     uint32_t screen_h = get_screen_height();
+    log("[dock] screen_h ok\n");
 
     int32_t dock_x = (int32_t)((screen_w - DOCK_W) / 2);
     int32_t dock_y = (int32_t)(screen_h - DOCK_H - DOCK_BOTTOM_MARGIN);
 
+    log("[dock] calling create_surface\n");
     if (create_surface(dock_x, dock_y, DOCK_W, DOCK_H) < 0) {
         log("[dock] surface creation failed\n");
         return;

@@ -2,6 +2,9 @@
 #include "boot/handoff/handoff.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
+#include "kernel/hal/apic/spinlock.h"
+
+static spinlock_t pmm_lock = SPINLOCK_INIT;
 
 /* Bitmap covers up to 8 GiB of physical RAM (1 bit per 4KiB frame). */
 #define MAX_FRAMES (8ULL * 1024 * 1024 * 1024 / PAGE_SIZE)
@@ -54,20 +57,24 @@ void pmm_init(void) {
 }
 
 uint64_t pmm_alloc_frame(void) {
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm_lock);
     for (uint64_t scan = 0; scan < total_frames; scan++) {
         uint64_t f = (alloc_hint + scan) % total_frames;
         if (!bit_get(f)) {
             bit_set(f);
             used_frames++;
             alloc_hint = f + 1;
+            spinlock_release_irqrestore(&pmm_lock, rflags);
             return f * PAGE_SIZE;
         }
     }
+    spinlock_release_irqrestore(&pmm_lock, rflags);
     return 0;
 }
 
 uint64_t pmm_alloc_contig(size_t frames) {
     if (frames == 0) return 0;
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm_lock);
     uint64_t run = 0, start = 0;
     for (uint64_t f = 0; f < total_frames; f++) {
         if (!bit_get(f)) {
@@ -75,20 +82,24 @@ uint64_t pmm_alloc_contig(size_t frames) {
             if (++run == frames) {
                 for (uint64_t k = start; k < start + frames; k++) bit_set(k);
                 used_frames += frames;
+                spinlock_release_irqrestore(&pmm_lock, rflags);
                 return start * PAGE_SIZE;
             }
         } else {
             run = 0;
         }
     }
+    spinlock_release_irqrestore(&pmm_lock, rflags);
     return 0;
 }
 
 void pmm_free_frame(uint64_t phys) {
     uint64_t f = phys / PAGE_SIZE;
     if (f >= MAX_FRAMES) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm_lock);
     if (bit_get(f)) { bit_clr(f); used_frames--; }
     if (f < alloc_hint) alloc_hint = f;
+    spinlock_release_irqrestore(&pmm_lock, rflags);
 }
 
 uint64_t pmm_total_bytes(void) { return total_frames * PAGE_SIZE; }

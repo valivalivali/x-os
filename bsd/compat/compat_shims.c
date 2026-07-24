@@ -821,9 +821,9 @@ bsd_net_init(void)
     proc0.p_fibnum = 0;
 
     /* Set up per-CPU data area for FreeBSD PCPU_GET/SET macros.
-     * FreeBSD code accesses per-CPU variables via %gs segment.
-     * We must set %gs base (MSR_GS_BASE = 0xC0000101) to point to
-     * our pcpu_storage buffer, and initialize key fields. */
+     * FreeBSD code accesses per-CPU variables via __pcpu pointer
+     * (overridden in compat/sys/systm.h to not use %gs: segment).
+     * This allows X OS to use GS base for cpu_data_t. */
     __builtin_memset(pcpu_storage, 0, sizeof(pcpu_storage));
     /* pc_prvspace (offset 0x180) = pointer to self */
     *(void **)(pcpu_storage + PCPU_PRVSPACE_OFF) = (void *)pcpu_storage;
@@ -833,16 +833,9 @@ bsd_net_init(void)
     *(unsigned int *)(pcpu_storage + 60) = 0;
     /* pc_zpcpu_offset (offset 176) = 0 */
     *(unsigned long *)(pcpu_storage + 176) = 0;
-    /* Set __pcpu global */
+    /* Set __pcpu global — PCPU_GET macros use this pointer */
     __pcpu = (struct pcpu *)pcpu_storage;
-    /* Set %gs base via WRMSR (MSR_GS_BASE = 0xC0000101) */
-    {
-        uint64_t base = (uint64_t)pcpu_storage;
-        uint32_t low = (uint32_t)base;
-        uint32_t high = (uint32_t)(base >> 32);
-        __asm__ volatile("wrmsr" : : "c"(0xC0000101), "a"(low), "d"(high));
-    }
-    kputs("[net] per-CPU data area initialized (%gs base set)\n");
+    kputs("[net] per-CPU data area initialized (__pcpu pointer set)\n");
 
     /* Initialize CPU set and cpuhead so CPU_FOREACH iterates CPU 0.
      * Without this, netisr_register skips per-CPU workstream init

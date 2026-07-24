@@ -28,6 +28,17 @@ void kputs(const char *s) {
     spinlock_release_irqrestore(&cons_lock, rflags);
 }
 
+void kwrite(const char *s, size_t n) {
+    if (!s || n == 0) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&cons_lock);
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '\0') break;
+        cons_putc(c);
+    }
+    spinlock_release_irqrestore(&cons_lock, rflags);
+}
+
 static void put_uint(uint64_t v, unsigned base, bool upper) {
     char buf[32];
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
@@ -47,6 +58,13 @@ void kvprintf(const char *fmt, va_list ap) {
         if (*fmt != '%') { cons_putc(*fmt); continue; }
         fmt++;
         bool islong = false;
+        /* Skip flags (+, -, 0, space, #) */
+        while (*fmt == '+' || *fmt == '-' || *fmt == '0' ||
+               *fmt == ' ' || *fmt == '#')
+            fmt++;
+        /* Skip width (digits) */
+        while (*fmt >= '0' && *fmt <= '9')
+            fmt++;
         while (*fmt == 'l') { islong = true; fmt++; }
         switch (*fmt) {
             case 'c': cons_putc((char)va_arg(ap, int)); break;

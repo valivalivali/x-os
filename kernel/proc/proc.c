@@ -5,6 +5,8 @@
 #include "kernel/memory/heap.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/arch/x86_64/gdt.h"
+#include "kernel/hal/apic/smp.h"
+#include "kernel/hal/apic/lapic.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/fs/xfs.h"
@@ -15,11 +17,13 @@
 
 /* Trampoline: first time a ring-3 process is scheduled it runs this,
  * which calls enter_userspace and never returns. */
-extern uint64_t g_kernel_rsp0;
-
 static void ring3_trampoline(void) {
+    /* context_switch returned to us (a newly scheduled process).
+     * sched_lock was already released before context_switch.
+     * context_switch already cleared from->switching.
+     * Just enter userspace. */
     proc_t *p = proc_current();
-    g_kernel_rsp0 = (uint64_t)(p->kstack + SCHED_STACK_SIZE);
+    cpu_set_rsp0((uint64_t)(p->kstack + SCHED_STACK_SIZE));
     if (p->fork_rflags) {
         enter_userspace_fork(p->pml4_phys, p->rip, p->sleep_until, 0, p);
     } else {
@@ -80,29 +84,24 @@ proc_t *proc_spawn_ring3(const uint8_t *elf_data, size_t elf_len) {
      * proc_t doesn't have a usp field, so we repurpose sleep_until. */
     p->sleep_until = user_rsp;
 
-    /* Set up kernel stack so context_switch can enter us.
-     * context_switch pushes: rbx, rbp, r12, r13, r14, r15 (rbx lowest).
-     * After 6 pushes, rsp points to r15, return addr is at 48(rsp).
-     * We lay out: r15, r14, r13, r12, rbp, rbx, trampoline. */
+    /* Set up kernel stack for context_switch entry.
+     * context_switch now saves callee-saved regs in proc_t (not on
+     * stack), so the kstack only needs the return address at the top.
+     * ctx_* fields are zeroed; saved_ret = ring3_trampoline. */
     uint64_t *ksp = (uint64_t *)(kstack + SCHED_STACK_SIZE);
     ksp--;
-    *ksp = (uint64_t)ring3_trampoline;  /* return address at rsp+48 */
-    ksp--;
-    *ksp = 0;           /* rbx */
-    ksp--;
-    *ksp = 0;           /* rbp */
-    ksp--;
-    *ksp = 0;           /* r12 */
-    ksp--;
-    *ksp = 0;           /* r13 */
-    ksp--;
-    *ksp = 0;           /* r14 */
-    ksp--;
-    *ksp = 0;           /* r15  -- rsp will point here */
-    p->rsp = (uint64_t)ksp;
+    *ksp = (uint64_t)ring3_trampoline;  /* return address (stale, not used) */
+    p->rsp = (uint64_t)ksp;             /* rsp points to return addr slot */
+    p->saved_ret = (uint64_t)ring3_trampoline;
+    p->ctx_rbx = 0; p->ctx_rbp = 0; p->ctx_r12 = 0;
+    p->ctx_r13 = 0; p->ctx_r14 = 0; p->ctx_r15 = 0;
 
     kprintf("[proc] spawned ring-3 pid=%lu entry=%p rsp=%p pml4=%p\n",
             p->pid, (void *)entry, (void *)user_rsp, (void *)pml4_phys);
+    /* Don't call proc_make_ready here — the BSP adopts this process
+     * directly via sched_adopt_current + enter_userspace.  Making it
+     * ready would let an AP steal it from the queue before the BSP
+     * adopts it, causing both CPUs to run the same process. */
     return p;
 }
 
@@ -113,11 +112,16 @@ uint64_t proc_fork(void) {
     proc_t *parent = proc_current();
     if (!parent || !parent->ring3) return 0;
 
+    /* Disable interrupts — timer preemption during fork could corrupt
+     * parent/child state (reading parent's kstack, per-CPU GPRs, etc). */
+    uint64_t saved_rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(saved_rflags));
+
     /* Clone the user address space */
     uint64_t child_pml4_phys = vmm_clone_user(parent->pml4_virt);
     if (!child_pml4_phys) {
         kprintf("[proc] fork: vmm_clone_user failed\n");
-        return 0;
+        goto fork_fail;
     }
     uint64_t *child_pml4_virt = (uint64_t *)phys_to_virt(child_pml4_phys);
 
@@ -126,7 +130,7 @@ uint64_t proc_fork(void) {
     if (!child_kstack) {
         vmm_destroy_user(child_pml4_virt);
         pmm_free_frame(child_pml4_phys);
-        return 0;
+        goto fork_fail;
     }
 
     /* Create child process */
@@ -135,7 +139,7 @@ uint64_t proc_fork(void) {
         kfree(child_kstack);
         vmm_destroy_user(child_pml4_virt);
         pmm_free_frame(child_pml4_phys);
-        return 0;
+        goto fork_fail;
     }
 
     child->ring3 = true;
@@ -186,9 +190,9 @@ uint64_t proc_fork(void) {
      *
      * We need to save the user state (rip, rsp, rflags) from the parent's
      * syscall entry frame. The parent's kernel stack has:
-     *   g_kernel_rsp0 - 24: user rflags
-     *   g_kernel_rsp0 - 16: user rip
-     *   g_kernel_rsp0 - 8:  user rsp
+     *   rsp0 - 24: user rflags
+     *   rsp0 - 16: user rip
+     *   rsp0 - 8:  user rsp
      *
      * We can read these from the parent's kstack.
      */
@@ -196,6 +200,25 @@ uint64_t proc_fork(void) {
     uint64_t user_rflags = parent_kstack_top[-3];  /* -24 bytes = -3 qwords */
     uint64_t user_rip    = parent_kstack_top[-2];  /* -16 bytes = -2 qwords */
     uint64_t user_rsp    = parent_kstack_top[-1];  /*  -8 bytes = -1 qword  */
+
+    /* Read user argument registers saved by syscall_entry.
+     * Kernel stack layout after syscall_entry's subq $112:
+     *   kstack_top - 24:  user rflags
+     *   kstack_top - 16:  user rip
+     *   kstack_top -  8:  user rsp
+     *   kstack_top - 80:  saved rdi  (rsp+56 in the 112-byte frame)
+     *   kstack_top - 72:  saved rsi  (rsp+64)
+     *   kstack_top - 64:  saved rdx  (rsp+72)
+     *   kstack_top - 56:  saved r10  (rsp+80)
+     *   kstack_top - 48:  saved r8   (rsp+88)
+     *   kstack_top - 40:  saved r9   (rsp+96)
+     */
+    uint64_t user_rdi = parent_kstack_top[-10]; /* -80 */
+    uint64_t user_rsi = parent_kstack_top[-9];  /* -72 */
+    uint64_t user_rdx = parent_kstack_top[-8];  /* -64 */
+    uint64_t user_r10 = parent_kstack_top[-7];  /* -56 */
+    uint64_t user_r8  = parent_kstack_top[-6];  /* -48 */
+    uint64_t user_r9  = parent_kstack_top[-5];  /* -40 */
 
     /* syscall_entry pushes %r15 onto the user stack before saving rsp, and
      * the normal sysret path pops it. enter_userspace does not — so advance
@@ -211,15 +234,14 @@ uint64_t proc_fork(void) {
     }
     user_rsp += 8;
 
-    /* Callee-saved GPRs were saved by syscall_entry in globals before any
-     * C code clobbered them. Read from there — the inline asm approach was
-     * reading the compiler's register values, not the user's. */
-    extern uint64_t g_user_rbx, g_user_rbp, g_user_r12, g_user_r13, g_user_r14;
-    uint64_t ubx  = g_user_rbx;
-    uint64_t ubp  = g_user_rbp;
-    uint64_t ur12 = g_user_r12;
-    uint64_t ur13 = g_user_r13;
-    uint64_t ur14 = g_user_r14;
+    /* Callee-saved GPRs were saved by syscall_entry in per-CPU storage
+     * before any C code clobbered them. Read from this_cpu() struct. */
+    cpu_data_t *cpu = this_cpu();
+    uint64_t ubx  = cpu->user_rbx;
+    uint64_t ubp  = cpu->user_rbp;
+    uint64_t ur12 = cpu->user_r12;
+    uint64_t ur13 = cpu->user_r13;
+    uint64_t ur14 = cpu->user_r14;
     child->fork_rbx = ubx;
     child->fork_rbp = ubp;
     child->fork_r12 = ur12;
@@ -227,27 +249,29 @@ uint64_t proc_fork(void) {
     child->fork_r14 = ur14;
     child->fork_r15 = user_r15;
     child->fork_rflags = user_rflags | 0x200; /* IF */
+    /* Save argument registers so enter_userspace_fork can restore them.
+     * The SysV ABI requires these to be preserved across syscall. */
+    child->fork_rdi = user_rdi;
+    child->fork_rsi = user_rsi;
+    child->fork_rdx = user_rdx;
+    child->fork_r8  = user_r8;
+    child->fork_r9  = user_r9;
+    child->fork_r10 = user_r10;
 
     child->rip = user_rip;
     child->sleep_until = user_rsp;
 
-    /* Set up kernel stack so context_switch enters ring3_trampoline */
+    /* Set up kernel stack for context_switch entry.
+     * context_switch saves callee-saved regs in proc_t, so the kstack
+     * only needs the return address slot.  ctx_* are zeroed here and
+     * will be loaded from fork_* by enter_userspace_fork. */
     uint64_t *ksp = (uint64_t *)(child_kstack + SCHED_STACK_SIZE);
     ksp--;
-    *ksp = (uint64_t)ring3_trampoline;  /* return address */
-    ksp--;
-    *ksp = 0;           /* rbx */
-    ksp--;
-    *ksp = 0;           /* rbp */
-    ksp--;
-    *ksp = 0;           /* r12 */
-    ksp--;
-    *ksp = 0;           /* r13 */
-    ksp--;
-    *ksp = 0;           /* r14 */
-    ksp--;
-    *ksp = 0;           /* r15 */
+    *ksp = (uint64_t)ring3_trampoline;  /* return address (stale, not used) */
     child->rsp = (uint64_t)ksp;
+    child->saved_ret = (uint64_t)ring3_trampoline;
+    child->ctx_rbx = 0; child->ctx_rbp = 0; child->ctx_r12 = 0;
+    child->ctx_r13 = 0; child->ctx_r14 = 0; child->ctx_r15 = 0;
 
     /* Child inherits open pipe ends (refcounted). */
     pipe_fork_inherit((uint32_t)parent->pid);
@@ -255,7 +279,15 @@ uint64_t proc_fork(void) {
     kprintf("[proc] fork: parent=%lu child=%lu rip=%p rsp=%p\n",
             parent->pid, child->pid, (void *)user_rip, (void *)user_rsp);
 
+    proc_make_ready(child);
+
+    /* Restore interrupts — fork is complete, child is fully initialized */
+    __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
     return child->pid;
+
+fork_fail:
+    __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
+    return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -266,6 +298,13 @@ int proc_exec(const char *path, char *const argv[]) {
 
     proc_t *p = proc_current();
     if (!p || !p->ring3) return -1;
+
+    /* XFS file reads and ELF loading can be preempted safely — they
+     * operate on newly allocated buffers, not the current process state.
+     * Interrupts are only disabled for the critical section below
+     * (CR3 switch + state update + enter_userspace).  Keeping interrupts
+     * enabled during XFS I/O prevents blocking other CPUs waiting on
+     * xfs_lock, which was causing the composer to hang in SMP mode. */
 
     /* Open the file. /bin/<applet> names are not seeded (boot speed);
      * fall back to the multicall binary and keep argv[0] as the applet. */
@@ -480,8 +519,24 @@ int proc_exec(const char *path, char *const argv[]) {
 
     uint64_t user_rsp = sp;
 
+    /* ---- CRITICAL SECTION: no preemption from here to enter_userspace ----
+     * Timer preemption would context-switch mid-exec, seeing half-updated
+     * pml4_phys/rip/rsp and corrupting process state.  We disable interrupts
+     * only for this short section (CR3 switch + state update + userspace
+     * entry), not for the entire exec.  This allows XFS I/O above to be
+     * preempted, which is essential for SMP — otherwise other CPUs spin on
+     * xfs_lock while this CPU reads a large ELF with IRQs disabled. */
+    uint64_t saved_rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(saved_rflags));
+
     /* Switch CR3 to the new address space BEFORE freeing the old PML4.
-     * Freeing while CR3 still points at it corrupts the live page tables. */
+     * Freeing while CR3 still points at it corrupts the live page tables.
+     * Copy path to kernel buffer first — user pointer invalid after CR3 switch. */
+    char path_buf[256];
+    size_t plen = 0;
+    while (plen < sizeof(path_buf) - 1 && path[plen]) plen++;
+    path_buf[plen] = '\0';
+
     p->pml4_phys = new_pml4_phys;
     p->pml4_virt = new_pml4_virt;
     p->rip = entry;
@@ -489,39 +544,43 @@ int proc_exec(const char *path, char *const argv[]) {
 
     __asm__ volatile("mov %0, %%cr3" : : "r"(new_pml4_phys) : "memory");
 
+    /* Send TLB shootdown IPI to all other CPUs before freeing old pages.
+     * If this process was previously running on another CPU, that CPU may
+     * have stale TLB entries for the old pml4.  Without the shootdown,
+     * freed pages could be reallocated to another process while the stale
+     * CPU still maps them, causing memory corruption. */
+    if (g_smp_enabled)
+        lapic_send_ipi_all_others(IPI_VECTOR_TLB);
+
     vmm_destroy_user(old_pml4_virt);
     pmm_free_frame(old_pml4_phys);
     kfree(elf_buf);
 
-    /* Set up kernel stack for ring3_trampoline re-entry */
+    /* Set up kernel stack for context_switch re-entry.
+     * context_switch saves callee-saved regs in proc_t, so the kstack
+     * only needs the return address slot. */
     uint8_t *kstack = p->kstack;
     uint64_t *ksp = (uint64_t *)(kstack + SCHED_STACK_SIZE);
     ksp--;
-    *ksp = (uint64_t)ring3_trampoline;
-    ksp--;
-    *ksp = 0;  /* rbx */
-    ksp--;
-    *ksp = 0;  /* rbp */
-    ksp--;
-    *ksp = 0;  /* r12 */
-    ksp--;
-    *ksp = 0;  /* r13 */
-    ksp--;
-    *ksp = 0;  /* r14 */
-    ksp--;
-    *ksp = 0;  /* r15 */
+    *ksp = (uint64_t)ring3_trampoline;  /* return address (stale, not used) */
     p->rsp = (uint64_t)ksp;
+    p->saved_ret = (uint64_t)ring3_trampoline;
+    p->fork_rflags = 0;  /* exec: not a fork child — use enter_userspace */
+    p->ctx_rbx = 0; p->ctx_rbp = 0; p->ctx_r12 = 0;
+    p->ctx_r13 = 0; p->ctx_r14 = 0; p->ctx_r15 = 0;
 
-    /* Update g_kernel_rsp0 for this process */
-    g_kernel_rsp0 = (uint64_t)(kstack + SCHED_STACK_SIZE);
+    /* Update per-CPU RSP0 for this process (both GS:0 and TSS) */
+    cpu_set_rsp0((uint64_t)(kstack + SCHED_STACK_SIZE));
 
     kprintf("[proc] exec: pid=%lu path=%s entry=%p argc=%d\n",
-            p->pid, path, (void *)entry, argc);
+            p->pid, path_buf, (void *)entry, argc);
 
-    /* Jump to userspace immediately */
+    /* Jump to userspace immediately — interrupts enabled by IRETQ frame */
     enter_userspace(new_pml4_phys, entry, user_rsp, 0);
 
     /* Should never reach here */
+exec_fail:
+    __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
     return -1;
 }
 

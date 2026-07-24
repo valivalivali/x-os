@@ -4,8 +4,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/memory/vmm.h"
 #include "kernel/memory/pmm.h"
-
-extern uint64_t g_kernel_rsp0;
+#include "kernel/hal/apic/smp.h"
 
 /* Fixed user VA for the sigreturn trampoline (mapped RWX into every process).
  * Stack trampolines are fragile if anything clobbers the frame; this page is
@@ -136,6 +135,15 @@ uint64_t signal_on_syscall_return(syscall_ret_frame_t *frame, uint64_t retval,
 
     /* Build frame on the user stack; restorer lives on USER_SIGRETURN_PAGE. */
     uint64_t old_ursp = frame->user_rsp;
+
+    /* Sanity check: user_rsp must be in user space (below kernel half). */
+    if (old_ursp >= 0xffff800000000000ULL || old_ursp < 0x1000) {
+        kprintf("[sig] PANIC: bad user_rsp=%lx pid=%lu rip=%lx rflags=%lx — "
+                "ret frame corrupted!\n",
+                old_ursp, p->pid, frame->rip, frame->rflags);
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+
     uint64_t saved_r15 = *(uint64_t *)old_ursp;
     uint64_t real_rsp = old_ursp + 8;
 
@@ -175,12 +183,13 @@ uint64_t sys_sigreturn_impl(uint64_t a1, uint64_t a2, uint64_t a3,
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
 
     proc_t *p = proc_current();
-    if (!p || !g_kernel_rsp0)
+    uint64_t krsp0 = this_cpu()->rsp0;
+    if (!p || !krsp0)
         return (uint64_t)-1;
 
     /* Frame lives at kernel_rsp0 - 24 (see syscall_entry.S). */
     syscall_ret_frame_t *f =
-        (syscall_ret_frame_t *)(g_kernel_rsp0 - sizeof(syscall_ret_frame_t));
+        (syscall_ret_frame_t *)(krsp0 - sizeof(syscall_ret_frame_t));
 
     uint64_t ursp = f->user_rsp;
     struct xos_sigctx *ctx = (struct xos_sigctx *)(ursp + 8);

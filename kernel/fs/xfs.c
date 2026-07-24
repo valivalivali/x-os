@@ -7,6 +7,9 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/memory/heap.h"
 #include "kernel/sched/sched.h"
+#include "kernel/hal/apic/spinlock.h"
+
+static spinlock_t xfs_lock = SPINLOCK_INIT;
 
 /* -------------------------------------------------------------------------- */
 /* On-disk structures */
@@ -228,6 +231,8 @@ bool xfs_mount(block_dev_t *dev) {
 int xfs_open(const char *path, uint32_t flags) {
     if (!path || path[0] != '/') return -1;
 
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
+
     xfs_inode_t inode;
     uint64_t ino = resolve_path(path, &inode);
 
@@ -249,16 +254,16 @@ int xfs_open(const char *path, uint32_t flags) {
             memcpy(parent_path, path, plen);
             parent_path[plen] = '\0';
             ino = resolve_path(parent_path, &inode);
-            if (!ino) return -1;
+            if (!ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
         }
         name = last_slash + 1;
-        if (*name == '\0') return -1;
+        if (*name == '\0') { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
         /* Allocate inode + data block for new file */
         uint64_t new_ino = alloc_block();
-        if (!new_ino) return -1;
+        if (!new_ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
         uint64_t new_data = alloc_block();
-        if (!new_data) { free_block(new_ino); return -1; }
+        if (!new_data) { free_block(new_ino); spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
         xfs_inode_t new_file;
         memset(&new_file, 0, sizeof(new_file));
@@ -293,6 +298,7 @@ int xfs_open(const char *path, uint32_t flags) {
         if (!added) {
             free_block(new_data);
             free_block(new_ino);
+            spinlock_release_irqrestore(&xfs_lock, rflags);
             return -1;
         }
 
@@ -300,7 +306,7 @@ int xfs_open(const char *path, uint32_t flags) {
         read_inode(ino, &inode);
     }
 
-    if (!ino) return -1;
+    if (!ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     /* Allocate fd */
     uint32_t pid = proc_current()->pid;
@@ -311,9 +317,11 @@ int xfs_open(const char *path, uint32_t flags) {
             g_fds[i].inode_block = (uint32_t)ino;
             g_fds[i].offset = 0;
             g_fds[i].flags = flags;
+            spinlock_release_irqrestore(&xfs_lock, rflags);
             return i;
         }
     }
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return -1;
 }
 
@@ -322,8 +330,10 @@ int xfs_open(const char *path, uint32_t flags) {
 
 void xfs_close(int fd) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return;
-    if (!g_fds[fd].used) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
+    if (!g_fds[fd].used) { spinlock_release_irqrestore(&xfs_lock, rflags); return; }
     g_fds[fd].used = false;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -331,13 +341,14 @@ void xfs_close(int fd) {
 
 int xfs_read(int fd, void *buf, size_t count) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
-    if (!buf || count == 0) return 0;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (!buf || count == 0) { spinlock_release_irqrestore(&xfs_lock, rflags); return 0; }
 
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
-    if (f->offset >= inode.size) return 0;
+    if (f->offset >= inode.size) { spinlock_release_irqrestore(&xfs_lock, rflags); return 0; }
 
     size_t remain = inode.size - f->offset;
     if (count > remain) count = remain;
@@ -362,6 +373,7 @@ int xfs_read(int fd, void *buf, size_t count) {
     }
 
     f->offset += (uint32_t)done;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return (int)done;
 }
 
@@ -370,10 +382,11 @@ int xfs_read(int fd, void *buf, size_t count) {
 
 int xfs_write(int fd, const void *buf, size_t count) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
-    if (!buf || count == 0) return 0;
-    if (!(f->flags & (XFS_O_WRONLY | XFS_O_RDWR))) return -1;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (!buf || count == 0) { spinlock_release_irqrestore(&xfs_lock, rflags); return 0; }
+    if (!(f->flags & (XFS_O_WRONLY | XFS_O_RDWR))) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
@@ -415,6 +428,7 @@ int xfs_write(int fd, const void *buf, size_t count) {
     f->offset = new_size;
     write_inode(f->inode_block, &inode);
 
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return (int)done;
 }
 
@@ -423,10 +437,11 @@ int xfs_write(int fd, const void *buf, size_t count) {
 
 int xfs_mkdir(const char *path) {
     if (!path || path[0] != '/') return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
 
     /* Check if already exists */
     xfs_inode_t inode;
-    if (resolve_path(path, &inode)) return -1;
+    if (resolve_path(path, &inode)) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     /* Find parent */
     const char *name = path + 1;
@@ -445,15 +460,15 @@ int xfs_mkdir(const char *path) {
         memcpy(parent_path, path, plen);
         parent_path[plen] = '\0';
         parent_ino = resolve_path(parent_path, &inode);
-        if (!parent_ino) return -1;
+        if (!parent_ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     }
     name = last_slash + 1;
-    if (*name == '\0') return -1;
+    if (*name == '\0') { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     uint64_t new_ino = alloc_block();
-    if (!new_ino) return -1;
+    if (!new_ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     uint64_t new_data = alloc_block();
-    if (!new_data) { free_block(new_ino); return -1; }
+    if (!new_data) { free_block(new_ino); spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     xfs_inode_t new_dir;
     memset(&new_dir, 0, sizeof(new_dir));
@@ -487,8 +502,10 @@ int xfs_mkdir(const char *path) {
     if (!added) {
         free_block(new_data);
         free_block(new_ino);
+        spinlock_release_irqrestore(&xfs_lock, rflags);
         return -1;
     }
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return 0;
 }
 
@@ -497,13 +514,14 @@ int xfs_mkdir(const char *path) {
 
 int xfs_readdir(int fd, xfs_dirent_t *entries, int max_entries) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
-    if (!entries || max_entries <= 0) return 0;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (!entries || max_entries <= 0) { spinlock_release_irqrestore(&xfs_lock, rflags); return 0; }
 
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
-    if (!(inode.flags & 1)) return -1; /* not a directory */
+    if (!(inode.flags & 1)) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; } /* not a directory */
 
     int count = 0;
     for (uint32_t db = 0; db < inode.block_count && count < max_entries; db++) {
@@ -519,6 +537,7 @@ int xfs_readdir(int fd, xfs_dirent_t *entries, int max_entries) {
             }
         }
     }
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return count;
 }
 
@@ -531,8 +550,9 @@ int xfs_readdir(int fd, xfs_dirent_t *entries, int max_entries) {
 
 int xfs_lseek(int fd, int offset, int whence) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
@@ -542,10 +562,11 @@ int xfs_lseek(int fd, int offset, int whence) {
         case SEEK_SET: new_off = offset; break;
         case SEEK_CUR: new_off = (int)f->offset + offset; break;
         case SEEK_END: new_off = (int)inode.size + offset; break;
-        default: return -1;
+        default: spinlock_release_irqrestore(&xfs_lock, rflags); return -1;
     }
-    if (new_off < 0) return -1;
+    if (new_off < 0) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     f->offset = (uint32_t)new_off;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return new_off;
 }
 
@@ -554,22 +575,25 @@ int xfs_lseek(int fd, int offset, int whence) {
 
 int xfs_stat(const char *path, xfs_dirent_t *out) {
     if (!path || !out) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_inode_t inode;
     uint64_t ino = resolve_path(path, &inode);
-    if (!ino) return -1;
+    if (!ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     memset(out, 0, sizeof(*out));
     strncpy(out->name, inode.name, XFS_NAME_MAX - 1);
     out->inode_block = (uint32_t)ino;
     out->size = inode.size;
     out->flags = inode.flags;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return 0;
 }
 
 int xfs_fstat(int fd, xfs_dirent_t *out) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
-    if (!out) return -1;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (!out) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
     memset(out, 0, sizeof(*out));
@@ -577,6 +601,7 @@ int xfs_fstat(int fd, xfs_dirent_t *out) {
     out->inode_block = f->inode_block;
     out->size = inode.size;
     out->flags = inode.flags;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return 0;
 }
 
@@ -585,12 +610,13 @@ int xfs_fstat(int fd, xfs_dirent_t *out) {
 
 int xfs_unlink(const char *path) {
     if (!path || path[0] != '/') return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
 
     /* Find the file */
     xfs_inode_t inode;
     uint64_t ino = resolve_path(path, &inode);
-    if (!ino) return -1;
-    if (inode.flags & 1) return -1; /* is directory, use rmdir */
+    if (!ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (inode.flags & 1) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; } /* is directory, use rmdir */
 
     /* Find parent directory and remove dirent */
     const char *last_slash = path;
@@ -609,7 +635,7 @@ int xfs_unlink(const char *path) {
         memcpy(parent_path, path, plen);
         parent_path[plen] = '\0';
         parent_ino = resolve_path(parent_path, &parent_inode);
-        if (!parent_ino) return -1;
+        if (!parent_ino) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
     }
     read_inode(parent_ino, &parent_inode);
     uint8_t sector[XFS_BLOCK_SIZE];
@@ -628,10 +654,12 @@ int xfs_unlink(const char *path) {
                     if (inode.data_blocks[i]) free_block(inode.data_blocks[i]);
                 }
                 free_block(ino);
+                spinlock_release_irqrestore(&xfs_lock, rflags);
                 return 0;
             }
         }
     }
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return -1;
 }
 
@@ -640,9 +668,10 @@ int xfs_unlink(const char *path) {
 
 int xfs_ftruncate(int fd, int size) {
     if (fd < 0 || fd >= XFS_MAX_FDS) return -1;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_fd_entry_t *f = &g_fds[fd];
-    if (!f->used || f->pid != proc_current()->pid) return -1;
-    if (size < 0) return -1;
+    if (!f->used || f->pid != proc_current()->pid) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
+    if (size < 0) { spinlock_release_irqrestore(&xfs_lock, rflags); return -1; }
 
     xfs_inode_t inode;
     read_inode(f->inode_block, &inode);
@@ -672,6 +701,7 @@ int xfs_ftruncate(int fd, int size) {
     }
     inode.size = (uint32_t)size;
     write_inode(f->inode_block, &inode);
+    spinlock_release_irqrestore(&xfs_lock, rflags);
     return 0;
 }
 
@@ -680,8 +710,11 @@ int xfs_ftruncate(int fd, int size) {
 
 int xfs_exists(const char *path) {
     if (!path || path[0] != '/') return 0;
+    uint64_t rflags = spinlock_acquire_irqsave(&xfs_lock);
     xfs_inode_t inode;
-    return resolve_path(path, &inode) != 0 ? 1 : 0;
+    int r = resolve_path(path, &inode) != 0 ? 1 : 0;
+    spinlock_release_irqrestore(&xfs_lock, rflags);
+    return r;
 }
 
 /* -------------------------------------------------------------------------- */

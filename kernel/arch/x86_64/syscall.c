@@ -13,6 +13,7 @@
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/serial.h"
 #include "kernel/hal/input/input.h"
+#include "kernel/hal/apic/smp.h"
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/fs/xfs.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
@@ -77,6 +78,18 @@ static uint64_t sys_nsleep(uint64_t ms) {
     return 0;
 }
 
+/* Set/clear no-preempt flag for the current process.
+ * When set, timer interrupts skip sched_yield, letting the process
+ * run uninterrupted during critical initialization (e.g., GPU setup). */
+static uint64_t sys_no_preempt_impl(uint64_t enable, uint64_t a2, uint64_t a3,
+                                    uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (!p) return (uint64_t)-1;
+    p->no_preempt = enable ? 1 : 0;
+    return 0;
+}
+
 static uint64_t sys_proc_pid_impl(void) {
     proc_t *p = proc_current();
     return p ? p->pid : 0;
@@ -119,13 +132,12 @@ static uint64_t sys_debug_log(uint64_t umsg, uint64_t len,
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (!umsg || len == 0 || len > 4096) return 0;
     const char *s = (const char *)umsg;
-    /* Prevent unbounded kernel loops on bad userspace pointers.
-     * We trust the pointer since kernel higher-half is mapped. */
-    for (size_t i = 0; i < len; i++) {
-        char c = s[i];
-        if (c == '\0') break;
-        serial_putc(c);
-    }
+    /* Use kwrite (console spinlock-protected) so concurrent sys_debug_log
+     * calls from multiple CPUs don't interleave characters on the serial
+     * console.  Without this, SMP output is garbled. */
+    size_t n = 0;
+    while (n < len && s[n] != '\0') n++;
+    kwrite(s, n);
     return 0;
 }
 
@@ -195,7 +207,7 @@ static uint64_t sys_port_send_impl(uint64_t handle, uint64_t umsg,
                                    uint64_t a3, uint64_t a4,
                                    uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
-    if (!umsg) return 0;
+    if (!umsg || umsg < 0x1000) return 0;
     ipc_msg_t msg;
     memcpy(&msg, (const void *)umsg, sizeof(msg));
     return port_send(handle, &msg) ? 1 : 0;
@@ -205,7 +217,7 @@ static uint64_t sys_port_recv_impl(uint64_t handle, uint64_t umsg,
                                    uint64_t block,
                                    uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
-    if (!umsg) return 0;
+    if (!umsg || umsg < 0x1000) return 0;
     ipc_msg_t msg;
     bool ok = port_recv(handle, &msg, block != 0);
     if (!ok) return 0;
@@ -239,7 +251,7 @@ static uint64_t sys_mem_alloc_impl(uint64_t vaddr, uint64_t flags,
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (vaddr >= 0xffff800000000000ULL) return (uint64_t)-1;
     uint64_t frame = pmm_alloc_frame();
-    if (!frame) return (uint64_t)-1;
+    if (!frame) { kprintf("[k] mem_alloc: pmm OOM vaddr=%lx\n", vaddr); return (uint64_t)-1; }
     proc_t *p = proc_current();
     if (!p || !p->pml4_virt) {
         pmm_free_frame(frame);
@@ -247,6 +259,7 @@ static uint64_t sys_mem_alloc_impl(uint64_t vaddr, uint64_t flags,
     }
     uint64_t f = (flags & (VMM_RW | VMM_WT | VMM_CD)) | VMM_U | VMM_P;
     if (!vmm_map_page(p->pml4_virt, vaddr, frame, f)) {
+        kprintf("[k] mem_alloc: vmm_map_page fail vaddr=%lx\n", vaddr);
         pmm_free_frame(frame);
         return (uint64_t)-1;
     }
@@ -256,7 +269,7 @@ static uint64_t sys_mem_alloc_impl(uint64_t vaddr, uint64_t flags,
 static uint64_t sys_input_poll_impl(uint64_t uevent, uint64_t a2, uint64_t a3,
                                     uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
-    if (!uevent) return 0;
+    if (!uevent || uevent < 0x1000) return 0;
     input_event_t e;
     if (!input_poll(&e)) return 0;
     memcpy((void *)uevent, &e, sizeof(e));
@@ -1026,6 +1039,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_MSGBUF_READ] = (void *)sys_msgbuf_read_impl,
     [SYS_SYSCTL]      = (void *)sys_sysctl_impl,
     [SYS_SIGRETURN]   = (void *)sys_sigreturn_impl,
+    [SYS_NO_PREEMPT]  = (void *)sys_no_preempt_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))
@@ -1040,6 +1054,36 @@ uint64_t syscall_dispatch(syscall_args_t *args) {
     uint64_t (*fn)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
     fn = syscall_table[args->num];
     return fn(args->a1, args->a2, args->a3, args->a4, args->a5, args->a6);
+}
+
+/* Called from syscall_entry.S when the ret frame is corrupted.
+ * rdi = current rsp (points into the 112-byte dispatch frame or
+ *       the 64-byte spill frame, depending on when the check fired)
+ * rsi = the bad value that failed the check */
+void syscall_ret_panic(uint64_t rsp, uint64_t bad_val) {
+    proc_t *cur = proc_current();
+    uint64_t krsp0 = this_cpu()->rsp0;
+    kprintf("\n*** SYSCALL RET FRAME CORRUPTED ***\n");
+    kprintf("    rsp=%lx bad_val=%lx krsp0=%lx\n", rsp, bad_val, krsp0);
+    if (cur) {
+        kprintf("    pid=%lu state=%d ring3=%d kstack=%lx-%lx\n",
+                cur->pid, cur->state, cur->ring3,
+                (uint64_t)cur->kstack, (uint64_t)cur->kstack + SCHED_STACK_SIZE);
+        kprintf("    cur->rsp=%lx saved_ret=%lx rip=%lx\n",
+                cur->rsp, cur->saved_ret, cur->rip);
+        kprintf("    canary=%lx switching=%d\n", cur->canary, cur->switching);
+    }
+    /* Dump kstack top (where ret frame should be) */
+    if (krsp0) {
+        uint64_t *ktop = (uint64_t *)(krsp0 - 24);
+        kprintf("    ret frame: rflags=%lx rip=%lx user_rsp=%lx\n",
+                ktop[0], ktop[1], ktop[2]);
+        kprintf("    kstack top dump:\n");
+        uint64_t *p = (uint64_t *)(krsp0 - 80);
+        for (int i = 0; i < 10; i++)
+            kprintf("      ktop-%d: %lx\n", (10-i)*8, p[i]);
+    }
+    for (;;) __asm__ volatile("cli; hlt");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1061,4 +1105,16 @@ void syscall_init(void) {
     wrmsr(MSR_SFMASK, 0x200 | 0x400 | 0x40000);
 
     kputs("[syscall] syscall/sysret enabled (STAR=0x001B00000008)\n");
+}
+
+/* Per-CPU syscall MSR init for APs — same as syscall_init but without
+ * the log message (BSP already logged it). */
+void syscall_init_ap(void) {
+    uint64_t efer = rdmsr(MSR_EFER);
+    efer |= EFER_SCE;
+    wrmsr(MSR_EFER, efer);
+    wrmsr(MSR_STAR, ((uint64_t)0x1B << 48) | ((uint64_t)0x08 << 32));
+    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
+    wrmsr(MSR_CSTAR, 0);
+    wrmsr(MSR_SFMASK, 0x200 | 0x400 | 0x40000);
 }

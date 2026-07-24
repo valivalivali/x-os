@@ -15,6 +15,7 @@
 #include "kernel/memory/heap.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/hal/apic/spinlock.h"
 
 #define PIPE_MAX      16
 #define PIPE_BUF_SIZE 4096
@@ -32,6 +33,7 @@ typedef struct {
 } pipe_t;
 
 static pipe_t g_pipes[PIPE_MAX];
+static spinlock_t pipe_lock = SPINLOCK_INIT;
 
 static pipe_t *pipe_lookup(int fd) {
     if (fd < PIPE_FD_BASE || fd >= PIPE_FD_BASE + PIPE_MAX * 2)
@@ -43,6 +45,7 @@ static pipe_t *pipe_lookup(int fd) {
 }
 
 static int pipe_alloc(void) {
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
     for (int i = 0; i < PIPE_MAX; i++) {
         if (!g_pipes[i].used) {
             memset(&g_pipes[i], 0, sizeof(pipe_t));
@@ -50,9 +53,11 @@ static int pipe_alloc(void) {
             g_pipes[i].creator_pid = (uint32_t)proc_current()->pid;
             g_pipes[i].read_refs = 1;
             g_pipes[i].write_refs = 1;
+            spinlock_release_irqrestore(&pipe_lock, rflags);
             return i;
         }
     }
+    spinlock_release_irqrestore(&pipe_lock, rflags);
     return -1;
 }
 
@@ -67,6 +72,7 @@ int pipe_create(int pipefd[2]) {
 
 /* After fork, child inherits open pipe ends — bump refs on parent's pipes. */
 void pipe_fork_inherit(uint32_t parent_pid) {
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
     for (int i = 0; i < PIPE_MAX; i++) {
         if (!g_pipes[i].used) continue;
         if (g_pipes[i].creator_pid != parent_pid) continue;
@@ -75,6 +81,7 @@ void pipe_fork_inherit(uint32_t parent_pid) {
         if (g_pipes[i].write_refs)
             g_pipes[i].write_refs++;
     }
+    spinlock_release_irqrestore(&pipe_lock, rflags);
 }
 
 int pipe_read(int fd, void *buf, size_t count) {
@@ -84,49 +91,60 @@ int pipe_read(int fd, void *buf, size_t count) {
     if (!buf || count == 0) return 0;
 
     for (;;) {
-        if (p->data_bytes > 0)
-            break;
-        if (p->write_refs == 0)
-            return 0; /* EOF */
-        sched_yield();
-        if (!p->used)
+        uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
+        if (!p->used) {
+            spinlock_release_irqrestore(&pipe_lock, rflags);
             return 0;
+        }
+        if (p->data_bytes > 0) {
+            size_t to_read = count < p->data_bytes ? count : p->data_bytes;
+            uint8_t *dst = (uint8_t *)buf;
+            for (size_t i = 0; i < to_read; i++) {
+                dst[i] = p->buf[p->read_pos];
+                p->read_pos = (p->read_pos + 1) % PIPE_BUF_SIZE;
+            }
+            p->data_bytes -= (uint32_t)to_read;
+            spinlock_release_irqrestore(&pipe_lock, rflags);
+            return (int)to_read;
+        }
+        if (p->write_refs == 0) {
+            spinlock_release_irqrestore(&pipe_lock, rflags);
+            return 0; /* EOF */
+        }
+        spinlock_release_irqrestore(&pipe_lock, rflags);
+        sched_yield();
     }
-
-    size_t to_read = count < p->data_bytes ? count : p->data_bytes;
-    uint8_t *dst = (uint8_t *)buf;
-    for (size_t i = 0; i < to_read; i++) {
-        dst[i] = p->buf[p->read_pos];
-        p->read_pos = (p->read_pos + 1) % PIPE_BUF_SIZE;
-    }
-    p->data_bytes -= (uint32_t)to_read;
-    return (int)to_read;
 }
 
 int pipe_write(int fd, const void *buf, size_t count) {
     pipe_t *p = pipe_lookup(fd);
     if (!p) return -1;
     if (((fd - PIPE_FD_BASE) & 1) != 1) return -1;
-    if (p->read_refs == 0) return -1;
     if (!buf || count == 0) return 0;
 
     const uint8_t *src = (const uint8_t *)buf;
     size_t written = 0;
     while (written < count) {
-        while (p->data_bytes >= PIPE_BUF_SIZE) {
-            if (p->read_refs == 0) return written ? (int)written : -1;
+        uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
+        if (!p->used || p->read_refs == 0) {
+            spinlock_release_irqrestore(&pipe_lock, rflags);
+            return written ? (int)written : -1;
+        }
+        if (p->data_bytes < PIPE_BUF_SIZE) {
+            size_t space = PIPE_BUF_SIZE - p->data_bytes;
+            size_t chunk = count - written;
+            if (chunk > space) chunk = space;
+            for (size_t i = 0; i < chunk; i++) {
+                p->buf[p->write_pos] = src[written + i];
+                p->write_pos = (p->write_pos + 1) % PIPE_BUF_SIZE;
+            }
+            p->data_bytes += (uint32_t)chunk;
+            written += chunk;
+            spinlock_release_irqrestore(&pipe_lock, rflags);
+        } else {
+            spinlock_release_irqrestore(&pipe_lock, rflags);
             sched_yield();
-            if (!p->used) return -1;
         }
-        size_t space = PIPE_BUF_SIZE - p->data_bytes;
-        size_t chunk = count - written;
-        if (chunk > space) chunk = space;
-        for (size_t i = 0; i < chunk; i++) {
-            p->buf[p->write_pos] = src[written + i];
-            p->write_pos = (p->write_pos + 1) % PIPE_BUF_SIZE;
-        }
-        p->data_bytes += (uint32_t)chunk;
-        written += chunk;
     }
     return (int)written;
 }
@@ -134,6 +152,7 @@ int pipe_write(int fd, const void *buf, size_t count) {
 void pipe_close(int fd) {
     pipe_t *p = pipe_lookup(fd);
     if (!p) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
     if (((fd - PIPE_FD_BASE) & 1) == 0) {
         if (p->read_refs > 0)
             p->read_refs--;
@@ -144,15 +163,18 @@ void pipe_close(int fd) {
     if (p->read_refs == 0 && p->write_refs == 0) {
         p->used = false;
     }
+    spinlock_release_irqrestore(&pipe_lock, rflags);
 }
 
 int pipe_dup(int oldfd, int newfd) {
     pipe_t *p = pipe_lookup(oldfd);
     if (!p) return -1;
     (void)newfd;
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
     if (((oldfd - PIPE_FD_BASE) & 1) == 0)
         p->read_refs++;
     else
         p->write_refs++;
+    spinlock_release_irqrestore(&pipe_lock, rflags);
     return oldfd;
 }

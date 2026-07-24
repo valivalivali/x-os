@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Hardware-pushed interrupt frame (no error code). */
 struct interrupt_frame {
@@ -16,3 +17,6 @@ void idt_init(void);                          /* loads IDT, remaps + masks PIC *
 void idt_reload(void);                        /* reload IDTR (for APs) */
 void irq_install(int irq, irq_handler_t fn);  /* registers + unmasks an IRQ    */
 void irq_uninstall(int irq);
+
+/* When true, IRQ EOI goes to LAPIC instead of legacy PIC. */
+extern bool g_lapic_mode;

@@ -52,7 +52,10 @@ static void send_shell_byte(char c) {
     msg.sender_pid = syscall0(SYS_PROC_PID);
     msg.payload_len = 1;
     msg.payload[0] = (uint8_t)c;
-    for (int tries = 0; tries < 1000; tries++) {
+    /* Non-blocking: if the shell's input port is full, drop the byte.
+     * Bounded retries prevent deadlock with the shell's bridge_write
+     * (which can block trying to send output to our port). */
+    for (int tries = 0; tries < 4; tries++) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
         syscall0(SYS_YIELD);
@@ -304,10 +307,10 @@ void terminal_main(void) {
     }
 
     /* Wait for composer to be ready */
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 2000; i++) {
         drain_bridge();
         if (sys_ns_lookup(WM_COMPOSER_PORT_NS)) break;
-        syscall0(SYS_YIELD);
+        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
     }
 
     /* Get screen dimensions for window centering */

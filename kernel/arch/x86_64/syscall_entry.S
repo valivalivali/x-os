@@ -1,22 +1,4 @@
 .data
-.globl g_kernel_rsp0
-g_kernel_rsp0:
-    .quad 0
-
-/* User callee-saved GPRs saved at syscall entry for fork().
- * The C compiler clobbers these inside syscall_dispatch, so proc_fork
- * cannot read them from registers — it reads these globals instead. */
-.globl g_user_rbx, g_user_rbp, g_user_r12, g_user_r13, g_user_r14
-g_user_rbx:
-    .quad 0
-g_user_rbp:
-    .quad 0
-g_user_r12:
-    .quad 0
-g_user_r13:
-    .quad 0
-g_user_r14:
-    .quad 0
 
 .text
 .globl syscall_entry
@@ -43,13 +25,14 @@ syscall_entry:
     /* Save callee-saved r15 on the user stack before anything else. */
     pushq %r15
 
-    /* Save user callee-saved GPRs in globals for fork().
-     * Must happen before any C code clobbers them. */
-    movq %rbx, g_user_rbx(%rip)
-    movq %rbp, g_user_rbp(%rip)
-    movq %r12, g_user_r12(%rip)
-    movq %r13, g_user_r13(%rip)
-    movq %r14, g_user_r14(%rip)
+    /* Save user callee-saved GPRs in per-CPU storage for fork().
+     * Must happen before any C code clobbers them.
+     * GS:32=user_rbx, GS:40=user_rbp, GS:48=user_r12, GS:56=user_r13, GS:64=user_r14 */
+    movq %rbx, %gs:32
+    movq %rbp, %gs:40
+    movq %r12, %gs:48
+    movq %r13, %gs:56
+    movq %r14, %gs:64
 
     /* Switch to kernel stack, saving user state in fixed slots.
      * Layout at kernel_rsp0-24..kernel_rsp0:
@@ -57,7 +40,7 @@ syscall_entry:
      *   -16: user rip     (will be restored into rcx)
      *   -8:  user rsp     (will be restored into rsp)
      */
-    movq g_kernel_rsp0(%rip), %r15
+    movq %gs:0, %r15
     subq $24, %r15
     movq %r11, 0(%r15)   /* save user rflags */
     movq %rcx, 8(%r15)   /* save user rip */
@@ -82,13 +65,13 @@ syscall_entry:
     movq %rdx, 24(%rsp)   /* a3 */
     movq %r10, 32(%rsp)   /* a4 */
     movq %r8,  40(%rsp)   /* a5 */
-    movq %r9,  48(%rsp)   /* a6 */
+    movq %r9, 48(%rsp)   /* a6 */
     movq %rdi, 56(%rsp)   /* saved rdi */
     movq %rsi, 64(%rsp)   /* saved rsi */
     movq %rdx, 72(%rsp)   /* saved rdx */
     movq %r10, 80(%rsp)   /* saved r10 */
     movq %r8,  88(%rsp)   /* saved r8 */
-    movq %r9,  96(%rsp)   /* saved r9 */
+    movq %r9, 96(%rsp)   /* saved r9 */
 
     movq %rsp, %rdi
     call syscall_dispatch
@@ -113,7 +96,7 @@ syscall_entry:
     movq %rdx, 24(%rsp)   /* spill rdx */
     movq %r10, 32(%rsp)   /* spill r10 */
     movq %r8,  40(%rsp)   /* spill r8 */
-    movq %r9,  48(%rsp)   /* spill r9 */
+    movq %r9, 48(%rsp)   /* spill r9 */
     movq %rax, 56(%rsp)   /* spill retval */
     movq $0, 0(%rsp)      /* signo out */
 

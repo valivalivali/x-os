@@ -1,6 +1,10 @@
 #include "kernel/interrupts/idt.h"
 #include "kernel/interrupts/pic.h"
+#include "kernel/hal/apic/lapic.h"
+#include "kernel/hal/apic/smp.h"
+#include "kernel/sched/sched.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/arch/x86_64/serial.h"
 #include <stdint.h>
 
 #define IDT_ENTRIES 256
@@ -47,11 +51,49 @@ static const char *exc_name(int v) {
 }
 
 static void exc_report(int vec, uint64_t err, struct interrupt_frame *f) {
-    uint64_t cr2;
+    uint64_t cr2, cr3;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+
+    /* If the exception happened in userspace (CPL=3), log it and
+     * halt.  We can't safely call sched_yield from an interrupt
+     * handler because the GCC interrupt attribute's register
+     * save/restore interferes with context_switch. */
+    if ((f->cs & 3) == 3) {
+        cpu_data_t *cpu = this_cpu();
+        proc_t *cur = cpu->current_proc;
+        kprintf("[exc] userspace %d in pid=%lu ip=%lx cr2=%lx — halting\n",
+                vec, cur ? cur->pid : 0, f->ip, cr2);
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+
     kprintf("\n*** CPU EXCEPTION %d (%s) err=%lx\n", vec, exc_name(vec), err);
-    kprintf("    ip=%lx cs=%lx flags=%lx sp=%lx cr2=%lx\n",
-            f->ip, f->cs, f->flags, f->sp, cr2);
+    kprintf("    ip=%lx cs=%lx flags=%lx sp=%lx cr2=%lx cr3=%lx\n",
+            f->ip, f->cs, f->flags, f->sp, cr2, cr3);
+    cpu_data_t *cpu = this_cpu();
+    proc_t *cur = cpu->current_proc;
+    kprintf("    cpu_id=%u cur=%p pid=%lu\n", cpu->cpu_id, cur, cur ? cur->pid : 0);
+    if (cur) {
+        kprintf("    cur->rsp=%lx saved_ret=%lx rip=%lx state=%d ring3=%d\n",
+                cur->rsp, cur->saved_ret, cur->rip, cur->state, cur->ring3);
+        kprintf("    cur->kstack=%lx-%lx\n",
+                (uint64_t)cur->kstack, (uint64_t)cur->kstack + SCHED_STACK_SIZE);
+        /* Dump stack contents around f->sp */
+        uint64_t *sp = (uint64_t *)f->sp;
+        for (int i = -2; i < 16; i++) {
+            uint64_t addr = (uint64_t)(sp + i);
+            if (addr >= (uint64_t)cur->kstack &&
+                addr < (uint64_t)cur->kstack + SCHED_STACK_SIZE) {
+                kprintf("    sp%d: %lx = %lx\n", i*8, addr, sp[i]);
+            }
+        }
+        /* Dump kstack top (IRETQ frame area) */
+        uint64_t *ktop = (uint64_t *)((uint64_t)cur->kstack + SCHED_STACK_SIZE);
+        kprintf("    kstack top (IRETQ frame area):\n");
+        for (int i = -10; i < 0; i++) {
+            kprintf("    ktop%d: %lx\n", i*8, ktop[i]);
+        }
+    }
     for (;;) __asm__ volatile("cli; hlt");
 }
 
@@ -75,8 +117,18 @@ static void *exc_table[32] = {
 /* ---- IRQs -------------------------------------------------------------- */
 
 static void irq_dispatch(int irq) {
+    /* Send EOI *before* calling the handler.  If the handler calls
+     * sched_yield() and context-switches to a ring-3 process via
+     * ring3_trampoline → enter_userspace → iretq, the handler never
+     * returns and a post-handler EOI would never execute, starving
+     * the CPU of further interrupts. */
+    if (g_lapic_mode) {
+        lapic_eoi();
+        pic_eoi(irq);
+    } else {
+        pic_eoi(irq);
+    }
     if (handlers[irq]) handlers[irq]();
-    pic_eoi(irq);
 }
 
 void irq_dispatch_asm(int irq) {
@@ -94,9 +146,34 @@ static void *irq_table[16] = {
     irq8,  irq9,  irq10, irq11, irq12, irq13, irq14, irq15,
 };
 
+/* LAPIC timer and IPI interrupt stubs (from lapic_stubs.S) */
+extern void lapic_isr_resched(void);
+extern void lapic_isr_tlb(void);
+extern void lapic_isr_stop(void);
+extern void lapic_isr_call_func(void);
+extern void lapic_isr_timer(void);
+
+/* C handlers (from lapic_ipi.c) */
+extern void ipi_resched_handler(void);
+extern void ipi_tlb_handler(void);
+extern void ipi_stop_handler(void);
+extern void ipi_call_func_handler(void);
+extern void lapic_timer_handler(void);
+extern void lapic_eoi(void);
+
+/* Global flag: true when running in LAPIC mode (all CPUs use LAPIC for EOI). */
+bool g_lapic_mode = false;
+
 void idt_init(void) {
     for (int i = 0; i < 32; i++)  set_gate(i, exc_table[i], 0x8E);
     for (int i = 0; i < 16; i++)  set_gate(IRQ_BASE + i, irq_table[i], 0x8E);
+
+    /* Register LAPIC timer and IPI vectors */
+    set_gate(IPI_VECTOR_RESCHED,     lapic_isr_resched,   0x8E);
+    set_gate(IPI_VECTOR_TLB,         lapic_isr_tlb,       0x8E);
+    set_gate(IPI_VECTOR_STOP,        lapic_isr_stop,      0x8E);
+    set_gate(IPI_VECTOR_CALL_FUNC,   lapic_isr_call_func, 0x8E);
+    set_gate(LAPIC_TIMER_VECTOR,     lapic_isr_timer,     0x8E);
 
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint64_t)&idt[0];
@@ -113,6 +190,10 @@ void idt_reload(void) {
 void irq_install(int irq, irq_handler_t fn) {
     if (irq < 0 || irq > 15) return;
     handlers[irq] = fn;
+    /* Always unmask the legacy PIC.  In LAPIC mode with LINT0=ExtINT
+     * pass-through, the LAPIC forwards legacy PIC IRQs — but only for
+     * lines that are unmasked on the PIC.  Without this, keyboard
+     * (IRQ1) and mouse (IRQ12) never fire after switching to LAPIC. */
     pic_clear_mask(irq);
 }
 

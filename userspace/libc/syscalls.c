@@ -150,12 +150,22 @@ static _ssize_t bridge_write(const void *buf, size_t cnt) {
         msg.payload_len = (uint32_t)chunk;
         for (size_t i = 0; i < chunk; i++)
             msg.payload[i] = ((const uint8_t *)p)[i];
-        while (!sys_port_send(g_bridge_output_port, &msg))
+        /* Bounded retries to prevent deadlock with the terminal's
+         * send_shell_byte (which also has bounded retries).  If the
+         * terminal's port is full, yield a few times then drop. */
+        int sent = 0;
+        for (int tries = 0; tries < 16; tries++) {
+            if (sys_port_send(g_bridge_output_port, &msg)) {
+                sent = 1;
+                break;
+            }
             syscall0(SYS_YIELD);
+        }
+        if (!sent) break;  /* drop remaining output */
         p += chunk;
         remaining -= chunk;
     }
-    return (_ssize_t)cnt;
+    return (_ssize_t)(cnt - remaining);
 }
 
 static _ssize_t bridge_read(void *buf, size_t cnt) {

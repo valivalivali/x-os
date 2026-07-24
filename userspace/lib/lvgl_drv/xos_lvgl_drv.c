@@ -202,21 +202,21 @@ static int create_compositor_surface(xos_lvgl_ctx_t *ctx,
 
     /* Look up composer port */
     port_handle_t cp = 0;
-    for (int r = 0; r < 500 && !cp; r++) {
+    for (int r = 0; r < 2000 && !cp; r++) {
         cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
-        if (!cp) syscall0(SYS_YIELD);
+        if (!cp) syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
     }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
 
     /* Wait for surface ready reply */
     ipc_msg_t re;
     int got = 0;
-    for (int r = 0; r < 300 && !got; r++) {
+    for (int r = 0; r < 1000 && !got; r++) {
         if (sys_port_recv(s_ipc_port, &re, 0)) {
             got = 1;
             break;
         }
-        syscall0(SYS_YIELD);
+        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
     }
     if (!got) return -1;
 

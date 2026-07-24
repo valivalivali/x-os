@@ -29,6 +29,20 @@ static void log(const char *s) {
     syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
 }
 
+static void log_int(const char *prefix, int32_t val, const char *suffix) {
+    char buf[64];
+    int p = 0;
+    for (const char *c = prefix; *c && p < 60; c++) buf[p++] = *c;
+    if (val < 0) { buf[p++] = '-'; val = -val; }
+    char tmp[12]; int t = 0;
+    if (val == 0) tmp[t++] = '0';
+    while (val > 0 && t < 11) { tmp[t++] = '0' + (val % 10); val /= 10; }
+    while (t > 0 && p < 62) buf[p++] = tmp[--t];
+    for (const char *c = suffix; *c && p < 63; c++) buf[p++] = *c;
+    buf[p] = '\0';
+    log(buf);
+}
+
 /* ---- IPC ----------------------------------------------------------------- */
 
 static uint64_t g_port = 0;
@@ -39,7 +53,7 @@ static uint32_t g_surf_h = 0;
 
 static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     g_port = sys_port_create();
-    if (!g_port) return -1;
+    if (!g_port) { log("[menubar] port_create failed\n"); return -1; }
 
     wm_create_msg_t cm;
     __builtin_memset(&cm, 0, sizeof(cm));
@@ -63,20 +77,20 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     for (size_t i = 0; i < sizeof(cm); i++) msg.payload[i] = ((uint8_t *)&cm)[i];
 
     uint64_t cp = 0;
-    for (int r = 0; r < 500 && !cp; r++) {
+    for (int r = 0; r < 2000 && !cp; r++) {
         cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
-        if (!cp) syscall0(SYS_YIELD);
+        if (!cp) { syscall1(12, 10); }  /* SYS_NSLEEP, 10ms */
     }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
 
     ipc_msg_t re;
     int got = 0;
-    for (int r = 0; r < 300 && !got; r++) {
+    for (int r = 0; r < 1000 && !got; r++) {
         if (sys_port_recv(g_port, &re, 0)) {
             got = 1;
             break;
         }
-        syscall0(SYS_YIELD);
+        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
     }
     if (!got) return -1;
 

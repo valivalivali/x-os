@@ -1,4 +1,5 @@
 #include "kernel/hal/apic/lapic.h"
+#include "kernel/hal/apic/smp.h"
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/lib/kprintf.h"
@@ -47,9 +48,20 @@ void lapic_init(uint64_t phys_base) {
     /* Set Task Priority to 0 (accept all interrupts). */
     lapic_write(LAPIC_TPR, 0);
 
-    /* Mask LINT0 and LINT1 (legacy PIC lines — not used in APIC mode). */
-    lapic_write(LAPIC_LVT_LINT0, LAPIC_LVT_MASKED);
-    lapic_write(LAPIC_LVT_LINT1, LAPIC_LVT_MASKED);
+    /* Set LINT0 to ExtINT mode for legacy PIC pass-through.
+     * Delivery mode 7 (ExtINT), fixed, edge-triggered.
+     * Only the BSP unmaskes LINT0 — APs mask it so legacy PIC
+     * interrupts (keyboard IRQ1, mouse IRQ12) are delivered to exactly
+     * one CPU.  Without this, multiple APs handle the same PS/2
+     * interrupt concurrently, corrupting mouse packet state and
+     * causing the cursor to teleport. */
+    if (this_cpu()->is_bsp)
+        lapic_write(LAPIC_LVT_LINT0, 0x700); /* ExtINT, unmasked */
+    else
+        lapic_write(LAPIC_LVT_LINT0, 0x700 | LAPIC_LVT_MASKED); /* ExtINT, masked */
+
+    /* Set LINT1 to NMI delivery mode. */
+    lapic_write(LAPIC_LVT_LINT1, 0x400); /* NMI delivery mode */
 
     /* Mask the error LVT for now. */
     lapic_write(LAPIC_LVT_ERROR, LAPIC_LVT_MASKED);

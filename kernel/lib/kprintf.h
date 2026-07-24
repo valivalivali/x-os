@@ -1,12 +1,16 @@
 #pragma once
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Minimal kernel logging to the serial port.
  * Supports: %c %s %d %i %u %x %p %% and length modifier 'l' (%lu %lx %ld). */
 void kputs(const char *s);
 void kprintf(const char *fmt, ...);
 void kvprintf(const char *fmt, va_list ap);
+/* Write a length-delimited string with the console lock held.
+ * Used by sys_debug_log so userspace log messages are atomic. */
+void kwrite(const char *s, size_t n);
 __attribute__((noreturn)) void kpanic(const char *fmt, ...);
 
 /* Verbose boot flag.  Set by boot-args `-v` (XNU-style). Silent by default. */

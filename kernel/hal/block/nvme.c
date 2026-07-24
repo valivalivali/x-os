@@ -8,6 +8,7 @@
 #include "kernel/memory/vmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/hal/apic/spinlock.h"
 
 #define NVME_CLASS    PCI_CLASS_MASS_STORAGE
 #define NVME_SUBCLASS PCI_SUBCLASS_NVME
@@ -139,6 +140,7 @@ typedef struct {
     uint32_t lba_shift;    /* log2(lba_size) */
 
     uint16_t next_cid;
+    spinlock_t io_lock;   /* protects io_sq_tail, next_cid, completion polling */
 } nvme_ctrl_t;
 
 /* -------------------------------------------------------------------------- */
@@ -268,6 +270,7 @@ static bool submit_admin(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
 }
 
 static bool submit_io(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
+    uint64_t rflags = spinlock_acquire_irqsave(&ctrl->io_lock);
     uint16_t tail = ctrl->io_sq_tail;
     ctrl->io_sq[tail] = *cmd;
     mb();
@@ -294,6 +297,7 @@ static bool submit_io(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
                 if (ctrl->io_cq_head == 0)
                     ctrl->io_cq_phase ^= 1;
                 *ctrl->io_cq_doorbell = ctrl->io_cq_head;
+                spinlock_release_irqrestore(&ctrl->io_lock, rflags);
                 return false;
             }
             if (result) *result = cqe->dw0;
@@ -303,6 +307,7 @@ static bool submit_io(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
                 ctrl->io_cq_phase ^= 1;
             *ctrl->io_cq_doorbell = ctrl->io_cq_head;
             mb();
+            spinlock_release_irqrestore(&ctrl->io_lock, rflags);
             return true;
         }
     }
@@ -310,6 +315,7 @@ static bool submit_io(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
     kprintf("[nvme] io cmd %u timeout, cq[%u] dw0=%x ps=%x\n",
             cmd->dw0 & 0xFF, ctrl->io_cq_head,
             cqe->dw0, cqe->phase_status);
+    spinlock_release_irqrestore(&ctrl->io_lock, rflags);
     return false;
 }
 
@@ -459,6 +465,7 @@ block_dev_t *nvme_probe(void) {
     ctrl->max_q_entries    = (uint32_t)((cap >> 0)  & 0xFFFF) + 1;
     ctrl->timeout          = (uint32_t)((cap >> 24) & 0xFF);
     ctrl->next_cid         = 1;
+    /* io_lock is already zero-initialized (SPINLOCK_INIT = {0,0}) */
 
     uint32_t dstride = 4U << ctrl->doorbell_stride;
     ctrl->admin_sq_doorbell = (volatile uint32_t *)((uint8_t *)ctrl->bar + NVME_DBS + 0 * dstride);

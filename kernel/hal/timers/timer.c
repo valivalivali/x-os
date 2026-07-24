@@ -2,17 +2,52 @@
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/interrupts/idt.h"
 #include "kernel/hal/input/mouse.h"
+#include "kernel/hal/input/keyboard.h"
+#include "kernel/hal/input/input.h"
+#include "kernel/sched/sched.h"
+#include "kernel/lib/kprintf.h"
 
 #define PIT_FREQ   1193182u
 #define PIT_CH0    0x40
 #define PIT_CMD    0x43
+#define PS2_DATA   0x60
+#define PS2_STATUS 0x64
 
 static volatile uint64_t local_ticks = 0;
 static uint32_t hz = 1000;
 
+/* Global tick counter — incremented by BOTH the BSP PIT handler and
+ * AP LAPIC timer handlers.  This ensures timer_ticks() advances even
+ * if the PIT stops firing on the BSP (a race that can occur during
+ * SMP startup when APs enable their LAPICs before the BSP). */
+static volatile uint64_t g_global_ticks = 0;
+
+void timer_tick_global(void) {
+    __atomic_add_fetch(&g_global_ticks, 1, __ATOMIC_RELAXED);
+}
+
+/* Poll PS/2 keyboard from the timer tick.  In LAPIC/SMP mode, IRQ1
+ * may not be reliably delivered (LINT0=ExtINT pass-through only goes
+ * to the BSP, which may be busy in userspace).  Polling the status
+ * port from the timer ensures keyboard input works on all CPUs.
+ * Uses ps2_lock to prevent racing with mouse_poll on PS/2 I/O ports. */
+static void keyboard_poll(void) {
+    uint64_t rflags = spinlock_acquire_irqsave(&ps2_lock);
+    for (int i = 0; i < 8; i++) {
+        uint8_t st = inb(PS2_STATUS);
+        if (!(st & 0x01)) break;       /* output buffer empty */
+        if (st & 0x20) break;          /* mouse data, not keyboard */
+        uint8_t data = inb(PS2_DATA);
+        keyboard_handle_byte(data);
+    }
+    spinlock_release_irqrestore(&ps2_lock, rflags);
+}
+
 static void timer_tick(void) {
     local_ticks++;
+    timer_tick_global();
     mouse_poll();
+    keyboard_poll();
     /* Update FreeBSD time counters for ARP expiry and IP fragment timeouts */
     extern volatile long time_uptime;
     extern volatile long time_second;
@@ -31,6 +66,14 @@ static void timer_tick(void) {
     /* Poll virtio-net for received packets and feed into FreeBSD stack */
     extern void vioif_rx_poll(void);
     vioif_rx_poll();
+    /* Preemptive scheduling on BSP — skip if process requested no preemption.
+     * Use try-lock to avoid freezing if another CPU holds sched_lock. */
+    extern bool sched_yield_try(void);
+    extern void sched_check_canaries(void);
+    sched_check_canaries();
+    proc_t *cur = proc_current();
+    if (!cur || !cur->no_preempt)
+        sched_yield_try();
 }
 
 void timer_init(uint32_t frequency_hz) {
@@ -46,7 +89,7 @@ void timer_init(uint32_t frequency_hz) {
     irq_install(0, timer_tick);
 }
 
-uint64_t timer_ticks(void) { return local_ticks; }
+uint64_t timer_ticks(void) { return g_global_ticks; }
 
 void timer_sleep_ms(uint64_t ms) {
     uint64_t target = local_ticks + (ms * hz) / 1000u;

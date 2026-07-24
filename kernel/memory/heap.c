@@ -2,7 +2,10 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/hal/apic/spinlock.h"
 #include <stdint.h>
+
+static spinlock_t heap_lock = SPINLOCK_INIT;
 
 /* 64 MiB arena is plenty for the back buffer + window surfaces. */
 #define HEAP_FRAMES (64ULL * 1024 * 1024 / PAGE_SIZE)
@@ -62,6 +65,7 @@ void *kmalloc(size_t size) {
     if (size == 0) return NULL;
     size_t need = ALIGN16(size) + HDR_SIZE;
 
+    uint64_t rflags = spinlock_acquire_irqsave(&heap_lock);
     block_t **pp = &free_head;
     for (block_t *b = free_head; b; pp = &b->next, b = b->next) {
         if (b->size < need) continue;
@@ -76,8 +80,10 @@ void *kmalloc(size_t size) {
             *pp = b->next;
         }
         used_sz += b->size;
+        spinlock_release_irqrestore(&heap_lock, rflags);
         return (uint8_t *)b + HDR_SIZE;
     }
+    spinlock_release_irqrestore(&heap_lock, rflags);
     kprintf("[heap] kmalloc(%lu) failed (used %lu / %lu)\n",
             (uint64_t)size, (uint64_t)used_sz, (uint64_t)arena_sz);
     return NULL;
@@ -86,8 +92,10 @@ void *kmalloc(size_t size) {
 void kfree(void *ptr) {
     if (!ptr) return;
     block_t *blk = (block_t *)((uint8_t *)ptr - HDR_SIZE);
+    uint64_t rflags = spinlock_acquire_irqsave(&heap_lock);
     used_sz -= blk->size;
     insert_free(blk);
+    spinlock_release_irqrestore(&heap_lock, rflags);
 }
 
 void *kcalloc(size_t n, size_t size) {

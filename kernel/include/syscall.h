@@ -111,6 +111,7 @@
 #define SYS_GETPPID     94
 #define SYS_SIGRETURN   95
 #define SYS_SIGSUSPEND  96
+#define SYS_NO_PREEMPT  97  /* set/clear no-preempt flag for current process */
 
 #define SYSCALL_MAX          97
 
@@ -297,3 +298,4 @@ int sys_net_recv(void *buf, int maxlen);
  * Implemented in kernel/arch/x86_64/syscall.c */
 void syscall_handler(void);
 void syscall_init(void);
+void syscall_init_ap(void); /* Per-CPU syscall MSR init for APs */

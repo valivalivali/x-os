@@ -18,11 +18,20 @@ struct handoff_cpu_info;
  */
 typedef struct cpu_data {
     uint64_t  rsp0;            /* offset 0  — GS:0, per-CPU kernel RSP0 */
-    void     *current_proc;    /* offset 8  — GS:8, current process */
+    volatile void *current_proc;    /* offset 8  — GS:8, current process */
     uint32_t  cpu_id;          /* offset 16 — GS:16, logical CPU index (0 = BSP) */
     uint32_t  lapic_id;        /* offset 20 — GS:20, Local APIC ID */
     bool      is_bsp;          /* offset 24 */
     bool      online;          /* offset 25 */
+    uint8_t   _pad[6];         /* align to 32 */
+
+    /* Per-CPU user GPRs saved at syscall entry for fork().
+     * Accessed via GS: in syscall_entry.S. */
+    uint64_t  user_rbx;        /* offset 32 — GS:32 */
+    uint64_t  user_rbp;        /* offset 40 — GS:40 */
+    uint64_t  user_r12;        /* offset 48 — GS:48 */
+    uint64_t  user_r13;        /* offset 56 — GS:56 */
+    uint64_t  user_r14;        /* offset 64 — GS:64 */
 
     /* Per-CPU GDT and TSS */
     void     *gdt;             /* pointer to this CPU's GDT array */
@@ -33,6 +42,21 @@ typedef struct cpu_data {
 
     /* Per-CPU timer ticks counter */
     uint64_t  local_ticks;
+
+    /* Saved rflags for sched_yield — context_switch changes stacks,
+     * so we can't keep rflags as a local variable across the switch. */
+    uint64_t  saved_rflags;
+
+    /* Per-CPU TSS RSP0 stack top — the "idle" RSP0 used when no ring-3
+     * process is running.  When switching to a kernel-only process (idle),
+     * TSS RSP0 must be reset to this value so interrupts land on the
+     * per-CPU TSS stack, not on a stale ring-3 process's kernel stack. */
+    uint64_t  tss_rsp0;        /* offset 112 — GS:112 */
+
+    /* Per-CPU idle proc (pid=0) — used when all real processes are
+     * blocked.  Needed so sched_yield can context-switch to idle when
+     * the current process calls proc_sleep. */
+    void     *idle_proc;       /* offset 120 — GS:120 */
 } cpu_data_t;
 
 /* Global CPU array — indexed by logical CPU ID. */
@@ -59,6 +83,28 @@ static inline uint32_t cpu_current_id(void) {
     uint32_t id;
     __asm__ volatile("movl %%gs:16, %0" : "=r"(id));
     return id;
+}
+
+/* Update the kernel RSP0 used by the CPU when an interrupt/syscall
+ * arrives from ring-3.  This must update BOTH the per-CPU software
+ * shadow (GS:0) AND the actual TSS hardware field — the CPU reads
+ * RSP0 from the TSS descriptor, not from GS:0.
+ *
+ * TSS layout (packed): uint32_t reserved0; uint64_t rsp0; ...
+ * So rsp0 is at byte offset 4 from the TSS pointer.
+ *
+ * For APs, cpu->tss points to the per-CPU TSS.
+ * For the BSP, cpu->tss is NULL and we fall back to gdt_set_rsp0(). */
+void gdt_set_rsp0(uint64_t rsp0);
+
+static inline void cpu_set_rsp0(uint64_t rsp0) {
+    cpu_data_t *cpu = this_cpu();
+    cpu->rsp0 = rsp0;
+    if (cpu->tss) {
+        *(uint64_t *)((uint8_t *)cpu->tss + 4) = rsp0;
+    } else {
+        gdt_set_rsp0(rsp0);
+    }
 }
 
 /* Per-CPU GDT/TSS setup — called once per CPU.

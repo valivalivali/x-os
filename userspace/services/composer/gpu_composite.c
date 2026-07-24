@@ -239,7 +239,9 @@ int gpu_comp_init(int32_t fb_w, int32_t fb_h, uint64_t fb_phys, uint64_t fb_size
     (void)fb_phys;
     (void)fb_size;
 
+    gc_log("[gpu_comp] init entered\n");
     if (!sys_gpu_virgl_present()) {
+        gc_log("[gpu_comp] no virgl, returning 0\n");
         return 0;
     }
 

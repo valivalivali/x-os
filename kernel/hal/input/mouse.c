@@ -12,6 +12,7 @@
 #include "kernel/hal/input/input.h"
 #include "kernel/arch/x86_64/io.h"
 #include "kernel/interrupts/idt.h"
+#include "kernel/hal/apic/spinlock.h"
 
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
@@ -19,6 +20,12 @@
 static uint8_t cycle = 0;
 static uint8_t packet[4];
 static int packet_size = 3; /* 4 after IntelliMouse enable */
+
+/* Spinlock protects PS/2 port access and mouse packet state from concurrent
+ * access by the PIT handler, LAPIC timer handlers, and IRQ12 ISR on
+ * multiple CPUs.  Also used by keyboard_poll to prevent racing with
+ * mouse_poll on PS/2 I/O ports. */
+spinlock_t ps2_lock = SPINLOCK_INIT;
 
 static void mouse_process_byte(uint8_t data) {
     if (cycle == 0) {
@@ -67,13 +74,17 @@ emit:
 }
 
 static void mouse_isr(void) {
+    uint64_t rflags = spinlock_acquire_irqsave(&ps2_lock);
     uint8_t data = inb(PS2_DATA);
     mouse_process_byte(data);
+    spinlock_release_irqrestore(&ps2_lock, rflags);
 }
 
 /* Called from timer tick (1000 Hz) as a polling fallback.
- * Checks the PS/2 status port for mouse data and processes it. */
+ * Checks the PS/2 status port for mouse data and processes it.
+ * Safe to call from any CPU's timer handler — protected by ps2_lock. */
 void mouse_poll(void) {
+    uint64_t rflags = spinlock_acquire_irqsave(&ps2_lock);
     for (int i = 0; i < 16; i++) {
         uint8_t st = inb(PS2_STATUS);
         if (!(st & 0x01)) break;       /* output buffer empty */
@@ -81,6 +92,7 @@ void mouse_poll(void) {
         uint8_t data = inb(PS2_DATA);
         mouse_process_byte(data);
     }
+    spinlock_release_irqrestore(&ps2_lock, rflags);
 }
 
 static uint8_t mouse_read_ack(void) {

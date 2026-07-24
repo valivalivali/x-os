@@ -87,6 +87,32 @@ void critical_exit(void);
 /* Include the real sys/pcpu.h for zpcpu_get and PCPU macros */
 #include <sys/pcpu.h>
 
+/* Override PCPU macros to use __pcpu pointer instead of %gs: segment.
+ * This allows GS base to be used for X OS per-CPU cpu_data_t while
+ * FreeBSD code accesses its pcpu struct via the __pcpu global pointer. */
+#undef get_pcpu
+#undef __PCPU_PTR
+#undef __PCPU_GET
+#undef __PCPU_SET
+#undef __PCPU_ADD
+#define get_pcpu() (__pcpu)
+#define __PCPU_PTR(name) (&__pcpu->name)
+#define __PCPU_GET(name) (__pcpu->name)
+#define __PCPU_SET(name, val) do { __pcpu->name = (val); } while (0)
+#define __PCPU_ADD(name, val) do { __pcpu->name += (val); } while (0)
+
+/* Override zpcpu macros that use %gs: to use pointer-based access */
+#undef zpcpu_add
+#undef zpcpu_sub
+#undef zpcpu_set_protected
+#undef zpcpu_add_protected
+#undef zpcpu_sub_protected
+#define zpcpu_add(base, n) do { *(base) += (n); } while (0)
+#define zpcpu_sub(base, n) do { *(base) -= (n); } while (0)
+#define zpcpu_set_protected(base, val) do { *(base) = (val); } while (0)
+#define zpcpu_add_protected(base, n) zpcpu_add(base, n)
+#define zpcpu_sub_protected(base, n) zpcpu_sub(base, n)
+
 /* Include sys/callout.h for callout function declarations */
 #include <sys/callout.h>
 

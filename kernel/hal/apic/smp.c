@@ -3,6 +3,7 @@
 #include "kernel/hal/apic/spinlock.h"
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/interrupts/idt.h"
+#include "kernel/sched/sched.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/vmm.h"
@@ -45,11 +46,11 @@ typedef struct __attribute__((packed)) {
 static tss_t      per_cpu_tss[MAX_CPUS];
 static cpu_data_t per_cpu_data[MAX_CPUS];
 
-/* Per-CPU 16 KiB RSP0 stacks */
-static uint8_t    per_cpu_tss_stack[MAX_CPUS][16384] __attribute__((aligned(16)));
+/* Per-CPU 32 KiB RSP0 stacks */
+static uint8_t    per_cpu_tss_stack[MAX_CPUS][32768] __attribute__((aligned(16)));
 
 /* Per-CPU idle stacks (for AP idle loops) */
-static uint8_t    per_cpu_idle_stack[MAX_CPUS][16384] __attribute__((aligned(16)));
+static uint8_t    per_cpu_idle_stack[MAX_CPUS][32768] __attribute__((aligned(16)));
 
 /* Build a TSS descriptor (16 bytes, spanning two GDT slots). */
 static void set_tss_desc(uint64_t *g, uint64_t base, uint32_t limit) {
@@ -111,6 +112,7 @@ void smp_setup_cpu_gdt(cpu_data_t *cpu, void *gdt_ptr, void *tss_ptr) {
     cpu->gdt = gdt_ptr;
     cpu->tss = tss_ptr;
     cpu->rsp0 = tss->rsp0;
+    cpu->tss_rsp0 = tss->rsp0;  /* save idle RSP0 for non-ring-3 switches */
 }
 
 /* Set the GS base register to point to per-CPU data.
@@ -153,17 +155,36 @@ void ap_entry(struct handoff_cpu_info *info) {
     extern void enable_sse(void);
     enable_sse();
 
+    /* Configure syscall MSRs (EFER.SCE, STAR, LSTAR, SFMASK) for this CPU. */
+    extern void syscall_init_ap(void);
+    syscall_init_ap();
+
+    /* Initialize per-CPU scheduler state (idle proc). */
+    extern void sched_init_ap(void);
+    sched_init_ap();
+
     /* Mark CPU as online */
     cpu->online = true;
 
     kprintf("[smp] CPU %u (APIC ID %u) online\n", cpu_id, cpu->lapic_id);
 
-    /* AP idle loop — APs don't run processes yet.
-     * They idle with interrupts disabled since they have no interrupt
-     * sources (LAPIC LVT entries are masked, no PIC connection).
-     * Future: enable LAPIC timer and IPI handling for SMP scheduling. */
+    /* Enable LAPIC timer for scheduling preemption (1000 Hz).
+     * QEMU LAPIC timer runs at ~1GHz with divide-by-1, so initial
+     * count = 1000000 for 1ms period (1000 Hz). */
+    lapic_timer_init(LAPIC_TIMER_VECTOR, 4000000); /* 4ms = 250Hz */
+
+    /* Enable interrupts and enter scheduler idle loop.
+     * The LAPIC timer will fire periodically and call sched_yield,
+     * which will pick processes from the shared ready queue.
+     * IPI_RESCHED from other CPUs will also wake us up. */
+    __asm__ volatile("sti");
+
+    /* AP idle loop — wait for timer/IPI to schedule us. */
     for (;;) {
-        __asm__ volatile("cli; hlt");
+        __asm__ volatile("hlt");
+        /* On wake (timer/IPI), the interrupt handler calls sched_yield
+         * which may context-switch to a real process. When that process
+         * yields back, we return here and halt again. */
     }
 }
 
@@ -189,6 +210,8 @@ void smp_init(void) {
     per_cpu_data[0].online = true;
     per_cpu_data[0].idle_stack = per_cpu_idle_stack[0];
     per_cpu_data[0].rsp0 = (uint64_t)(per_cpu_tss_stack[0] + sizeof(per_cpu_tss_stack[0]));
+    per_cpu_data[0].tss_rsp0 = per_cpu_data[0].rsp0;  /* save idle RSP0 */
+    per_cpu_data[0].tss = gdt_get_tss();  /* BSP uses gdt.c's TSS, not per_cpu_tss */
     g_cpus[0] = &per_cpu_data[0];
 
     /* Set GS base for BSP so this_cpu() works */

@@ -24,9 +24,14 @@ static const char map_upper[128] = {
 
 static bool shift = false;
 static bool e0    = false;
+static volatile uint32_t kbd_count = 0;
 
-static void keyboard_isr(void) {
-    uint8_t sc = inb(0x60);
+/* Shared byte handler — called from both the IRQ1 ISR and the timer
+ * poll path.  Not re-entrant: the ISR can't fire while the poll is
+ * running because both are on the BSP and the poll runs with
+ * interrupts disabled (timer context). */
+void keyboard_handle_byte(uint8_t sc) {
+    kbd_count++;
 
     if (sc == 0xE0) { e0 = true; return; }
 
@@ -62,8 +67,14 @@ static void keyboard_isr(void) {
     input_push(&e);
 }
 
+static void keyboard_isr(void) {
+    keyboard_handle_byte(inb(0x60));
+}
+
 void keyboard_init(void) {
     ps2_write_data(0xF4);     /* enable scanning */
     (void)ps2_read_data();    /* ACK */
     irq_install(1, keyboard_isr);
 }
+
+uint32_t keyboard_get_count(void) { return kbd_count; }
