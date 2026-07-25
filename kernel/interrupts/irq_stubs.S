@@ -4,6 +4,14 @@
 /* Assembly stubs for IRQ 0-15.
  * The CPU pushes an interrupt frame (RIP, CS, RFLAGS, RSP, SS from ring-3).
  * We save all GPRs, call irq_dispatch_asm(irq), restore, and iretq.
+ *
+ * Deferred preemption: after the handler returns, if we're returning to
+ * userspace (CS=0x1B in IRETQ frame) and need_resched is set, call
+ * sched_yield before restoring GPRs.  The GPRs are still saved on the
+ * stack, so sched_yield (a C function) can clobber caller-saved regs
+ * safely.  If sched_yield context-switches, this proc resumes here later,
+ * pops GPRs, and iretq to the original userspace.  This follows the
+ * XNU AST / Linux TIF_NEED_RESCHED pattern.
  */
 
 .macro IRQ_STUB num
@@ -28,6 +36,15 @@ irq\num\():
 
     movq $\num, %rdi
     call irq_dispatch_asm
+
+    /* Deferred preemption check — only when returning to userspace.
+     * IRETQ frame is at rsp+120 (15 GPRs × 8 bytes).
+     * CS is at rsp+128.  User CS = 0x1B.
+     * Call sched_check_resched() which checks need_resched AND no_preempt. */
+    cmpq $0x1B, 128(%rsp)
+    jne .Lirq_no_resched_\num
+    call sched_check_resched    /* GPRs still saved on stack — safe */
+.Lirq_no_resched_\num:
 
     popq %r15
     popq %r14

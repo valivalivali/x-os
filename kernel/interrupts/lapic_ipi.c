@@ -12,15 +12,16 @@
  * The assembly stub sends LAPIC EOI after the handler returns.
  */
 
-/* Reschedule IPI — wake up the target CPU so it runs sched_yield. */
+/* Reschedule IPI — set need_resched flag so the target CPU reschedules
+ * at the next safe point (syscall return, interrupt return, idle loop).
+ * This follows the XNU cause_ast_check / Linux smp_send_reschedule pattern:
+ * the IPI just signals that a reschedule is needed, it doesn't do the
+ * actual context switch (which could deadlock if the current process
+ * holds IPC or scheduler locks). */
 void ipi_resched_handler(void) {
-    /* Respect no_preempt — the current process may be in a critical
-     * initialization section (e.g., composer GPU init).  Skipping the
-     * yield here is safe: the next timer tick will reschedule. */
-    proc_t *cur = proc_current();
-    if (cur && cur->no_preempt) return;
-    /* Use try-lock to avoid deadlock if another CPU holds sched_lock. */
-    sched_yield_try();
+    /* Never discard a remote reschedule request.  The safe return path will
+     * consume it after any no_preempt critical section ends. */
+    this_cpu()->need_resched = 1;
 }
 
 /* TLB shootdown IPI — flush the TLB on this CPU. */
@@ -47,10 +48,11 @@ void ipi_call_func_handler(void) {
  * Called on APs when the LAPIC timer fires.
  * BSP uses the PIT timer for device polling and scheduling.
  *
- * IMPORTANT: Use try-lock for sched_yield.  If another CPU is in the
- * middle of a context_switch (holding sched_lock), spinning here would
- * block all further timer interrupts on this CPU, freezing timer_ticks()
- * and causing all sleeps to hang permanently. */
+ * Deferred preemption: set need_resched flag instead of calling
+ * sched_yield_try().  The flag is checked at safe points (syscall
+ * return, interrupt return to userspace, idle loop).  This eliminates
+ * sched_lock contention from timer handlers and prevents context
+ * switches while a process holds IPC or scheduler locks. */
 void lapic_timer_handler(void) {
     cpu_data_t *cpu = this_cpu();
     cpu->local_ticks++;
@@ -69,11 +71,13 @@ void lapic_timer_handler(void) {
     extern void sched_check_canaries(void);
     sched_check_canaries();
 
-    /* Preemptive scheduling: yield on every tick — unless the current
-     * process requested no preemption (e.g., composer during GPU init).
-     * Use try-lock to avoid freezing all timer ticks if another CPU
-     * is holding sched_lock during a context_switch. */
-    proc_t *cur = proc_current();
-    if (!cur || !cur->no_preempt)
-        sched_yield_try();
+    /* Set need_resched flag — the actual reschedule happens at the
+     * next safe point (syscall return, interrupt return, idle loop).
+     * Also wake up expired sleepers so NSLEEP works without requiring
+     * another process to voluntarily yield. */
+    extern void sched_wake_sleepers(void);
+    sched_wake_sleepers();
+    /* Timer expiry records a deferred request even while preemption is
+     * disabled; sched_check_resched() consumes it at the first safe point. */
+    cpu->need_resched = 1;
 }

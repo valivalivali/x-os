@@ -44,6 +44,8 @@ static int register_shell_bridge(void) {
     return 0;
 }
 
+static void drain_bridge(void);  /* forward decl — send_shell_byte calls it */
+
 static void send_shell_byte(char c) {
     if (!g_shell_connected || !g_shell_stdin) return;
     ipc_msg_t msg;
@@ -52,12 +54,15 @@ static void send_shell_byte(char c) {
     msg.sender_pid = syscall0(SYS_PROC_PID);
     msg.payload_len = 1;
     msg.payload[0] = (uint8_t)c;
-    /* Non-blocking: if the shell's input port is full, drop the byte.
-     * Bounded retries prevent deadlock with the shell's bridge_write
-     * (which can block trying to send output to our port). */
-    for (int tries = 0; tries < 4; tries++) {
+    /* If the shell's stdin port is full, the shell is likely stuck in
+     * bridge_write trying to send output to our bridge port.  Drain
+     * our bridge port between retries so the shell can proceed, drain
+     * its stdin, and accept our byte.  This breaks the circular deadlock
+     * that freezes typing with 8 CPUs. */
+    for (int tries = 0; tries < 16; tries++) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
+        drain_bridge();
         syscall0(SYS_YIELD);
     }
 }
@@ -369,6 +374,7 @@ void terminal_main(void) {
     memset(&dm, 0, sizeof(dm));
     dm.type = WM_DESTROY_SURFACE;
     dm.surface_idx = g_ctx.surface_idx;
+    dm.generation = g_ctx.surface_generation;
     ipc_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = IPC_MSG_REQUEST;

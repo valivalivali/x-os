@@ -94,6 +94,7 @@ typedef struct {
     int      level;             /* SURF_LEVEL_* */
     uint32_t z_seq;             /* paint/hit-test order within level; higher = raised more recently */
     int      valid;             /* 0 = dead/slot free */
+    uint32_t generation;        /* increments whenever this slot is reused */
     uint32_t owner_pid;         /* PID of app that renders into this */
     uint64_t reply_port;        /* port to send mouse events / surface_ready */
     /* Dirty rect tracking (surface-local coords; 0,0,0,0 = full surface) */
@@ -128,6 +129,7 @@ static int         focused_idx = -1;
 /* Monotonic counter for surface_info_t.z_seq — raising a surface (focus/
  * click/create) bumps it above every other surface in its level. */
 static uint32_t    g_z_seq_counter = 0;
+static uint32_t    g_surface_generation_counter = 0;
 static int         drag_off_x, drag_off_y;
 /* While LMB is down on a surface, keep forwarding moves/ups to it even if
  * the cursor leaves its bounds — required for egui::Window drag. */
@@ -640,6 +642,8 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
               : SURF_LEVEL_NORMAL;
     sp->z_seq = ++g_z_seq_counter;  /* new surfaces raise above existing ones in their level */
     sp->valid = 1;
+    sp->generation = ++g_surface_generation_counter;
+    if (sp->generation == 0) sp->generation = ++g_surface_generation_counter;
     sp->owner_pid = owner_pid;
     sp->reply_port = reply_port;
     sp->pixels = NULL;
@@ -674,6 +678,7 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
             sr.type = COMPOSER_SURFACE_READY;
             sr.buf_vaddr = 0;  /* GPU surface: no shared buffer */
             sr.surface_idx = (uint32_t)slot;
+            sr.generation = sp->generation;
             ipc_msg_t smsg;
             smsg.type = IPC_MSG_EVENT;
             smsg.sender_pid = 0;
@@ -710,6 +715,7 @@ static void spawn_surface_custom(int32_t x, int32_t y, uint32_t w, uint32_t h,
                 sr.type = COMPOSER_SURFACE_READY;
                 sr.buf_vaddr = buf_vaddr;
                 sr.surface_idx = (uint32_t)slot;
+                sr.generation = sp->generation;
                 ipc_msg_t smsg;
                 smsg.type = IPC_MSG_EVENT;
                 smsg.sender_pid = 0;
@@ -844,19 +850,76 @@ static int compute_move_dirty_rect(int *dx0, int *dy0, int *dx1, int *dy1) {
     return moved;
 }
 
+/* Tear down a surface exactly once.  Every destruction route (client close,
+ * dock kill, and owner-process death) goes through here so GPU views, input
+ * ownership, focus, and scanout damage cannot diverge. */
+static int destroy_surface(int idx, int acknowledge_client) {
+    if (idx < 0 || idx >= surface_count) return 0;
+    surface_info_t *s = &surfaces[idx];
+    if (!s->valid) return 0;
+
+    int was_overlay = (s->level == SURF_LEVEL_OVERLAY);
+    int was_gpu = s->is_gpu;
+    int ex0 = s->x, ey0 = s->y;
+    int ex1 = s->x + (int)s->w;
+    int ey1 = s->y + surface_total_h(s);
+    uint32_t generation = s->generation;
+    uint64_t reply_port = s->reply_port;
+
+    /* The compositor samples GPU surfaces through this view.  The view must
+     * disappear before the client is allowed to release its render target. */
+    if (s->gpu_sv_handle)
+        gpu_comp_destroy_gpu_surface_sv(s->gpu_sv_handle);
+    gpu_comp_destroy_surface(idx);
+
+    if (focused_idx == idx) focused_idx = -1;
+    if (drag_idx == idx) drag_idx = -1;
+    if (pointer_grab_idx == idx) pointer_grab_idx = -1;
+
+    /* GPU and overlay pixels are cached only in scanout; restore the layer
+     * below before reusing this slot. */
+    damage_add(ex0, ey0, ex1, ey1, (was_overlay || was_gpu) ? 1 : 0);
+    if (!was_overlay) z_changed = 1;
+
+    if (acknowledge_client && reply_port) {
+        wm_surface_destroyed_msg_t done = {
+            .type = WM_SURFACE_DESTROYED,
+            .surface_idx = (uint32_t)idx,
+            .generation = generation,
+        };
+        ipc_msg_t msg;
+        msg.type = IPC_MSG_EVENT;
+        msg.sender_pid = 0;
+        for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) msg.caps[i] = CAP_NULL;
+        msg.cap_count = 0;
+        msg.payload_len = sizeof(done);
+        uint8_t *p = (uint8_t *)&done;
+        for (size_t i = 0; i < sizeof(done); i++) msg.payload[i] = p[i];
+        (void)sys_port_send(reply_port, &msg);
+    }
+
+    s->valid = 0;
+    s->pixels = NULL;
+    s->reply_port = 0;
+    s->owner_pid = 0;
+    s->is_gpu = 0;
+    s->gpu_res_id = 0;
+    s->gpu_ctx_id = 0;
+    s->gpu_sv_handle = 0;
+    s->gpu_tex_w = 0;
+    s->gpu_tex_h = 0;
+    return 1;
+}
+
 /* Check if any app-owned surfaces belong to dead processes.
- * Mark invalid but DO NOT compact — app surface indices must stay stable.
- * Returns 1 if anything changed. */
+ * Do not compact: surface indices remain stable for live clients. */
 static int cull_dead_surfaces(void) {
     int changed = 0;
     for (int i = 0; i < MAX_SURFACES; i++) {
         surface_info_t *s = &surfaces[i];
         if (!s->valid || s->owner_pid == 0) continue;
         if (!sys_proc_exists(s->owner_pid)) {
-            gpu_comp_destroy_surface(i);
-            s->valid = 0;
-            s->pixels = NULL;
-            changed = 1;
+            changed |= destroy_surface(i, 0);
         }
     }
     if (capture_active && capture_owner_pid != 0 &&
@@ -1469,37 +1532,16 @@ void display_main(void) {
                 }
                 if (msg_type == COMPOSER_DESTROY_SURFACE) {
                     log("[composer] IPC: DESTROY_SURFACE\n");
-                    if (msg.payload_len >= 8) {
-                        uint32_t idx = ((uint32_t *)msg.payload)[1];
+                    if (msg.payload_len >= sizeof(wm_destroy_msg_t)) {
+                        wm_destroy_msg_t *dm = (wm_destroy_msg_t *)msg.payload;
+                        uint32_t idx = dm->surface_idx;
                         if (idx < (uint32_t)surface_count) {
                             surface_info_t *ds = &surfaces[idx];
-                            int was_overlay = (ds->level == SURF_LEVEL_OVERLAY);
-                            int was_gpu = ds->is_gpu;
-                            int ex0 = ds->x, ey0 = ds->y;
-                            int ex1 = ds->x + (int)ds->w;
-                            int ey1 = ds->y + surface_total_h(ds);
-                            /* Drop sampler view before the app frees its RT —
-                             * dangling VirGL views freeze QEMU on the next present. */
-                            if (ds->gpu_sv_handle)
-                                gpu_comp_destroy_gpu_surface_sv(ds->gpu_sv_handle);
-                            gpu_comp_destroy_surface((int)idx);
-                            if (focused_idx == (int)idx) focused_idx = -1;
-                            if (drag_idx == (int)idx) drag_idx = -1;
-                            if (pointer_grab_idx == (int)idx) pointer_grab_idx = -1;
-                            ds->valid = 0;
-                            ds->pixels = NULL;
-                            ds->is_gpu = 0;
-                            ds->gpu_res_id = 0;
-                            ds->gpu_ctx_id = 0;
-                            ds->gpu_sv_handle = 0;
-                            ds->gpu_tex_w = 0;
-                            ds->gpu_tex_h = 0;
-                            /* GPU/overlay pixels live only in scanout — restore L1. */
-                            damage_add(ex0, ey0, ex1, ey1,
-                                       (was_overlay || was_gpu) ? 1 : 0);
-                            if (!was_overlay)
-                                z_changed = 1;
-                            log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
+                            if (ds->valid && ds->generation == dm->generation &&
+                                ds->owner_pid == msg.sender_pid) {
+                                destroy_surface((int)idx, 1);
+                                log_int("[composer]  destroyed surface ", (int32_t)idx, "\n");
+                            }
                         }
                     }
                 }
@@ -1550,11 +1592,7 @@ void display_main(void) {
                         uint32_t target_pid = ((uint32_t *)msg.payload)[1];
                         for (int i = 0; i < MAX_SURFACES; i++) {
                             if (surfaces[i].valid && surfaces[i].owner_pid == target_pid) {
-                                gpu_comp_destroy_surface(i);
-                                surfaces[i].valid = 0;
-                                surfaces[i].pixels = NULL;
-                                z_changed = 1;
-                                break;
+                                destroy_surface(i, 0);
                             }
                         }
                     }
@@ -1577,7 +1615,8 @@ void display_main(void) {
                         surface_dirty_msg_t *sd = (surface_dirty_msg_t *)msg.payload;
                         if (sd->surface_idx < (uint32_t)surface_count) {
                             surface_info_t *s = &surfaces[sd->surface_idx];
-                            if (s->valid) {
+                            if (s->valid && s->generation == sd->generation &&
+                                s->owner_pid == msg.sender_pid) {
                                 s->dirty = 1;
                                 /* OVERLAY may set restore when switching fly-outs
                                  * (clear old fly-out rect from cached scanout).
@@ -1602,7 +1641,9 @@ void display_main(void) {
                             (wm_surface_gpu_ready_msg_t *)msg.payload;
                         if (gr->surface_idx < (uint32_t)surface_count) {
                             surface_info_t *s = &surfaces[gr->surface_idx];
-                            if (s->valid && s->is_gpu) {
+                            if (s->valid && s->is_gpu &&
+                                s->generation == gr->generation &&
+                                s->owner_pid == msg.sender_pid) {
                                 s->gpu_res_id = gr->gpu_res_id;
                                 s->gpu_ctx_id = gr->gpu_ctx_id;
                                 if (msg.payload_len >= sizeof(wm_surface_gpu_ready_msg_t) &&
@@ -1990,10 +2031,11 @@ void display_main(void) {
         old_cx = draw_x; old_cy = draw_y;
         first = 0;
         if (heartbeat <= 5) log("[composer] step3 ok\n");
-        /* Sleep 1ms to let other processes run.  no_preempt blocks timer
-         * preemption, so we must explicitly sleep each frame.  Using
-         * NSLEEP instead of SYS_YIELD reduces sched_lock contention
-         * because proc_sleep releases the lock before context_switch. */
+        /* Sleep 1ms to let other processes run and to throttle the
+         * composer loop.  Without this, the composer busy-spins and
+         * floods the GPU with cursor updates, causing cursor glitching.
+         * sched_wake_sleepers() in the timer handler sets need_resched
+         * to wake the idle loop which resumes the composer. */
         syscall1(12, 1);  /* SYS_NSLEEP, 1ms */
     }
 }

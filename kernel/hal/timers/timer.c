@@ -5,6 +5,7 @@
 #include "kernel/hal/input/keyboard.h"
 #include "kernel/hal/input/input.h"
 #include "kernel/sched/sched.h"
+#include "kernel/hal/apic/smp.h"
 #include "kernel/lib/kprintf.h"
 
 #define PIT_FREQ   1193182u
@@ -66,14 +67,21 @@ static void timer_tick(void) {
     /* Poll virtio-net for received packets and feed into FreeBSD stack */
     extern void vioif_rx_poll(void);
     vioif_rx_poll();
-    /* Preemptive scheduling on BSP — skip if process requested no preemption.
-     * Use try-lock to avoid freezing if another CPU holds sched_lock. */
-    extern bool sched_yield_try(void);
+    /* Deferred preemption: set need_resched flag instead of calling
+     * sched_yield_try().  The flag is checked at safe points (syscall
+     * return, interrupt return to userspace, idle loop).  This follows
+     * the XNU AST / Linux TIF_NEED_RESCHED pattern and eliminates
+     * sched_lock contention from 8 CPUs × 1000Hz timer ticks.
+     * Also wake up expired sleepers so NSLEEP works without requiring
+     * another process to voluntarily yield. */
     extern void sched_check_canaries(void);
+    extern void sched_wake_sleepers(void);
     sched_check_canaries();
-    proc_t *cur = proc_current();
-    if (!cur || !cur->no_preempt)
-        sched_yield_try();
+    sched_wake_sleepers();
+    /* Preserve the request across no_preempt sections.  Clearing it here
+     * would lose a timer preemption in exactly the same way as a lost AST or
+     * TIF_NEED_RESCHED notification. */
+    this_cpu()->need_resched = 1;
 }
 
 void timer_init(uint32_t frequency_hz) {
@@ -90,6 +98,14 @@ void timer_init(uint32_t frequency_hz) {
 }
 
 uint64_t timer_ticks(void) { return g_global_ticks; }
+
+/* Approximate tick rate of g_global_ticks.  With 1 BSP at 1000Hz and
+ * N APs at 250Hz, this is 1000 + N*250.  Used by proc_sleep to convert
+ * milliseconds to the correct number of global ticks. */
+uint64_t timer_ticks_hz(void) {
+    extern uint32_t g_cpu_count;
+    return 1000 + (uint64_t)(g_cpu_count > 1 ? (g_cpu_count - 1) * 250 : 0);
+}
 
 void timer_sleep_ms(uint64_t ms) {
     uint64_t target = local_ticks + (ms * hz) / 1000u;

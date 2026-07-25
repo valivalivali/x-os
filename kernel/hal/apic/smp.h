@@ -57,6 +57,14 @@ typedef struct cpu_data {
      * blocked.  Needed so sched_yield can context-switch to idle when
      * the current process calls proc_sleep. */
     void     *idle_proc;       /* offset 120 — GS:120 */
+
+    /* Per-CPU need_resched flag — set by timer/IPI handlers, checked
+     * at safe points (syscall return, interrupt return to userspace,
+     * idle loop).  Follows the XNU AST / Linux TIF_NEED_RESCHED pattern:
+     * the timer handler sets the flag instead of calling sched_yield_try(),
+     * eliminating sched_lock contention from 8 CPUs × 1000Hz timer ticks
+     * and preventing context switches while holding IPC/scheduler locks. */
+    volatile uint64_t need_resched;  /* offset 128 — GS:128 */
 } cpu_data_t;
 
 /* Global CPU array — indexed by logical CPU ID. */

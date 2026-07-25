@@ -88,6 +88,7 @@ static void xos_flush_cb(lv_display_t *disp, const lv_area_t *area,
         dm.w = (uint32_t)w;
         dm.h = (uint32_t)h;
         dm.flags = 0;
+        dm.generation = ctx->surface_generation;
 
         ipc_msg_t msg;
         memset(&msg, 0, sizeof(msg));
@@ -129,6 +130,7 @@ static void xos_flush_cb(lv_display_t *disp, const lv_area_t *area,
     dm.w = (uint32_t)w;
     dm.h = (uint32_t)h;
     dm.flags = 0;
+    dm.generation = ctx->surface_generation;
 
     ipc_msg_t msg;
     memset(&msg, 0, sizeof(msg));
@@ -224,6 +226,7 @@ static int create_compositor_surface(xos_lvgl_ctx_t *ctx,
     /* GPU surfaces get buf_vaddr=0 (no shared buffer) */
     ctx->surface_buf = (uint32_t *)srm->buf_vaddr;
     ctx->surface_idx = srm->surface_idx;
+    ctx->surface_generation = srm->generation;
     return 0;
 }
 
@@ -281,6 +284,7 @@ static int setup_gpu_resource(xos_lvgl_ctx_t *ctx)
     gr.gpu_ctx_id = 0;  /* no app context; compositor attaches to its own */
     gr.tex_w = 0;       /* use surface w/h */
     gr.tex_h = 0;
+    gr.generation = ctx->surface_generation;
 
     ipc_msg_t msg;
     memset(&msg, 0, sizeof(msg));

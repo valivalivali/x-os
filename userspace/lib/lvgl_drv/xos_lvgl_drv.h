@@ -19,6 +19,7 @@
 typedef struct {
     uint32_t *surface_buf;   /* compositor-provided shared buffer (CPU mode) */
     uint32_t  surface_idx;   /* compositor surface index */
+    uint32_t  surface_generation; /* slot incarnation supplied by compositor */
     int32_t   width;
     int32_t   height;
     lv_display_t *disp;

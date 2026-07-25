@@ -48,6 +48,7 @@ static void log_int(const char *prefix, int32_t val, const char *suffix) {
 static uint64_t g_port = 0;
 static uint32_t *g_px = NULL;
 static uint32_t g_si = 0;
+static uint32_t g_generation = 0;
 static uint32_t g_surf_w = 0;
 static uint32_t g_surf_h = 0;
 
@@ -97,6 +98,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
     g_px = (uint32_t *)srm->buf_vaddr;
     g_si = srm->surface_idx;
+    g_generation = srm->generation;
     g_surf_w = w;
     g_surf_h = h;
     return 0;
@@ -104,12 +106,14 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
 
 static void send_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     wm_dirty_msg_t d;
+    __builtin_memset(&d, 0, sizeof(d));
     d.type = WM_SURFACE_DIRTY;
     d.surface_idx = g_si;
     d.x = x;
     d.y = y;
     d.w = w;
     d.h = h;
+    d.generation = g_generation;
 
     ipc_msg_t msg;
     __builtin_memset(&msg, 0, sizeof(msg));

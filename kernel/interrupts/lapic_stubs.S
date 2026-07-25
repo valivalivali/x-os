@@ -3,6 +3,12 @@
 /* Assembly stubs for LAPIC timer and IPI vectors.
  * Vectors: 0xE0=resched, 0xE1=TLB, 0xE2=stop, 0xE3=call_func, 0xF0=timer
  * Each saves all GPRs, calls the C handler, sends LAPIC EOI, restores, iretq.
+ *
+ * Deferred preemption: after the handler returns, if we're returning to
+ * userspace (CS=0x1B in IRETQ frame) and need_resched is set, call
+ * sched_yield before restoring GPRs.  GPRs are still saved on the stack,
+ * so sched_yield can clobber caller-saved regs safely.  This follows the
+ * XNU AST / Linux TIF_NEED_RESCHED pattern.
  */
 
 .macro LAPIC_STUB vec, handler
@@ -33,6 +39,15 @@ lapic_isr_\vec:
     call lapic_eoi
 
     call \handler
+
+    /* Deferred preemption check — only when returning to userspace.
+     * IRETQ frame is at rsp+120 (15 GPRs × 8 bytes).
+     * CS is at rsp+128.  User CS = 0x1B.
+     * Call sched_check_resched() which checks need_resched AND no_preempt. */
+    cmpq $0x1B, 128(%rsp)
+    jne .Llapic_no_resched_\vec
+    call sched_check_resched    /* GPRs still saved on stack — safe */
+.Llapic_no_resched_\vec:
 
     popq %r15
     popq %r14

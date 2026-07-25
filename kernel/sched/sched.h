@@ -65,6 +65,8 @@ void sched_init(void);
 void sched_early_init(void); /* Early init before smp_init */
 void sched_yield(void);
 bool sched_yield_try(void);  /* non-blocking yield for timer handlers */
+void sched_check_resched(void);  /* deferred preemption check (syscall/irq return) */
+void sched_wake_sleepers(void);  /* wake expired sleepers (timer handler) */
 void sched_init_ap(void);  /* Per-CPU scheduler init for APs */
 proc_t *proc_current(void);
 proc_t *proc_by_pid(uint64_t pid);

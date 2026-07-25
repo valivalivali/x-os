@@ -14,9 +14,18 @@
 static proc_t procs[SCHED_MAX_PROCS];
 static proc_t *ready_head = NULL;
 
-/* Idle loop entry point for per-CPU idle procs. */
+/* Idle loop entry point for per-CPU idle procs.
+ * When need_resched is set (by timer or IPI handler), call sched_yield
+ * to pick up the next ready process.  This is the safe point for
+ * preemption in the idle loop — follows the XNU/Linux pattern where
+ * the idle loop checks the reschedule flag after each interrupt. */
 static void __attribute__((noreturn)) idle_loop(void) {
     for (;;) {
+        cpu_data_t *cpu = this_cpu();
+        if (cpu->need_resched) {
+            cpu->need_resched = 0;
+            sched_yield();
+        }
         __asm__ volatile("hlt");
     }
 }
@@ -26,6 +35,52 @@ static spinlock_t sched_lock = SPINLOCK_INIT;
 
 /* Forward decl — proc_sleep calls this while holding sched_lock. */
 static void __sched_yield_locked(uint64_t rflags);
+
+/* Deferred preemption check — called from syscall and interrupt return.
+ * Like XNU's pending AST and Linux's TIF_NEED_RESCHED, the request remains
+ * set while preemption is disabled.  Dropping it loses the wakeup entirely:
+ * once the critical section ends there may be no later timer/IPI to retry. */
+void sched_check_resched(void) {
+    cpu_data_t *cpu = this_cpu();
+    if (!cpu->need_resched) return;
+    proc_t *cur = proc_current();
+    if (cur && cur->no_preempt) return;
+    cpu->need_resched = 0;
+    sched_yield();
+}
+
+/* Wake up expired sleepers without context-switching.
+ * Called from timer handlers to ensure sleeping processes are woken up
+ * promptly.  With deferred preemption, the timer handler no longer calls
+ * sched_yield_try() (which called pick_next_ready and woke sleepers).
+ * Without this, sleepers would only be woken up when another process
+ * voluntarily yields, causing NSLEEP to hang.  This function walks the
+ * ready queue and marks expired sleepers as READY, but does NOT
+ * context-switch — the actual switch happens at the next safe point
+ * (syscall return, idle loop). */
+void sched_wake_sleepers(void) {
+    uint64_t rflags;
+    if (!spinlock_try_irqsave(&sched_lock, &rflags))
+        return;
+    uint64_t now = timer_ticks();
+    int woke = 0;
+    for (proc_t *p = ready_head; p; p = p->next) {
+        if (p->state == PROC_BLOCKED && p->sleep_until &&
+            now >= p->sleep_until) {
+            p->state = PROC_READY;
+            p->sleep_until = 0;
+            woke = 1;
+        }
+    }
+    spinlock_release_irqrestore(&sched_lock, rflags);
+    /* The run queue is shared, so one local scheduler is sufficient to
+     * dispatch a woken task.  Broadcasting a reschedule request makes every
+     * CPU contend for sched_lock at once on each 1 ms sleep expiry, which
+     * turns interactive input into a scheduler-lock storm. */
+    if (woke) {
+        this_cpu()->need_resched = 1;
+    }
+}
 
 static void ready_dequeue(proc_t *p) {
     proc_t **pp = &ready_head;
@@ -248,8 +303,16 @@ void proc_sleep(uint64_t ms) {
         timer_sleep_ms(ms);
         return;
     }
+    /* Convert ms to global ticks.  g_global_ticks increments at
+     * timer_ticks_hz() ticks/sec (1000 BSP + 250 per AP), so
+     * ticks = ms * hz / 1000.  Without this, NSLEEP(1) on an 8-CPU
+     * system would sleep only ~0.36ms instead of 1ms, causing the
+     * composer to run at ~2750 FPS and flood the GPU cursor queue. */
+    uint64_t hz = timer_ticks_hz();
+    uint64_t ticks = (ms * hz + 999) / 1000;  /* round up */
+    if (ticks == 0) ticks = 1;
     uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
-    cur->sleep_until = timer_ticks() + ms;
+    cur->sleep_until = timer_ticks() + ticks;
     cur->state = PROC_BLOCKED;
     /* Blocked tasks stay on the ready list so yield can wake them.
      * CRITICAL: hold sched_lock across sched_yield_locked so that

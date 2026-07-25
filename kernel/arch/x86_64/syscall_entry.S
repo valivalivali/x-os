@@ -106,6 +106,14 @@ syscall_entry:
     call signal_on_syscall_return
     /* rax = retval */
 
+    /* Deferred preemption: call sched_check_resched() which checks
+     * need_resched AND no_preempt.  If the current process has
+     * no_preempt=1 (e.g., composer), it won't yield — preventing
+     * starvation.  rax (retval) is saved across the call. */
+    pushq %rax                /* save retval */
+    call sched_check_resched
+    popq %rax                 /* restore retval */
+
     movq 0(%rsp), %rcx    /* signo (temp; rcx is clobbered by sysret anyway) */
     movq 8(%rsp), %rdi
     movq 16(%rsp), %rsi

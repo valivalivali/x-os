@@ -36,6 +36,7 @@
 #define WM_SURFACE_GPU_READY 21  /* app -> composer: GPU resource ready   */
 #define WM_SET_BOUNDS        22  /* app -> composer: move/resize surface  */
 #define WM_BEGIN_MOVE        23  /* app -> composer: start title-bar drag */
+#define WM_SURFACE_DESTROYED 24  /* composer -> app: teardown is complete  */
 
 /* ---- Window flags ----------------------------------------------------- */
 
@@ -83,6 +84,7 @@ typedef struct {
     uint32_t type;          /* WM_SURFACE_READY */
     uint64_t buf_vaddr;     /* shared buffer virtual address */
     uint32_t surface_idx;   /* surface index for future messages */
+    uint32_t generation;    /* changes whenever this slot is reused */
 } wm_surface_ready_msg_t;
 
 /* App -> Composer: dirty rect */
@@ -94,6 +96,7 @@ typedef struct {
      * (submenu open/close) so composer re-transfers DESKTOP under the rect.
      * Hover-only updates omit this and skip the desktop transfer. */
     uint32_t flags;
+    uint32_t generation;    /* generation returned in WM_SURFACE_READY */
 } wm_dirty_msg_t;
 
 #define WM_DIRTY_RESTORE_DESKTOP  0x1u
@@ -110,13 +113,21 @@ typedef struct {
     /* Optional: GPU RT size when on-screen quad is cropped (0 = use w/h). */
     uint32_t tex_w;
     uint32_t tex_h;
+    uint32_t generation;
 } wm_surface_gpu_ready_msg_t;
 
 /* App -> Composer: destroy surface */
 typedef struct {
     uint32_t type;          /* WM_DESTROY_SURFACE */
     uint32_t surface_idx;
+    uint32_t generation;
 } wm_destroy_msg_t;
+
+typedef struct {
+    uint32_t type;          /* WM_SURFACE_DESTROYED */
+    uint32_t surface_idx;
+    uint32_t generation;
+} wm_surface_destroyed_msg_t;
 
 /* Composer -> App: mouse event in content area */
 typedef struct {

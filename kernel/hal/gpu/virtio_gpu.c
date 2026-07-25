@@ -62,6 +62,10 @@ static uint32_t g_cursor_resource_id = 2;
 static uint64_t g_cursor_phys = 0;
 static uint32_t g_cursor_w = 64;
 static uint32_t g_cursor_h = 64;
+/* The cursor virtqueue consumes command memory asynchronously.  This must be
+ * HHDM-backed memory: virt_to_phys() is deliberately only valid for PMM/heap
+ * allocations, not the kernel image's static .bss mapping. */
+static uint8_t *g_cursor_cmd = NULL;
 
 static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len) {
     /* QEMU may write more than sizeof(ctrl_hdr) for some commands,
@@ -98,24 +102,56 @@ static bool gpu_send_recv(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp
 }
 
 static bool gpu_cursor_send(void *cmd, uint32_t cmd_len) {
-    void *bufs[1]   = { cmd };
+    if (!g_cursor_cmd || cmd_len > sizeof(struct virtio_gpu_update_cursor))
+        return false;
+
     uint32_t lens[1] = { cmd_len };
     uint16_t flags[1] = { 0 };
     uint16_t desc_idx;
     uint64_t rflags = spinlock_acquire_irqsave(&g_gpu_lock);
+
+    /* This virtqueue implementation supports one in-flight request: consuming
+     * its used entry resets free_head.  Reap a completed cursor request before
+     * reusing the command buffer. */
+    uint16_t used_idx;
+    uint32_t used_len;
+    while (virtqueue_get_used(&g_cursorq, &used_idx, &used_len)) {
+        /* keep draining */
+    }
+
+    if (g_cursorq.free_head + 1 > g_cursorq.size) {
+        /* The previous command still owns g_cursor_cmd, so wait before
+         * overwriting it with the newest cursor position. */
+        if (!virtio_pci_wait_for_queue(&g_vdev, &g_cursorq, 10000000)) {
+            spinlock_release_irqrestore(&g_gpu_lock, rflags);
+            return false;
+        }
+        while (virtqueue_get_used(&g_cursorq, &used_idx, &used_len)) {
+            /* drain */
+        }
+        if (g_cursorq.free_head + 1 > g_cursorq.size) {
+            spinlock_release_irqrestore(&g_gpu_lock, rflags);
+            return false;
+        }
+    }
+
+    /* Fill stable storage before publishing the descriptor.  add_buf() makes
+     * the request visible in avail, so copying after it lets QEMU observe a
+     * zero or partially updated command. */
+    memcpy(g_cursor_cmd, cmd, cmd_len);
+    void *bufs[1] = { g_cursor_cmd };
     if (!virtqueue_add_buf(&g_cursorq, &desc_idx, bufs, lens, flags, 1)) {
         spinlock_release_irqrestore(&g_gpu_lock, rflags);
         return false;
     }
     virtio_pci_notify_queue(&g_vdev, &g_cursorq);
-    /* Fire-and-forget: don't wait for response. The cursor queue
-     * processes instantly in QEMU. Drain any completed entries to
-     * recycle descriptors. */
-    uint16_t used_idx;
-    uint32_t used_len;
-    virtqueue_get_used(&g_cursorq, &used_idx, &used_len);
+
+    /* Keep the one command buffer alive and ensure moves cannot build an
+     * unbounded backlog when the host compositor is temporarily busy. */
+    bool completed = virtio_pci_wait_for_queue(&g_vdev, &g_cursorq, 10000000) &&
+                     virtqueue_get_used(&g_cursorq, &used_idx, &used_len);
     spinlock_release_irqrestore(&g_gpu_lock, rflags);
-    return true;
+    return completed;
 }
 
 bool virtio_gpu_init(void) {
@@ -151,6 +187,17 @@ bool virtio_gpu_init(void) {
         kputs("[virtio-gpu] cursorq setup failed\n");
         return false;
     }
+
+    /* Keep the cursor command in physical RAM until QEMU consumes the
+     * descriptor.  A static kernel address cannot be translated by the HHDM
+     * helper used by virtqueue_add_buf(). */
+    uint64_t cursor_cmd_phys = pmm_alloc_contig(1);
+    if (!cursor_cmd_phys) {
+        kputs("[virtio-gpu] cursor command alloc failed\n");
+        return false;
+    }
+    g_cursor_cmd = (uint8_t *)phys_to_virt(cursor_cmd_phys);
+    memset(g_cursor_cmd, 0, PAGE_SIZE);
     virtio_pci_set_status(&g_vdev, VIRTIO_STATUS_DRIVER_OK);
 
     /* Get display info */
@@ -642,18 +689,31 @@ bool virtio_gpu_submit_3d(uint32_t ctx_id, void *cmds, uint32_t size) {
     uint32_t lens[3] = { sizeof(hdr), size, sizeof(resp_buf) };
     uint16_t flags[3] = { 0, 0, VRING_DESC_F_WRITE };
     uint16_t desc_idx;
+
+    /* SUBMIT_3D shares ctrlq with resource creation, transfer, and flush.
+     * The compositor and an LVGL GPU surface run in different processes, so
+     * this must use the same lock as gpu_send_recv(); otherwise both can
+     * publish descriptors at once and corrupt the single-inflight queue. */
+    uint64_t rflags = spinlock_acquire_irqsave(&g_gpu_lock);
     if (!virtqueue_add_buf(&g_ctrlq, &desc_idx, bufs, lens, flags, 3)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         kfree(kbuf);
         return false;
     }
     virtio_pci_notify_queue(&g_vdev, &g_ctrlq);
     if (!virtio_pci_wait_for_queue(&g_vdev, &g_ctrlq, 10000000)) {
+        spinlock_release_irqrestore(&g_gpu_lock, rflags);
         kfree(kbuf);
         return false;
     }
     uint16_t used_idx;
     uint32_t used_len;
-    virtqueue_get_used(&g_ctrlq, &used_idx, &used_len);
+    bool completed = virtqueue_get_used(&g_ctrlq, &used_idx, &used_len);
+    spinlock_release_irqrestore(&g_gpu_lock, rflags);
+    if (!completed) {
+        kfree(kbuf);
+        return false;
+    }
     kfree(kbuf);
     memcpy(&resp, resp_buf, sizeof(resp));
     bool ok = (resp.type & 0xFF00) == 0x1100;
