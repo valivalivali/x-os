@@ -10,8 +10,17 @@
  * Phase 2: preemptive scheduler with per-process page tables.
  */
 
-#define SCHED_MAX_PROCS 32
+#define SCHED_MAX_PROCS 256
 #define SCHED_STACK_SIZE (64 * 1024)
+
+/* Priority levels — lower number = higher priority.
+ * pick_next_ready scans PRIO_HIGH first, then NORMAL, then LOW. */
+#define SCHED_NPRIO 3
+typedef enum {
+    PRIO_HIGH = 0,      /* interactive: composer, terminal, shell */
+    PRIO_NORMAL = 1,    /* default for services and user apps */
+    PRIO_LOW = 2,       /* background / batch */
+} proc_prio_t;
 
 typedef enum {
     PROC_DEAD = 0,
@@ -67,6 +76,10 @@ typedef struct proc {
     /* Non-NULL when the process is BLOCKED waiting for an event rather than
      * for a deadline.  Woken by sched_wake_chan() on the same address. */
     const void *wait_chan;
+    /* Scheduling priority (PRIO_HIGH / PRIO_NORMAL / PRIO_LOW).
+     * Safe to add here — context.S only hardcodes offsets up to `switching`
+     * at 956; this field is well past that. */
+    uint8_t priority;
 } proc_t;
 
 /* Ensure p has an extended-state area allocated (idempotent). */
@@ -108,6 +121,7 @@ void proc_sleep(uint64_t ms);
 void sched_notify_new_proc(void); /* Send resched IPI to all APs */
 void sched_check_canaries(void);  /* Check all proc kstack canaries */
 void sched_release_lock(void);    /* Release sched_lock (for ring3_trampoline) */
+void proc_set_priority(proc_t *p, uint8_t prio);  /* set scheduling priority */
 
 /* Assembly: context switch from current to next process */
 void context_switch(proc_t *from, proc_t *to);

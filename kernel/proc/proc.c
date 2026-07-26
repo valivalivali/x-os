@@ -12,6 +12,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/fs/xfs.h"
 #include "kernel/ipc/pipe.h"
+#include "kernel/sched/sched.h"
 
 #define USER_STACK_SIZE  (64 * 1024)
 #define USER_STACK_TOP   0x00007FFF00000000ULL
@@ -158,6 +159,7 @@ uint64_t proc_fork(void) {
     child->ring3 = true;
     child->parent_pid = parent->pid;
     child->reaped = false; /* waitpid must see this child */
+    child->priority = parent->priority;  /* inherit scheduling priority */
     for (int i = 0; i < (int)sizeof(child->name); i++)
         child->name[i] = parent->name[i];
     /* Inherit signal disposition / mask (XNU-style fork). */
@@ -457,6 +459,18 @@ int proc_exec(const char *path, char *const argv[]) {
             nl++;
         }
         p->name[nl] = '\0';
+    }
+
+    /* Assign scheduling priority based on process name.
+     * Interactive GUI/shell services get HIGH; everything else stays
+     * NORMAL (the default from proc_create). */
+    {
+        uint8_t prio = PRIO_NORMAL;
+        if (strcmp(p->name, "composer") == 0 ||
+            strcmp(p->name, "terminal") == 0 ||
+            strcmp(p->name, "zsh") == 0)
+            prio = PRIO_HIGH;
+        proc_set_priority(p, prio);
     }
 
     /* Helper: write bytes to user stack via kernel HHDM.

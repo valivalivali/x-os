@@ -13,7 +13,9 @@
 #include "kernel/hal/apic/lapic.h"
 
 static proc_t procs[SCHED_MAX_PROCS];
-static proc_t *ready_head = NULL;
+/* Per-priority ready queues.  pick_next_ready scans [0..SCHED_NPRIO-1]
+ * so PRIO_HIGH is always drained before PRIO_NORMAL, etc. */
+static proc_t *ready_head[SCHED_NPRIO] = { NULL, NULL, NULL };
 
 /* Idle loop entry point for per-CPU idle procs.
  * When need_resched is set (by timer or IPI handler), call sched_yield
@@ -71,12 +73,14 @@ void sched_wake_sleepers(void) {
         return;
     uint64_t now = timer_ticks();
     int woke = 0;
-    for (proc_t *p = ready_head; p; p = p->next) {
-        if (p->state == PROC_BLOCKED && p->sleep_until &&
-            now >= p->sleep_until) {
-            p->state = PROC_READY;
-            p->sleep_until = 0;
-            woke = 1;
+    for (int q = 0; q < SCHED_NPRIO; q++) {
+        for (proc_t *p = ready_head[q]; p; p = p->next) {
+            if (p->state == PROC_BLOCKED && p->sleep_until &&
+                now >= p->sleep_until) {
+                p->state = PROC_READY;
+                p->sleep_until = 0;
+                woke = 1;
+            }
         }
     }
     spinlock_release_irqrestore(&sched_lock, rflags);
@@ -90,25 +94,29 @@ void sched_wake_sleepers(void) {
 }
 
 static void ready_dequeue(proc_t *p) {
-    proc_t **pp = &ready_head;
-    while (*pp) {
-        if (*pp == p) {
-            *pp = p->next;
-            p->next = NULL;
-            return;
+    for (int q = 0; q < SCHED_NPRIO; q++) {
+        proc_t **pp = &ready_head[q];
+        while (*pp) {
+            if (*pp == p) {
+                *pp = p->next;
+                p->next = NULL;
+                return;
+            }
+            pp = &(*pp)->next;
         }
-        pp = &(*pp)->next;
     }
 }
 
 static void ready_enqueue(proc_t *p) {
+    int q = p->priority;
+    if (q < 0 || q >= SCHED_NPRIO) q = PRIO_NORMAL;
     /* Avoid duplicate links (ready-list cycles freeze the scheduler). */
-    for (proc_t *q = ready_head; q; q = q->next) {
-        if (q == p)
+    for (proc_t *r = ready_head[q]; r; r = r->next) {
+        if (r == p)
             return;
     }
     p->next = NULL;
-    proc_t **tail = &ready_head;
+    proc_t **tail = &ready_head[q];
     while (*tail)
         tail = &(*tail)->next;
     *tail = p;
@@ -135,7 +143,7 @@ void sched_init(void) {
     proc_ensure_xstate(&procs[0]);
     this_cpu()->current_proc = &procs[0];
     this_cpu()->idle_proc = &procs[0];
-    ready_head = NULL;
+    for (int q = 0; q < SCHED_NPRIO; q++) ready_head[q] = NULL;
 }
 
 /* Early init — just marks proc slots as free.
@@ -212,6 +220,7 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].canary = 0xDEADBEEFCAFEBABEULL;
             procs[i].no_preempt = 0;
             procs[i].switching = 0;
+            procs[i].priority = PRIO_NORMAL;  /* default; caller can override */
             /* Fresh process starts with a clean FPU (XSTATE_BV=0 restores
              * every component to its INIT state, MXCSR to 0x1F80). */
             proc_ensure_xstate(&procs[i]);
@@ -231,6 +240,20 @@ void proc_make_ready(proc_t *p) {
     ready_enqueue(p);
     spinlock_release_irqrestore(&sched_lock, rflags);
     sched_notify_new_proc();
+}
+
+/* Set scheduling priority.  If the process is on a ready queue, it is
+ * moved to the correct priority queue. */
+void proc_set_priority(proc_t *p, uint8_t prio) {
+    if (!p || prio >= SCHED_NPRIO) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
+    bool on_queue = (p->state == PROC_READY || p->state == PROC_BLOCKED);
+    if (on_queue && p->priority != prio)
+        ready_dequeue(p);
+    p->priority = prio;
+    if (on_queue && p->state == PROC_READY)
+        ready_enqueue(p);
+    spinlock_release_irqrestore(&sched_lock, rflags);
 }
 
 void proc_exit(proc_t *p) {
@@ -372,12 +395,14 @@ void sched_block_on(const void *chan, spinlock_t *unlock, uint64_t timeout_ms) {
 void sched_wake_chan(const void *chan) {
     uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
     int woke = 0;
-    for (proc_t *p = ready_head; p; p = p->next) {
-        if (p->state == PROC_BLOCKED && p->wait_chan == chan) {
-            p->wait_chan = NULL;
-            p->sleep_until = 0;
-            p->state = PROC_READY;
-            woke = 1;
+    for (int q = 0; q < SCHED_NPRIO; q++) {
+        for (proc_t *p = ready_head[q]; p; p = p->next) {
+            if (p->state == PROC_BLOCKED && p->wait_chan == chan) {
+                p->wait_chan = NULL;
+                p->sleep_until = 0;
+                p->state = PROC_READY;
+                woke = 1;
+            }
         }
     }
     spinlock_release_irqrestore(&sched_lock, rflags);
@@ -392,25 +417,30 @@ void sched_wake_chan(const void *chan) {
 
 static proc_t *pick_next_ready(void) {
     /* Wake up expired sleepers but keep them in the queue. */
-    for (proc_t *p = ready_head; p; p = p->next) {
-        if (p->state == PROC_BLOCKED && p->sleep_until &&
-            timer_ticks() >= p->sleep_until) {
-            p->state = PROC_READY;
-            p->sleep_until = 0;
+    for (int q = 0; q < SCHED_NPRIO; q++) {
+        for (proc_t *p = ready_head[q]; p; p = p->next) {
+            if (p->state == PROC_BLOCKED && p->sleep_until &&
+                timer_ticks() >= p->sleep_until) {
+                p->state = PROC_READY;
+                p->sleep_until = 0;
+            }
         }
     }
 
-    proc_t **npp = &ready_head;
-    while (*npp) {
-        /* Skip processes whose context hasn't been saved yet (another
-         * CPU is in the middle of context_switching away from them). */
-        if ((*npp)->state == PROC_READY && !(*npp)->switching) {
-            proc_t *next = *npp;
-            *npp = next->next;
-            next->next = NULL;
-            return next;
+    /* Scan priority queues from HIGH to LOW. */
+    for (int q = 0; q < SCHED_NPRIO; q++) {
+        proc_t **npp = &ready_head[q];
+        while (*npp) {
+            /* Skip processes whose context hasn't been saved yet (another
+             * CPU is in the middle of context_switching away from them). */
+            if ((*npp)->state == PROC_READY && !(*npp)->switching) {
+                proc_t *next = *npp;
+                *npp = next->next;
+                next->next = NULL;
+                return next;
+            }
+            npp = &(*npp)->next;
         }
-        npp = &(*npp)->next;
     }
 
     /* Recovery: READY but not linked (should not happen). */
