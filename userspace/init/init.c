@@ -49,5 +49,8 @@ void init_main(void) {
     /* zsh re-enabled */
     spawn_from_disk("/sbin/zsh", "zsh");
 
-    for (;;) syscall0(SYS_YIELD);
+    /* init stays alive as PID 1 to reap children.  Sleep instead of
+     * busy-yielding — SIGCHLD deliveries will wake us via the signal
+     * path, and the 100ms sleep is just a backstop. */
+    for (;;) syscall1(12, 100);  /* SYS_NSLEEP, 100ms */
 }

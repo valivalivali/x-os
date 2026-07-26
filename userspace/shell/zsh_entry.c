@@ -120,7 +120,7 @@ static int read_line_edit(const char *prompt, char *line, int max) {
         char c;
         _ssize_t n = _read(0, &c, 1);
         if (n <= 0) {
-            syscall0(SYS_YIELD);
+            syscall1(12, 1);  /* NSLEEP 1ms — _read blocks, this is just a backstop */
             continue;
         }
 
@@ -160,12 +160,12 @@ static int read_line_edit(const char *prompt, char *line, int max) {
             char c2 = 0, c3 = 0;
             for (int tries = 0; tries < 20; tries++) {
                 if (_read(0, &c2, 1) > 0) break;
-                syscall0(SYS_YIELD);
+                syscall1(12, 1);
             }
             if (c2 != '[') continue;
             for (int tries = 0; tries < 20; tries++) {
                 if (_read(0, &c3, 1) > 0) break;
-                syscall0(SYS_YIELD);
+                syscall1(12, 1);
             }
 
             if (c3 == 'A') { /* up */
@@ -226,7 +226,7 @@ static int read_line_edit(const char *prompt, char *line, int max) {
                 char c4 = 0;
                 for (int tries = 0; tries < 20; tries++) {
                     if (_read(0, &c4, 1) > 0) break;
-                    syscall0(SYS_YIELD);
+                    syscall1(12, 1);
                 }
                 if (c4 == '~' && cursor < len) {
                     for (int i = cursor; i < len - 1; i++)
@@ -291,7 +291,7 @@ static int setup_bridge(void) {
         bridge = sys_ns_lookup(PORT_NS_SHELL_BRIDGE);
         if (bridge)
             break;
-        syscall0(SYS_YIELD);
+        syscall1(12, 10);  /* NSLEEP 10ms — wait for terminal to register bridge */
     }
 
     ipc_msg_t hello;
@@ -454,7 +454,7 @@ void zsh_entry(void) {
 
     if (setup_bridge() < 0) {
         for (;;)
-            syscall0(SYS_YIELD);
+            syscall1(12, 100);  /* NSLEEP 100ms — bridge failed, just stay alive */
     }
 
     sys_chdir("/");

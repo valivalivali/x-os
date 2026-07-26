@@ -63,7 +63,7 @@ static void send_shell_byte(char c) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
         drain_bridge();
-        syscall0(SYS_YIELD);
+        syscall1(12, 1);  /* NSLEEP 1ms — throttle send retry */
     }
 }
 
@@ -366,7 +366,11 @@ void terminal_main(void) {
 
         drain_bridge();
 
-        syscall0(SYS_YIELD);
+        /* Throttle to ~1000Hz.  We can't block on a single port because
+         * we need to drain both the compositor event port (xos_lvgl_pump)
+         * and the shell bridge port (drain_bridge) — select/poll across
+         * multiple ports is not yet available. */
+        syscall1(12, 1);  /* SYS_NSLEEP, 1ms */
     }
 
     /* Clean up: destroy compositor surface */

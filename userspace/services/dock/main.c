@@ -96,14 +96,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     log("[dock] sent CREATE_SURFACE\n");
 
     ipc_msg_t re;
-    int got = 0;
-    for (int r = 0; r < 1000 && !got; r++) {
-        if (sys_port_recv(g_port, &re, 0)) {
-            got = 1;
-            break;
-        }
-        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
-    }
+    int got = sys_port_recv(g_port, &re, 1);  /* block until reply */
     if (!got) { log("[dock] reply timeout\n"); return -1; }
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
@@ -360,7 +353,8 @@ void dock_main(void) {
     /* Main event loop — listen for mouse clicks from compositor */
     for (;;) {
         ipc_msg_t msg;
-        if (sys_port_recv(g_port, &msg, 0)) {
+        /* Block until an event arrives instead of busy-yielding. */
+        if (sys_port_recv(g_port, &msg, 1)) {
             if (msg.payload_len >= sizeof(uint32_t)) {
                 uint32_t type = 0;
                 memcpy(&type, msg.payload, sizeof(type));
@@ -381,6 +375,5 @@ void dock_main(void) {
                 }
             }
         }
-        syscall0(SYS_YIELD);
     }
 }

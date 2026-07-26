@@ -17,6 +17,13 @@ typedef struct {
     uint32_t head;
     uint32_t tail;
     uint32_t count;
+    /* Wait channels.  Receivers sleep on &recvq until a message arrives;
+     * senders sleep on &sendq until the queue drains.  The addresses are
+     * only ever used as identities for sched_block_on/sched_wake_chan. */
+    uint32_t recv_waiters;
+    uint32_t send_waiters;
+    char recvq;
+    char sendq;
 } port_t;
 
 void ipc_init(void);

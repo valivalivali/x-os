@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "kernel/hal/apic/spinlock.h"
 
 /* Microkernel scheduler — process table, thread states, context switch.
  *
@@ -60,13 +61,32 @@ typedef struct proc {
     volatile uint8_t no_preempt;  /* if 1, timer interrupts skip sched_yield */
     volatile int switching;  /* 1 = context_switch in progress, don't pick */
     /* Extended CPU state (x87/SSE/AVX) — swapped on every context switch.
-     * MUST stay last: context.S hardcodes byte offsets into this struct up
-     * to and including `switching` at 956. */
+     * MUST stay last (with wait_chan): context.S hardcodes byte offsets into
+     * this struct up to and including `switching` at 956. */
     void *xstate;
+    /* Non-NULL when the process is BLOCKED waiting for an event rather than
+     * for a deadline.  Woken by sched_wake_chan() on the same address. */
+    const void *wait_chan;
 } proc_t;
 
 /* Ensure p has an extended-state area allocated (idempotent). */
 void proc_ensure_xstate(proc_t *p);
+
+/* ---- Event waiting ------------------------------------------------------
+ * Sleep/wake on an arbitrary address, so services can block for work
+ * instead of polling.  `unlock` (may be NULL) is a spinlock the caller
+ * holds; it is released only after the current process has been marked
+ * blocked, which is what makes the wakeup impossible to lose.  Interrupts
+ * are NOT re-enabled on return — the caller still owns that state.
+ *
+ * timeout_ms is a backstop, not the primary mechanism: 0 means "use the
+ * default safety timeout" so that a missed wakeup anywhere in the system
+ * degrades into a latency blip rather than a hung desktop. */
+void sched_block_on(const void *chan, spinlock_t *unlock, uint64_t timeout_ms);
+
+/* Wake every process blocked on `chan`. Safe to call with other locks held
+ * as long as they are always taken before sched_lock. */
+void sched_wake_chan(const void *chan);
 
 void sched_init(void);
 void sched_early_init(void); /* Early init before smp_init */

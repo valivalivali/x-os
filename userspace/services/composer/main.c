@@ -1154,7 +1154,7 @@ void display_main(void) {
                     for (int t = 0; t < 256; t++) {
                         if (sys_port_send(surfaces[focused_idx].reply_port, &kmsg))
                             break;
-                        syscall0(SYS_YIELD);
+                        syscall1(12, 1);  /* NSLEEP 1ms — throttle send retry */
                     }
                 }
             }
@@ -1878,7 +1878,7 @@ void display_main(void) {
         /* If an app has captured the display, it writes directly to the
          * framebuffer. Composer skips compositing entirely. */
         if (capture_active) {
-            syscall0(SYS_YIELD);
+            syscall1(12, 1);  /* NSLEEP 1ms — app owns the display */
             continue;
         }
 
@@ -2035,9 +2035,10 @@ void display_main(void) {
             if (cursor_settle > 0) {
                 cursor_settle--;
             } else {
-                /* No work and no cursor movement — yield to scheduler.
-                 * Use SYS_YIELD (not NSLEEP) for maximum responsiveness. */
-                syscall0(SYS_YIELD);
+                /* No work and no cursor movement — sleep 1ms instead of
+                 * busy-yielding.  The scheduler wakes us on the next tick
+                 * or when an IPC message arrives. */
+                syscall1(12, 1);
                 continue;
             }
         }

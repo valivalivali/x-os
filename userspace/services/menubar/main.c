@@ -71,14 +71,7 @@ static int create_surface(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     if (!cp || !sys_port_send(cp, &msg)) return -1;
 
     ipc_msg_t re;
-    int got = 0;
-    for (int r = 0; r < 1000 && !got; r++) {
-        if (sys_port_recv(g_port, &re, 0)) {
-            got = 1;
-            break;
-        }
-        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
-    }
+    int got = sys_port_recv(g_port, &re, 1);  /* block until reply */
     if (!got) return -1;
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;
@@ -192,6 +185,14 @@ void menubar_main(void) {
     log("[menubar] rendered\n");
 
     for (;;) {
-        syscall0(SYS_YIELD);
+        ipc_msg_t msg;
+        /* Block until an event arrives instead of busy-yielding. */
+        if (sys_port_recv(g_port, &msg, 1)) {
+            /* Process menubar events (clock updates, clicks, etc.) */
+            if (msg.payload_len >= sizeof(uint32_t)) {
+                uint32_t type = *(uint32_t *)msg.payload;
+                (void)type;
+            }
+        }
     }
 }

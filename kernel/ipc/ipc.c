@@ -63,30 +63,79 @@ bool port_send(port_handle_t h, const ipc_msg_t *msg) {
     p->buf[idx] = *msg;
     p->tail = (idx + 1) % IPC_PORT_DEPTH;
     p->count++;
+    bool wake = p->recv_waiters > 0;
+    const void *chan = &p->recvq;
     spinlock_release_irqrestore(&ipc_lock, rflags);
+
+    /* Outside the IPC lock: sched_wake_chan takes sched_lock, and the
+     * ordering rule is ipc_lock before sched_lock. */
+    if (wake) sched_wake_chan(chan);
     return true;
 }
 
 bool port_recv(port_handle_t h, ipc_msg_t *out, bool block) {
-    (void)block; /* Non-blocking for now until scheduler is fully hooked up */
-    uint64_t rflags = spinlock_acquire_irqsave(&ipc_lock);
-    port_t *p = port_get(h);
-    if (!p || !out) { spinlock_release_irqrestore(&ipc_lock, rflags); return false; }
-    if (p->count == 0) { spinlock_release_irqrestore(&ipc_lock, rflags); return false; }
+    /* Capture the caller's interrupt state once.  The blocking path hands
+     * ipc_lock to the scheduler and returns with interrupts still disabled,
+     * so the usual acquire_irqsave/release_irqrestore pairing cannot put it
+     * back — do it explicitly at the single exit point instead. */
+    uint64_t entry_rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(entry_rflags));
 
-    uint32_t idx = p->head;
-    *out = p->buf[idx];
-    p->head = (idx + 1) % IPC_PORT_DEPTH;
-    p->count--;
-    spinlock_release_irqrestore(&ipc_lock, rflags);
-    return true;
+    bool ok = false;
+    for (;;) {
+        spinlock_acquire(&ipc_lock);
+        port_t *p = port_get(h);
+        if (!p || !out) { spinlock_release(&ipc_lock); break; }
+
+        if (p->count > 0) {
+            uint32_t idx = p->head;
+            *out = p->buf[idx];
+            p->head = (idx + 1) % IPC_PORT_DEPTH;
+            p->count--;
+            bool wake = p->send_waiters > 0;
+            const void *chan = &p->sendq;
+            spinlock_release(&ipc_lock);
+            if (wake) sched_wake_chan(chan);
+            ok = true;
+            break;
+        }
+
+        if (!block) { spinlock_release(&ipc_lock); break; }
+
+        /* Sleep until a sender arrives.  sched_block_on releases ipc_lock
+         * only after this process has been marked blocked, so a send that
+         * lands in the gap still finds us on the wait channel. */
+        p->recv_waiters++;
+        sched_block_on(&p->recvq, &ipc_lock, 0);
+
+        spinlock_acquire(&ipc_lock);
+        p = port_get(h);
+        if (p && p->recv_waiters) p->recv_waiters--;
+        spinlock_release(&ipc_lock);
+
+        /* Re-check: we may have been woken by the backstop timeout, or
+         * another receiver may have taken the message first. */
+    }
+
+    if (entry_rflags & (1 << 9)) sti();
+    return ok;
 }
 
 void port_close(port_handle_t h) {
     uint64_t rflags = spinlock_acquire_irqsave(&ipc_lock);
     port_t *p = port_get(h);
-    if (p) memset(p, 0, sizeof(*p));
+    const void *rq = NULL, *sq = NULL;
+    if (p) {
+        /* Release anyone parked on this port before the memory is reused,
+         * or they would sleep until their backstop expires and then touch
+         * a recycled port. */
+        if (p->recv_waiters) rq = &p->recvq;
+        if (p->send_waiters) sq = &p->sendq;
+        memset(p, 0, sizeof(*p));
+    }
     spinlock_release_irqrestore(&ipc_lock, rflags);
+    if (rq) sched_wake_chan(rq);
+    if (sq) sched_wake_chan(sq);
 }
 
 /* ---- Simple nameserver (well-known service IDs → ports) ---------------- */

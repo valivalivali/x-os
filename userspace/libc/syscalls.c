@@ -160,7 +160,7 @@ static _ssize_t bridge_write(const void *buf, size_t cnt) {
                 sent = 1;
                 break;
             }
-            syscall0(SYS_YIELD);
+            syscall1(12, 1);  /* SYS_NSLEEP, 1ms — throttle retries */
         }
         if (!sent) {
             p += chunk;
@@ -180,7 +180,8 @@ static _ssize_t bridge_read(void *buf, size_t cnt) {
         ipc_msg_t msg;
         for (size_t i = 0; i < sizeof(msg); i++)
             ((uint8_t *)&msg)[i] = 0;
-        if (sys_port_recv(g_bridge_input_port, &msg, 0)) {
+        /* Block until a keystroke arrives instead of busy-yielding. */
+        if (sys_port_recv(g_bridge_input_port, &msg, 1)) {
             if (msg.payload_len >= 1) {
                 char c = (char)msg.payload[0];
                 if (c == '\r')
@@ -189,7 +190,6 @@ static _ssize_t bridge_read(void *buf, size_t cnt) {
                 break;
             }
         }
-        syscall0(SYS_YIELD);
     }
     return (_ssize_t)got;
 }
@@ -240,7 +240,7 @@ _ssize_t _read(int fd, void *buf, size_t cnt) {
                 cbuf[got++] = c;
                 break;
             }
-            syscall0(SYS_YIELD);
+            syscall1(12, 1);  /* SYS_NSLEEP, 1ms — throttle poll */
         }
         return (_ssize_t)got;
     }
@@ -926,15 +926,7 @@ int nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
     if (rqtp) {
         uint64_t ms = (uint64_t)rqtp->tv_sec * 1000 + rqtp->tv_nsec / 1000000;
         if (ms > 0) {
-            uint64_t end = 0;
-            __asm__ volatile("syscall" : "=a"(end) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
-            end += ms;
-            for (;;) {
-                uint64_t now = 0;
-                __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
-                if (now >= end) break;
-                syscall0(SYS_YIELD);
-            }
+            syscall1(12, ms);  /* SYS_NSLEEP — blocks in kernel */
         }
     }
     return 0;

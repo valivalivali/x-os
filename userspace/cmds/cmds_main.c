@@ -3477,21 +3477,17 @@ static int surfaces_main(int argc, char **argv) {
         sys_port_close(reply_port);
         return 1;
     }
-    /* Wait for reply (up to ~1 second) */
+    /* Wait for reply (blocking — kernel backstop timeout handles failures) */
     wm_surface_list_msg_t list;
     memset(&list, 0, sizeof(list));
     int got = 0;
-    for (int tries = 0; tries < 1000; tries++) {
-        ipc_msg_t rmsg;
-        if (sys_port_recv(reply_port, &rmsg, 0)) {
-            if (rmsg.payload_len >= sizeof(uint32_t) &&
-                *(uint32_t *)rmsg.payload == WM_SURFACE_LIST) {
-                memcpy(&list, rmsg.payload, sizeof(list));
-                got = 1;
-                break;
-            }
+    ipc_msg_t rmsg;
+    if (sys_port_recv(reply_port, &rmsg, 1)) {
+        if (rmsg.payload_len >= sizeof(uint32_t) &&
+            *(uint32_t *)rmsg.payload == WM_SURFACE_LIST) {
+            memcpy(&list, rmsg.payload, sizeof(list));
+            got = 1;
         }
-        syscall0(SYS_YIELD);
     }
     sys_port_close(reply_port);
     if (!got) {
@@ -3883,7 +3879,7 @@ ping_resolve_host(const char *hostname)
                      (void *)&from, &fromlen);
         if (n > 0)
             break;
-        syscall0(SYS_YIELD);
+        syscall1(12, 1);  /* NSLEEP 1ms — wait for DNS response */
     }
 
     close(sock);
@@ -4080,7 +4076,7 @@ ping_main(int argc, char **argv)
                 }
             }
             /* Yield to let network stack process */
-            syscall0(SYS_YIELD);
+            syscall1(12, 1);  /* NSLEEP 1ms */
         }
 
         if (!got_reply) {
@@ -4096,7 +4092,7 @@ ping_main(int argc, char **argv)
                 uint64_t now = 0;
                 __asm__ volatile("syscall" : "=a"(now) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
                 if (now >= delay_end) break;
-                syscall0(SYS_YIELD);
+                syscall1(12, 1);  /* NSLEEP 1ms — throttle delay loop */
             }
         }
     }
@@ -4250,7 +4246,7 @@ fetch_main(int argc, char **argv)
             /* Connection closed by remote */
             break;
         }
-        syscall0(SYS_YIELD);
+        syscall1(12, 1);  /* NSLEEP 1ms — wait for network data */
     }
 
     close(sock);

@@ -210,16 +210,9 @@ static int create_compositor_surface(xos_lvgl_ctx_t *ctx,
     }
     if (!cp || !sys_port_send(cp, &msg)) return -1;
 
-    /* Wait for surface ready reply */
+    /* Wait for surface ready reply (blocking) */
     ipc_msg_t re;
-    int got = 0;
-    for (int r = 0; r < 1000 && !got; r++) {
-        if (sys_port_recv(s_ipc_port, &re, 0)) {
-            got = 1;
-            break;
-        }
-        syscall1(12, 10);  /* SYS_NSLEEP, 10ms */
-    }
+    int got = sys_port_recv(s_ipc_port, &re, 1);
     if (!got) return -1;
 
     wm_surface_ready_msg_t *srm = (wm_surface_ready_msg_t *)re.payload;

@@ -334,6 +334,62 @@ void proc_sleep(uint64_t ms) {
     __sched_yield_locked(rflags);
 }
 
+/* Default backstop for channel waits.  A correct wakeup arrives long before
+ * this; the timeout exists only so that a bug elsewhere costs latency
+ * instead of wedging a service forever. */
+#define SCHED_WAIT_BACKSTOP_MS 100
+
+void sched_block_on(const void *chan, spinlock_t *unlock, uint64_t timeout_ms) {
+    if (!timeout_ms) timeout_ms = SCHED_WAIT_BACKSTOP_MS;
+
+    uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
+    proc_t *cur = (proc_t *)this_cpu()->current_proc;
+    if (!cur || cur->pid == 0) {
+        /* The idle task must never block. */
+        spinlock_release_irqrestore(&sched_lock, rflags);
+        if (unlock) spinlock_release(unlock);
+        return;
+    }
+
+    uint64_t hz = timer_ticks_hz();
+    uint64_t ticks = (timeout_ms * hz + 999) / 1000;
+    if (!ticks) ticks = 1;
+
+    cur->wait_chan = chan;
+    cur->sleep_until = timer_ticks() + ticks;
+    cur->state = PROC_BLOCKED;
+    ready_enqueue(cur);
+
+    /* Hand off the caller's lock only now.  A concurrent sched_wake_chan()
+     * has to take sched_lock, which we still hold, so it cannot run between
+     * "mark blocked" and "yield" and lose the wakeup. */
+    if (unlock) spinlock_release(unlock);
+
+    __sched_yield_locked(rflags);
+    cur->wait_chan = NULL;
+}
+
+void sched_wake_chan(const void *chan) {
+    uint64_t rflags = spinlock_acquire_irqsave(&sched_lock);
+    int woke = 0;
+    for (proc_t *p = ready_head; p; p = p->next) {
+        if (p->state == PROC_BLOCKED && p->wait_chan == chan) {
+            p->wait_chan = NULL;
+            p->sleep_until = 0;
+            p->state = PROC_READY;
+            woke = 1;
+        }
+    }
+    spinlock_release_irqrestore(&sched_lock, rflags);
+    /* Only flag the local CPU.  The sender is about to return to userspace
+     * and will hit sched_check_resched() on the syscall return path, which
+     * hands the CPU straight to the woken receiver.  Broadcasting an IPI
+     * here instead would put every CPU into sched_lock contention on every
+     * message — the storm that deferred preemption was introduced to
+     * avoid. */
+    if (woke) this_cpu()->need_resched = 1;
+}
+
 static proc_t *pick_next_ready(void) {
     /* Wake up expired sleepers but keep them in the queue. */
     for (proc_t *p = ready_head; p; p = p->next) {
