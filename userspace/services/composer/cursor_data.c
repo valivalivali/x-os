@@ -2,9 +2,7 @@
 #include <stdint.h>
 #define CURSOR_W 28
 #define CURSOR_H 29
-/* Arrow tip is at approximately (13, 11) within the 28x29 bitmap.
- * The first 11 rows and 13 columns are transparent padding.
- * Hotspot must align the tip with the actual mouse position. */
+/* Arrow tip at (13, 11) within the 28x29 bitmap. */
 #define CURSOR_HOT_X 13
 #define CURSOR_HOT_Y 11
 static const uint32_t cursor_pixels[28 * 29] = {
