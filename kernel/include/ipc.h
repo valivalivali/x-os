@@ -43,6 +43,5 @@ typedef struct {
 void ipc_init(void);
 port_handle_t port_create(uint64_t owner_pid);
 bool port_send(port_handle_t port, const ipc_msg_t *msg);
-bool port_send_blocking(port_handle_t port, const ipc_msg_t *msg);
 bool port_recv(port_handle_t port, ipc_msg_t *out, bool block);
 void port_close(port_handle_t port);

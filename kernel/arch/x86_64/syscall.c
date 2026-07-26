@@ -206,13 +206,10 @@ static uint64_t sys_port_create_impl(uint64_t a1, uint64_t a2, uint64_t a3,
 static uint64_t sys_port_send_impl(uint64_t handle, uint64_t umsg,
                                    uint64_t a3, uint64_t a4,
                                    uint64_t a5, uint64_t a6) {
-    (void)a4; (void)a5; (void)a6;
+    (void)a3; (void)a4; (void)a5; (void)a6;
     if (!umsg || umsg < 0x1000) return 0;
     ipc_msg_t msg;
     memcpy(&msg, (const void *)umsg, sizeof(msg));
-    /* a3 != 0: blocking send (sleeps until port has space). */
-    if (a3)
-        return port_send_blocking(handle, &msg) ? 1 : 0;
     return port_send(handle, &msg) ? 1 : 0;
 }
 

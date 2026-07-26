@@ -54,12 +54,12 @@ static void send_shell_byte(char c) {
     msg.sender_pid = syscall0(SYS_PROC_PID);
     msg.payload_len = 1;
     msg.payload[0] = (uint8_t)c;
-    /* Use blocking send with drain_bridge between attempts.  The blocking
-     * send sleeps on the port's sendq until the shell drains its stdin.
-     * If the shell is stuck in bridge_write (trying to send output to our
-     * bridge port), drain_bridge unblocks it.  The 10ms NSLEEP is a
-     * backstop in case the blocking send times out (scheduler backstop). */
-    for (int tries = 0; tries < 8; tries++) {
+    /* If the shell's stdin port is full, the shell is likely stuck in
+     * bridge_write trying to send output to our bridge port.  Drain
+     * our bridge port between retries so the shell can proceed, drain
+     * its stdin, and accept our byte.  This breaks the circular deadlock
+     * that freezes typing with 8 CPUs. */
+    for (int tries = 0; tries < 64; tries++) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
         drain_bridge();
@@ -159,13 +159,11 @@ static void flush_early_output(void) {
     }
 }
 
-/* Drain shell bridge port: HELLO + stdout.
- * Processes up to IPC_PORT_DEPTH messages per call to keep up with
- * bursty output (e.g. cat of a large file). */
+/* Drain shell bridge port: HELLO + stdout */
 static void drain_bridge(void) {
     if (!g_bridge_port) return;
     ipc_msg_t msg;
-    for (int burst = 0; burst < 64; burst++) {
+    for (int burst = 0; burst < 16; burst++) {
         if (!sys_port_recv(g_bridge_port, &msg, 0))
             break;
 
@@ -368,13 +366,11 @@ void terminal_main(void) {
 
         drain_bridge();
 
-        /* We can't block on the bridge port because we also need to pump
-         * LVGL compositor events (mouse, keyboard, resize) via xos_lvgl_pump.
-         * Blocking on port_recv would use the scheduler's 100ms backstop,
-         * freezing the cursor.  Instead, use non-blocking drain + a 5ms
-         * sleep (200Hz) — smooth enough for cursor movement while reducing
-         * CPU usage 5x compared to the original 1ms poll. */
-        syscall1(12, 5);  /* SYS_NSLEEP, 5ms */
+        /* Throttle to ~1000Hz.  We can't block on a single port because
+         * we need to drain both the compositor event port (xos_lvgl_pump)
+         * and the shell bridge port (drain_bridge) — select/poll across
+         * multiple ports is not yet available. */
+        syscall1(12, 1);  /* SYS_NSLEEP, 1ms */
     }
 
     /* Clean up: destroy compositor surface */
