@@ -14,6 +14,13 @@ static uint64_t used_frames   = 0;
 static uint64_t hhdm = 0;
 static uint64_t alloc_hint = 0;
 
+/* One reference count per frame, sized to actual RAM and carved out of the
+ * frame pool itself at init (a static array covering the 8 GiB bitmap range
+ * would burn 2 MiB of .bss on every machine).  uint8_t saturates at 255
+ * sharers, far above SCHED_MAX_PROCS. */
+static uint8_t *refcnt = NULL;
+#define REF_MAX 255
+
 static inline void bit_set(uint64_t i)  { bitmap[i >> 3] |=  (uint8_t)(1u << (i & 7)); }
 static inline void bit_clr(uint64_t i)  { bitmap[i >> 3] &= (uint8_t)~(1u << (i & 7)); }
 static inline int  bit_get(uint64_t i)  { return (bitmap[i >> 3] >> (i & 7)) & 1; }
@@ -51,9 +58,24 @@ void pmm_init(void) {
     for (uint64_t f = 0; f < total_frames; f++)
         if (bit_get(f)) used_frames++;
 
-    kprintf("[pmm] %lu MiB usable, %lu MiB free\n",
+    /* Carve the refcount table out of the pool.  refcnt is still NULL here,
+     * so pmm_alloc_contig() below skips refcount bookkeeping. */
+    uint64_t rc_pages = (total_frames + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t rc_phys = pmm_alloc_contig(rc_pages);
+    if (!rc_phys) {
+        kprintf("[pmm] PANIC: cannot allocate %lu-page refcount table\n", rc_pages);
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    refcnt = (uint8_t *)phys_to_virt(rc_phys);
+    /* Everything already marked used at this point (kernel image, bootloader
+     * structures, the table itself) has exactly one owner. */
+    for (uint64_t f = 0; f < total_frames; f++)
+        refcnt[f] = bit_get(f) ? 1 : 0;
+
+    kprintf("[pmm] %lu MiB usable, %lu MiB free, %lu KiB refcount table\n",
             pmm_total_bytes() / (1024 * 1024),
-            (pmm_total_bytes() - pmm_used_bytes()) / (1024 * 1024));
+            (pmm_total_bytes() - pmm_used_bytes()) / (1024 * 1024),
+            (rc_pages * PAGE_SIZE) / 1024);
 }
 
 uint64_t pmm_alloc_frame(void) {
@@ -64,6 +86,7 @@ uint64_t pmm_alloc_frame(void) {
             bit_set(f);
             used_frames++;
             alloc_hint = f + 1;
+            if (refcnt) refcnt[f] = 1;
             spinlock_release_irqrestore(&pmm_lock, rflags);
             return f * PAGE_SIZE;
         }
@@ -80,7 +103,10 @@ uint64_t pmm_alloc_contig(size_t frames) {
         if (!bit_get(f)) {
             if (run == 0) start = f;
             if (++run == frames) {
-                for (uint64_t k = start; k < start + frames; k++) bit_set(k);
+                for (uint64_t k = start; k < start + frames; k++) {
+                    bit_set(k);
+                    if (refcnt) refcnt[k] = 1;
+                }
                 used_frames += frames;
                 spinlock_release_irqrestore(&pmm_lock, rflags);
                 return start * PAGE_SIZE;
@@ -93,13 +119,43 @@ uint64_t pmm_alloc_contig(size_t frames) {
     return 0;
 }
 
-void pmm_free_frame(uint64_t phys) {
+void pmm_ref_frame(uint64_t phys) {
     uint64_t f = phys / PAGE_SIZE;
     if (f >= MAX_FRAMES) return;
     uint64_t rflags = spinlock_acquire_irqsave(&pmm_lock);
+    if (refcnt && f < total_frames && refcnt[f] && refcnt[f] < REF_MAX)
+        refcnt[f]++;
+    spinlock_release_irqrestore(&pmm_lock, rflags);
+}
+
+void pmm_unref_frame(uint64_t phys) {
+    uint64_t f = phys / PAGE_SIZE;
+    if (f >= MAX_FRAMES) return;
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm_lock);
+    if (refcnt && f < total_frames) {
+        if (refcnt[f] > 1) {
+            /* Still shared — this address space just stops pointing at it. */
+            refcnt[f]--;
+            spinlock_release_irqrestore(&pmm_lock, rflags);
+            return;
+        }
+        /* A saturated count can never be safely dropped back below the
+         * saturation point, so such a frame is deliberately leaked. */
+        if (refcnt[f] == REF_MAX) {
+            spinlock_release_irqrestore(&pmm_lock, rflags);
+            return;
+        }
+        refcnt[f] = 0;
+    }
     if (bit_get(f)) { bit_clr(f); used_frames--; }
     if (f < alloc_hint) alloc_hint = f;
     spinlock_release_irqrestore(&pmm_lock, rflags);
+}
+
+uint32_t pmm_refcount(uint64_t phys) {
+    uint64_t f = phys / PAGE_SIZE;
+    if (!refcnt || f >= total_frames) return 0;
+    return refcnt[f];
 }
 
 uint64_t pmm_total_bytes(void) { return total_frames * PAGE_SIZE; }

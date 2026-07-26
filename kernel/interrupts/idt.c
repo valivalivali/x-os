@@ -3,6 +3,7 @@
 #include "kernel/hal/apic/lapic.h"
 #include "kernel/hal/apic/smp.h"
 #include "kernel/sched/sched.h"
+#include "kernel/memory/fault.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/arch/x86_64/serial.h"
 #include <stdint.h>
@@ -50,24 +51,54 @@ static const char *exc_name(int v) {
     }
 }
 
+/* Terminate the process that just faulted.
+ *
+ * Called from an interrupt handler, which is normally an unsafe place to
+ * context-switch: the compiler's `interrupt` attribute expects to restore
+ * registers and IRETQ on the way out.  It is safe *here* precisely because
+ * this path never returns — the process is dead, sched_yield() switches to
+ * another one, and the abandoned frame on its kernel stack is never
+ * resumed.  The slot gets a fresh kernel stack when it is next reused. */
+static void __attribute__((noreturn))
+fault_kill_current(int vec, uint64_t err, uint64_t cr2,
+                   struct interrupt_frame *f, proc_t *cur) {
+    kprintf("[fault] pid=%lu (%s) killed: %s at %lx (%s), ip=%lx sp=%lx\n",
+            cur ? cur->pid : 0,
+            (cur && cur->name[0]) ? cur->name : "?",
+            exc_name(vec), cr2,
+            vec == 14 ? pf_describe(err) : "fault",
+            f->ip, f->sp);
+
+    if (cur) {
+        cur->exit_code = 128 + (vec == 14 ? 11 : 4);  /* SIGSEGV / SIGILL */
+        proc_exit(cur);
+    }
+    sched_yield();
+    /* Unreachable: sched_yield never returns for a dead process. */
+    for (;;) __asm__ volatile("cli; hlt");
+}
+
 static void exc_report(int vec, uint64_t err, struct interrupt_frame *f) {
     uint64_t cr2, cr3;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
 
-    /* If the exception happened in userspace (CPL=3), log it and
-     * halt.  We can't safely call sched_yield from an interrupt
-     * handler because the GCC interrupt attribute's register
-     * save/restore interferes with context_switch. */
+    /* Page faults are the common case and most are recoverable: copy-on-
+     * write breaks and on-demand user stack growth.  Try to fix it up and
+     * retry the faulting instruction. */
+    if (vec == 14 && vmm_handle_page_fault(cr2, err, f->ip))
+        return;
+
+    /* A fault in userspace kills that process, not the machine. */
     if ((f->cs & 3) == 3) {
         cpu_data_t *cpu = this_cpu();
         proc_t *cur = (proc_t *)cpu->current_proc;
-        kprintf("[exc] userspace %d in pid=%lu ip=%lx cr2=%lx — halting\n",
-                vec, cur ? cur->pid : 0, f->ip, cr2);
-        for (;;) __asm__ volatile("cli; hlt");
+        fault_kill_current(vec, err, cr2, f, cur);
     }
 
     kprintf("\n*** CPU EXCEPTION %d (%s) err=%lx\n", vec, exc_name(vec), err);
+    if (vec == 14)
+        kprintf("    %s\n", pf_describe(err));
     kprintf("    ip=%lx cs=%lx flags=%lx sp=%lx cr2=%lx cr3=%lx\n",
             f->ip, f->cs, f->flags, f->sp, cr2, cr3);
     cpu_data_t *cpu = this_cpu();

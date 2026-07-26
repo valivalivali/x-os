@@ -299,9 +299,20 @@ static uint64_t sys_mem_share_impl(uint64_t vaddr, uint64_t target_pid,
     proc_t *target = proc_by_pid(target_pid);
     if (!target || !target->pml4_virt) return (uint64_t)-1;
 
-    uint64_t f = (flags & (VMM_RW | VMM_WT | VMM_CD)) | VMM_U | VMM_P;
-    if (!vmm_map_page(target->pml4_virt, target_vaddr, paddr, f))
+    /* The frame now has two owners.  Without this the first process to
+     * unmap it would return it to the free pool while the other still has
+     * it mapped. */
+    pmm_ref_frame(paddr);
+
+    /* Tag both mappings SHARED so fork copy-on-write leaves them alone —
+     * the whole point of the page is that writes are mutually visible. */
+    uint64_t f = (flags & (VMM_RW | VMM_WT | VMM_CD)) | VMM_U | VMM_P | VMM_SHARED;
+    if (!vmm_map_page(target->pml4_virt, target_vaddr, paddr, f)) {
+        pmm_unref_frame(paddr);
         return (uint64_t)-1;
+    }
+    uint64_t *src_pte = vmm_pte_lookup(caller->pml4_virt, vaddr);
+    if (src_pte) *src_pte |= VMM_SHARED;
     return 0;
 }
 

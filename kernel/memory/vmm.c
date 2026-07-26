@@ -121,6 +121,24 @@ uint64_t vmm_virt_to_phys(uint64_t *pml4_virt, uint64_t vaddr) {
     return (pt[PT_IDX(vaddr)] & VMM_PHYS_MASK) + (vaddr & 0xFFF);
 }
 
+uint64_t *vmm_pte_lookup(uint64_t *pml4_virt, uint64_t vaddr) {
+    if (!pml4_virt) return NULL;
+
+    uint64_t pml4e = pml4_virt[PML4_IDX(vaddr)];
+    if (!(pml4e & VMM_P)) return NULL;
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4e & VMM_PHYS_MASK);
+
+    uint64_t pdpte = pdpt[PDPT_IDX(vaddr)];
+    if (!(pdpte & VMM_P) || (pdpte & VMM_PS)) return NULL;
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpte & VMM_PHYS_MASK);
+
+    uint64_t pde = pd[PD_IDX(vaddr)];
+    if (!(pde & VMM_P) || (pde & VMM_PS)) return NULL;
+    uint64_t *pt = (uint64_t *)phys_to_virt(pde & VMM_PHYS_MASK);
+
+    return &pt[PT_IDX(vaddr)];
+}
+
 static void free_table(uint64_t phys) {
     pmm_free_frame(phys);
 }
@@ -160,6 +178,20 @@ void vmm_destroy_user(uint64_t *pml4_virt) {
     }
 }
 
+/* Clone a user address space copy-on-write.
+ *
+ * Instead of allocating and memcpy'ing every mapped page (which made fork
+ * cost proportional to the parent's footprint — over a megabyte for zsh,
+ * every time the shell ran a command), both address spaces are pointed at
+ * the same frames with the write bit cleared and VMM_COW set.  The page
+ * fault handler splits a page only when someone actually writes to it.
+ *
+ * Pages tagged VMM_SHARED (sys_mem_share, e.g. compositor surface buffers)
+ * keep their write permission in both address spaces: mutual visibility is
+ * the entire point of those mappings.
+ *
+ * The caller must flush the TLB for the source address space afterwards —
+ * its PTEs just lost write permission. */
 uint64_t vmm_clone_user(uint64_t *src_pml4_virt) {
     /* Create a fresh PML4 with kernel mappings */
     uint64_t dst_phys = vmm_create_pml4();
@@ -190,22 +222,23 @@ uint64_t vmm_clone_user(uint64_t *src_pml4_virt) {
                                      ((uint64_t)j << 30) |
                                      ((uint64_t)k << 21) |
                                      ((uint64_t)l << 12);
+                    uint64_t phys  = pte & VMM_PHYS_MASK;
+                    uint64_t flags = pte & (VMM_RW | VMM_U | VMM_WT | VMM_CD |
+                                            VMM_NX | VMM_COW | VMM_SHARED);
 
-                    /* Allocate new physical page and copy data */
-                    uint64_t new_page = pmm_alloc_frame();
-                    if (!new_page) {
-                        /* Out of memory — cleanup and fail */
+                    if (!(flags & VMM_SHARED) && (flags & VMM_RW)) {
+                        /* Writable and private: share it read-only and let
+                         * the first writer on either side take the fault. */
+                        flags = (flags & ~VMM_RW) | VMM_COW;
+                        src_pt[l] = (src_pt[l] & ~VMM_RW) | VMM_COW;
+                    }
+
+                    if (!vmm_map_page(dst_pml4, vaddr, phys, flags)) {
                         vmm_destroy_user(dst_pml4);
                         pmm_free_frame(dst_phys);
                         return 0;
                     }
-                    void *src_page = phys_to_virt(pte & VMM_PHYS_MASK);
-                    void *dst_page = phys_to_virt(new_page);
-                    memcpy(dst_page, src_page, PAGE_SIZE);
-
-                    /* Map with same flags as original */
-                    uint64_t flags = pte & (VMM_RW | VMM_U | VMM_WT | VMM_CD | VMM_NX | VMM_X);
-                    vmm_map_page(dst_pml4, vaddr, new_page, flags);
+                    pmm_ref_frame(phys);
                 }
             }
         }

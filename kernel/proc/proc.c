@@ -130,6 +130,14 @@ uint64_t proc_fork(void) {
     }
     uint64_t *child_pml4_virt = (uint64_t *)phys_to_virt(child_pml4_phys);
 
+    /* The clone write-protected the parent's private pages for COW, so the
+     * parent's own TLB is now stale and would let it write through to a
+     * page the child shares.  Reloading CR3 flushes the non-global entries;
+     * other CPUs that ran this process get an IPI shootdown. */
+    __asm__ volatile("mov %0, %%cr3" : : "r"(parent->pml4_phys) : "memory");
+    if (g_smp_enabled)
+        lapic_send_ipi_all_others(IPI_VECTOR_TLB);
+
     /* Allocate kernel stack for child */
     uint8_t *child_kstack = kmalloc(SCHED_STACK_SIZE);
     if (!child_kstack) {

@@ -30,6 +30,19 @@
 
 #define VMM_PHYS_MASK   0x000FFFFFFFFFF000ULL
 
+/* Software-defined PTE bits.  Bits 9-11 are ignored by the MMU and are
+ * available to the OS; bit 63 is NX and bits 62:52 are also ignored when
+ * the entry is present. */
+#define VMM_COW         (1ULL << 9)   /* copy-on-write: shared, write traps */
+#define VMM_SHARED      (1ULL << 10)  /* genuinely shared: never make COW   */
+
+/* User stack layout.  The initial mapping is small; the fault handler grows
+ * it downwards on demand up to USER_STACK_MAX. */
+#define USER_STACK_TOP  0x00007FFF00000000ULL
+#define USER_STACK_INIT (64 * 1024)
+#define USER_STACK_MAX  (8 * 1024 * 1024)
+#define USER_STACK_LOW  (USER_STACK_TOP - USER_STACK_MAX)
+
 /* Create a fresh top-level page table with kernel mappings copied.
  * Returns physical address of the new PML4, or 0 on failure. */
 uint64_t vmm_create_pml4(void);
@@ -45,6 +58,11 @@ void vmm_unmap_page(uint64_t *pml4_virt, uint64_t vaddr);
 
 /* Return the physical address mapped at a virtual address, or 0. */
 uint64_t vmm_virt_to_phys(uint64_t *pml4_virt, uint64_t vaddr);
+
+/* Return a pointer to the leaf PTE for vaddr so the caller can inspect or
+ * rewrite its flags in place, or NULL if the walk hits a missing level or a
+ * huge page.  Used by the page-fault handler for copy-on-write. */
+uint64_t *vmm_pte_lookup(uint64_t *pml4_virt, uint64_t vaddr);
 
 /* Free all user-level page tables (lower-half entries) and their pages.
  * Kernel mappings are left untouched. */
