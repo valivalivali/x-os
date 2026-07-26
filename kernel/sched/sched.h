@@ -59,7 +59,14 @@ typedef struct proc {
     uint64_t canary;  /* detect proc_t corruption */
     volatile uint8_t no_preempt;  /* if 1, timer interrupts skip sched_yield */
     volatile int switching;  /* 1 = context_switch in progress, don't pick */
+    /* Extended CPU state (x87/SSE/AVX) — swapped on every context switch.
+     * MUST stay last: context.S hardcodes byte offsets into this struct up
+     * to and including `switching` at 956. */
+    void *xstate;
 } proc_t;
+
+/* Ensure p has an extended-state area allocated (idempotent). */
+void proc_ensure_xstate(proc_t *p);
 
 void sched_init(void);
 void sched_early_init(void); /* Early init before smp_init */

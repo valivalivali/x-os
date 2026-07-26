@@ -96,3 +96,11 @@ void  cpu_xstate_free(void *area);
 /* Save this CPU's extended state into 'area' / load it back out. */
 void cpu_xstate_save(void *area);
 void cpu_xstate_restore(const void *area);
+
+/* Return 'area' to the architectural post-FNINIT state (used when a slot is
+ * recycled and on exec, so a new program image never inherits stale FPU
+ * registers from whatever ran before it). */
+void cpu_xstate_reset(void *area);
+
+/* Copy extended state, e.g. so a fork child inherits the parent's FPU. */
+void cpu_xstate_copy(void *dst, const void *src);

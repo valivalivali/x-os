@@ -181,6 +181,7 @@ void kmain(void) {
         );
         idle->rip = resume;
         sched_adopt_current(init);
+        cpu_xstate_restore(init->xstate);
         enter_userspace(
             init->pml4_phys, init->rip, init->sleep_until, 0
         );

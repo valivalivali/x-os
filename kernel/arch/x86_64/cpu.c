@@ -252,17 +252,31 @@ void *cpu_xstate_alloc(void) {
     uintptr_t base = (uintptr_t)raw + sizeof(void *);
     uintptr_t aligned = (base + CPU_XSTATE_ALIGN - 1) & ~(uintptr_t)(CPU_XSTATE_ALIGN - 1);
     ((void **)aligned)[-1] = raw;
-
-    /* An all-zero FXSAVE image has MXCSR=0, which masks nothing and will
-     * trap on the first denormal.  Seed the architectural default. */
-    if (!g_cpu.xsave) *(uint32_t *)(aligned + 24) = 0x1F80;  /* MXCSR */
-    else              *(uint32_t *)(aligned + 24) = 0x1F80;
+    cpu_xstate_reset((void *)aligned);
     return (void *)aligned;
 }
 
 void cpu_xstate_free(void *area) {
     if (!area) return;
     kfree(((void **)area)[-1]);
+}
+
+void cpu_xstate_reset(void *area) {
+    if (!area) return;
+    /* All-zero means XSTATE_BV=0: XRSTOR takes every component to INIT.
+     * MXCSR is loaded unconditionally though, so it needs a real default —
+     * zero would unmask every SSE exception. */
+    memset(area, 0, g_cpu.xsave_size);
+    *(uint32_t *)((uintptr_t)area + 24) = 0x1F80;  /* MXCSR default */
+    if (!g_cpu.xsave) {
+        /* FXRSTOR reads FCW/FTW directly; give it the FNINIT values. */
+        *(uint16_t *)area = 0x037F;                /* FCW */
+    }
+}
+
+void cpu_xstate_copy(void *dst, const void *src) {
+    if (!dst || !src) return;
+    memcpy(dst, src, g_cpu.xsave_size);
 }
 
 void cpu_xstate_save(void *area) {

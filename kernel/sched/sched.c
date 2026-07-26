@@ -7,6 +7,7 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/gdt.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/hal/apic/spinlock.h"
 #include "kernel/hal/apic/smp.h"
 #include "kernel/hal/apic/lapic.h"
@@ -32,6 +33,12 @@ static void __attribute__((noreturn)) idle_loop(void) {
 
 /* Scheduler spinlock — protects the process table and ready queue. */
 static spinlock_t sched_lock = SPINLOCK_INIT;
+
+/* Every process owns an XSAVE area.  Slots are recycled, so keep the area
+ * across reuse rather than churning the heap on every spawn. */
+void proc_ensure_xstate(proc_t *p) {
+    if (p && !p->xstate) p->xstate = cpu_xstate_alloc();
+}
 
 /* Forward decl — proc_sleep calls this while holding sched_lock. */
 static void __sched_yield_locked(uint64_t rflags);
@@ -125,6 +132,7 @@ void sched_init(void) {
     procs[0].rsp = (uint64_t)ksp;
     procs[0].saved_ret = (uint64_t)idle_loop;
     procs[0].rip = (uint64_t)idle_loop;
+    proc_ensure_xstate(&procs[0]);
     this_cpu()->current_proc = &procs[0];
     this_cpu()->idle_proc = &procs[0];
     ready_head = NULL;
@@ -204,6 +212,10 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].canary = 0xDEADBEEFCAFEBABEULL;
             procs[i].no_preempt = 0;
             procs[i].switching = 0;
+            /* Fresh process starts with a clean FPU (XSTATE_BV=0 restores
+             * every component to its INIT state, MXCSR to 0x1F80). */
+            proc_ensure_xstate(&procs[i]);
+            if (procs[i].xstate) cpu_xstate_reset(procs[i].xstate);
             spinlock_release_irqrestore(&sched_lock, rflags);
             return &procs[i];
         }
@@ -399,11 +411,17 @@ static void __sched_yield_locked(uint64_t rflags) {
                 cur->switching = 1;
                 cur->saved_rflags = rflags;
                 spinlock_release(&sched_lock);
+                /* Swap FPU/SSE/AVX state.  Interrupts are still off here
+                 * (spinlock_release does not restore them), so the save
+                 * and the switch are atomic with respect to this CPU. */
+                cpu_xstate_save(cur->xstate);
+                cpu_xstate_restore(idle->xstate);
                 context_switch(cur, idle);
                 /* We're now on idle's stack (or cur resumed later).
                  * context_switch already cleared from->switching.
-                 * Just restore interrupts. */
+                 * Reload whichever process we came back as. */
                 cpu = this_cpu();
+                cpu_xstate_restore(((proc_t *)cpu->current_proc)->xstate);
                 rflags = ((proc_t *)cpu->current_proc)->saved_rflags;
                 if (rflags & (1 << 9)) __asm__ volatile("sti");
                 return;
@@ -438,11 +456,17 @@ static void __sched_yield_locked(uint64_t rflags) {
     cur->switching = 1;
     cur->saved_rflags = rflags;
     spinlock_release(&sched_lock);
+    /* Swap FPU/SSE/AVX state along with the GPRs.  Userspace is built with
+     * -msse2 and the compositor/ThorVG do heavy float work, so leaving XMM
+     * shared across processes silently corrupts their arithmetic. */
+    cpu_xstate_save(cur->xstate);
+    cpu_xstate_restore(next->xstate);
     context_switch(cur, next);
     /* We're now on next's stack, in next's context.
      * context_switch already cleared from->switching.
-     * Just restore interrupts.  sched_lock is NOT held. */
+     * Reload whichever process we came back as.  sched_lock is NOT held. */
     cpu = this_cpu();
+    cpu_xstate_restore(((proc_t *)cpu->current_proc)->xstate);
     rflags = ((proc_t *)cpu->current_proc)->saved_rflags;
     if (rflags & (1 << 9)) __asm__ volatile("sti");
 }
@@ -550,6 +574,7 @@ void sched_init_ap(void) {
             procs[i].rsp = (uint64_t)ksp;
             procs[i].saved_ret = (uint64_t)idle_loop;
             procs[i].rip = (uint64_t)idle_loop;
+            proc_ensure_xstate(&procs[i]);
             cpu->current_proc = &procs[i];
             cpu->idle_proc = &procs[i];
             cpu_set_rsp0((uint64_t)(procs[i].kstack + SCHED_STACK_SIZE));

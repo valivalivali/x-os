@@ -5,6 +5,7 @@
 #include "kernel/memory/heap.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/arch/x86_64/gdt.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/hal/apic/smp.h"
 #include "kernel/hal/apic/lapic.h"
 #include "kernel/lib/string.h"
@@ -24,6 +25,10 @@ static void ring3_trampoline(void) {
      * Just enter userspace. */
     proc_t *p = proc_current();
     cpu_set_rsp0((uint64_t)(p->kstack + SCHED_STACK_SIZE));
+    /* First run: nothing has loaded this process's FPU state yet, so the
+     * registers still belong to whoever ran last on this CPU.  Load ours
+     * (a fresh area for spawn, the parent's copy for fork). */
+    cpu_xstate_restore(p->xstate);
     if (p->fork_rflags) {
         enter_userspace_fork(p->pml4_phys, p->rip, p->sleep_until, 0, p);
     } else {
@@ -272,6 +277,13 @@ uint64_t proc_fork(void) {
     child->saved_ret = (uint64_t)ring3_trampoline;
     child->ctx_rbx = 0; child->ctx_rbp = 0; child->ctx_r12 = 0;
     child->ctx_r13 = 0; child->ctx_r14 = 0; child->ctx_r15 = 0;
+
+    /* Child inherits the parent's FPU/SSE/AVX registers, as POSIX requires.
+     * The parent is the running process, so its live registers are newer
+     * than whatever is in its save area — snapshot them first. */
+    proc_ensure_xstate(child);
+    cpu_xstate_save(parent->xstate);
+    cpu_xstate_copy(child->xstate, parent->xstate);
 
     /* Child inherits open pipe ends (refcounted). */
     pipe_fork_inherit((uint32_t)parent->pid);
@@ -568,6 +580,12 @@ int proc_exec(const char *path, char *const argv[]) {
     p->fork_rflags = 0;  /* exec: not a fork child — use enter_userspace */
     p->ctx_rbx = 0; p->ctx_rbp = 0; p->ctx_r12 = 0;
     p->ctx_r13 = 0; p->ctx_r14 = 0; p->ctx_r15 = 0;
+
+    /* exec replaces the program image, so the FPU starts clean rather than
+     * inheriting the previous image's registers. */
+    proc_ensure_xstate(p);
+    cpu_xstate_reset(p->xstate);
+    cpu_xstate_restore(p->xstate);
 
     /* Update per-CPU RSP0 for this process (both GS:0 and TSS) */
     cpu_set_rsp0((uint64_t)(kstack + SCHED_STACK_SIZE));
