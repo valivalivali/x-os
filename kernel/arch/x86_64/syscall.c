@@ -821,6 +821,12 @@ static uint64_t sys_port_list_impl(uint64_t ubuf, uint64_t max,
     return (uint64_t)ipc_port_list((void *)ubuf, (int)max);
 }
 
+static uint64_t sys_systime_ns_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                    uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return systime_ns();
+}
+
 static uint64_t sys_msgbuf_read_impl(uint64_t ubuf, uint64_t size,
                                      uint64_t a3, uint64_t a4,
                                      uint64_t a5, uint64_t a6) {
@@ -1061,6 +1067,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_SYSCTL]      = (void *)sys_sysctl_impl,
     [SYS_SIGRETURN]   = (void *)sys_sigreturn_impl,
     [SYS_NO_PREEMPT]  = (void *)sys_no_preempt_impl,
+    [SYS_SYSTIME_NS]  = (void *)sys_systime_ns_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

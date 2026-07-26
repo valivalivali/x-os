@@ -113,8 +113,9 @@
 #define SYS_SIGSUSPEND  96
 #define SYS_NO_PREEMPT  97  /* set/clear no-preempt flag for current process */
 #define SYS_PORT_LIST   98  /* dump IPC port table for introspection */
+#define SYS_SYSTIME_NS  99  /* high-res monotonic time in nanoseconds (TSC) */
 
-#define SYSCALL_MAX          98
+#define SYSCALL_MAX          99
 
 /* Process table entry for SYS_PROC_LIST (adv_cmds ps). */
 typedef struct {
@@ -206,6 +207,7 @@ int sys_input_poll(input_event_t *out);
 
 /* Time wrapper */
 int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec);
+uint64_t sys_systime_ns(void);  /* high-res monotonic time in ns (TSC) */
 
 /* GPU wrappers */
 int sys_gpu_fb_info(gpu_fb_info_t *info);

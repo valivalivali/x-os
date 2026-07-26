@@ -97,6 +97,10 @@ void kmain(void) {
     boot_puts("gdt/idt/timer up, interrupts enabled\n");
     boot_puts("scheduler + ipc up\n");
 
+    /* Calibrate TSC for high-resolution timekeeping.
+     * Must run after PIT is started and interrupts are enabled. */
+    tsc_calibrate();
+
     rtc_time_t now;
     rtc_read(&now);
     boot_log("rtc %u:%u:%u\n", now.hour, now.min, now.sec);

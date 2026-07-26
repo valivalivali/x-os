@@ -753,10 +753,11 @@ int isatty(int fd) {
 int clock_gettime(clockid_t clk_id, struct timespec *tp) {
     (void)clk_id;
     if (tp) {
-        uint64_t ticks = 0;
-        __asm__ volatile("syscall" : "=a"(ticks) : "0"(SYS_GET_TICKS) : "rcx", "r11", "memory");
-        tp->tv_sec = ticks / 1000;
-        tp->tv_nsec = (ticks % 1000) * 1000000;
+        /* Use TSC-based high-resolution time (nanosecond precision).
+         * Falls back to tick counter if TSC is not calibrated. */
+        uint64_t ns = sys_systime_ns();
+        tp->tv_sec = ns / 1000000000ULL;
+        tp->tv_nsec = ns % 1000000000ULL;
     }
     return 0;
 }

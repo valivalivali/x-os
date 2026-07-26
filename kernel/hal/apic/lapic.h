@@ -101,6 +101,9 @@ void lapic_send_ipi_all(uint32_t vector);
  * ticks: initial count for the timer period */
 void lapic_timer_init(uint32_t vector, uint32_t ticks);
 
+/* Returns true if the LAPIC is in x2APIC (MSR) mode. */
+bool lapic_is_x2apic(void);
+
 /* Stop the LAPIC timer (mask it). */
 void lapic_timer_stop(void);
 

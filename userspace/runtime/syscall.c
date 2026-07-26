@@ -288,6 +288,10 @@ int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec) {
     return ret;
 }
 
+uint64_t sys_systime_ns(void) {
+    return syscall0(SYS_SYSTIME_NS);
+}
+
 /* POSIX process wrappers */
 
 void sys_exit(int code) {

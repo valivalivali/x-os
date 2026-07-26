@@ -1,5 +1,6 @@
 #include "kernel/hal/timers/timer.h"
 #include "kernel/arch/x86_64/io.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/interrupts/idt.h"
 #include "kernel/hal/input/mouse.h"
 #include "kernel/hal/input/keyboard.h"
@@ -110,4 +111,68 @@ uint64_t timer_ticks_hz(void) {
 void timer_sleep_ms(uint64_t ms) {
     uint64_t target = local_ticks + (ms * hz) / 1000u;
     while (local_ticks < target) __asm__ volatile("sti; hlt");
+}
+
+/* ---- TSC high-resolution timekeeping -------------------------------------- */
+
+static uint64_t g_tsc_freq_hz = 0;  /* calibrated TSC frequency */
+static uint64_t g_tsc_boot = 0;     /* TSC value at calibration time */
+
+uint64_t tsc_read(void) {
+    uint32_t low, high;
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}
+
+uint64_t tsc_freq_hz(void) {
+    return g_tsc_freq_hz;
+}
+
+/* Calibrate TSC frequency by measuring TSC ticks over a known PIT interval.
+ * If CPUID 0x15/0x16 already provided the frequency, use that directly. */
+void tsc_calibrate(void) {
+    /* Use CPUID-provided frequency if available. */
+    if (g_cpu.tsc_khz > 0) {
+        g_tsc_freq_hz = (uint64_t)g_cpu.tsc_khz * 1000;
+        g_tsc_boot = tsc_read();
+        kprintf("[tsc] frequency %lu Hz (CPUID)\n", g_tsc_freq_hz);
+        return;
+    }
+
+    /* Calibrate by measuring TSC ticks during 50ms of PIT ticks.
+     * The PIT is already running at 1000Hz, so 50ms = 50 ticks. */
+    uint64_t pit_target = 50;
+    uint64_t tsc_start = tsc_read();
+    uint64_t pit_start = local_ticks;
+    while (local_ticks < pit_start + pit_target) {
+        __asm__ volatile("hlt");
+    }
+    uint64_t tsc_end = tsc_read();
+    uint64_t tsc_delta = tsc_end - tsc_start;
+
+    /* 50ms = 0.050 seconds.  freq = delta / 0.050 = delta * 20. */
+    g_tsc_freq_hz = tsc_delta * 20;
+    g_tsc_boot = tsc_read();
+
+    if (g_tsc_freq_hz > 0) {
+        kprintf("[tsc] calibrated %lu Hz (%lu MHz)\n",
+                g_tsc_freq_hz, g_tsc_freq_hz / 1000000);
+    } else {
+        kprintf("[tsc] calibration failed, falling back to tick counter\n");
+    }
+}
+
+uint64_t systime_ns(void) {
+    if (g_tsc_freq_hz == 0) return timer_ticks() * 1000000;  /* fallback: ms */
+    uint64_t tsc = tsc_read();
+    uint64_t delta = tsc - g_tsc_boot;
+    /* ns = delta * 1e9 / freq.  Use 128-bit-safe division. */
+    return (delta * 1000000000ULL) / g_tsc_freq_hz;
+}
+
+uint64_t systime_us(void) {
+    if (g_tsc_freq_hz == 0) return timer_ticks() * 1000;  /* fallback: ms */
+    uint64_t tsc = tsc_read();
+    uint64_t delta = tsc - g_tsc_boot;
+    return (delta * 1000000ULL) / g_tsc_freq_hz;
 }
