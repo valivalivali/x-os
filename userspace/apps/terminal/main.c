@@ -368,47 +368,13 @@ void terminal_main(void) {
 
         drain_bridge();
 
-        /* Block on the shell bridge port for up to 10ms.  This eliminates
-         * the 1000Hz polling loop while still pumping LVGL compositor
-         * events at ~100Hz.  When shell output arrives, the blocking recv
-         * returns immediately (wake from sched_wake_chan). */
-        if (g_bridge_port) {
-            ipc_msg_t msg;
-            if (sys_port_recv(g_bridge_port, &msg, 1)) {
-                /* Got a message — process it and drain any remaining burst. */
-                if (msg.payload_len >= sizeof(uint32_t) + sizeof(uint64_t)) {
-                    uint32_t hello = 0;
-                    memcpy(&hello, msg.payload, sizeof(hello));
-                    if (msg.type == IPC_MSG_REQUEST && hello == SHELL_BRIDGE_HELLO) {
-                        uint64_t stdin_port = 0;
-                        memcpy(&stdin_port, msg.payload + sizeof(uint32_t),
-                               sizeof(stdin_port));
-                        g_shell_stdin = stdin_port;
-                        g_shell_connected = 1;
-                    } else if (msg.payload_len > 0) {
-                        if (g_term_label)
-                            term_feed(msg.payload, msg.payload_len);
-                        else {
-                            size_t n = msg.payload_len;
-                            if (n > EARLY_OUT_CAP - g_early_out_len)
-                                n = EARLY_OUT_CAP - g_early_out_len;
-                            if (n > 0) {
-                                memcpy(g_early_out + g_early_out_len,
-                                       msg.payload, n);
-                                g_early_out_len += n;
-                            }
-                        }
-                    }
-                } else if (msg.payload_len > 0) {
-                    if (g_term_label)
-                        term_feed(msg.payload, msg.payload_len);
-                }
-                /* Drain any additional messages in the port. */
-                drain_bridge();
-            }
-        } else {
-            syscall1(12, 10);  /* NSLEEP 10ms if no bridge port yet */
-        }
+        /* We can't block on the bridge port because we also need to pump
+         * LVGL compositor events (mouse, keyboard, resize) via xos_lvgl_pump.
+         * Blocking on port_recv would use the scheduler's 100ms backstop,
+         * freezing the cursor.  Instead, use non-blocking drain + a 5ms
+         * sleep (200Hz) — smooth enough for cursor movement while reducing
+         * CPU usage 5x compared to the original 1ms poll. */
+        syscall1(12, 5);  /* SYS_NSLEEP, 5ms */
     }
 
     /* Clean up: destroy compositor surface */
