@@ -54,12 +54,12 @@ static void send_shell_byte(char c) {
     msg.sender_pid = syscall0(SYS_PROC_PID);
     msg.payload_len = 1;
     msg.payload[0] = (uint8_t)c;
-    /* If the shell's stdin port is full, the shell is likely stuck in
-     * bridge_write trying to send output to our bridge port.  Drain
-     * our bridge port between retries so the shell can proceed, drain
-     * its stdin, and accept our byte.  This breaks the circular deadlock
-     * that freezes typing with 8 CPUs. */
-    for (int tries = 0; tries < 64; tries++) {
+    /* Use blocking send with drain_bridge between attempts.  The blocking
+     * send sleeps on the port's sendq until the shell drains its stdin.
+     * If the shell is stuck in bridge_write (trying to send output to our
+     * bridge port), drain_bridge unblocks it.  The 10ms NSLEEP is a
+     * backstop in case the blocking send times out (scheduler backstop). */
+    for (int tries = 0; tries < 8; tries++) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
         drain_bridge();
@@ -159,11 +159,13 @@ static void flush_early_output(void) {
     }
 }
 
-/* Drain shell bridge port: HELLO + stdout */
+/* Drain shell bridge port: HELLO + stdout.
+ * Processes up to IPC_PORT_DEPTH messages per call to keep up with
+ * bursty output (e.g. cat of a large file). */
 static void drain_bridge(void) {
     if (!g_bridge_port) return;
     ipc_msg_t msg;
-    for (int burst = 0; burst < 16; burst++) {
+    for (int burst = 0; burst < 64; burst++) {
         if (!sys_port_recv(g_bridge_port, &msg, 0))
             break;
 
@@ -366,11 +368,47 @@ void terminal_main(void) {
 
         drain_bridge();
 
-        /* Throttle to ~1000Hz.  We can't block on a single port because
-         * we need to drain both the compositor event port (xos_lvgl_pump)
-         * and the shell bridge port (drain_bridge) — select/poll across
-         * multiple ports is not yet available. */
-        syscall1(12, 1);  /* SYS_NSLEEP, 1ms */
+        /* Block on the shell bridge port for up to 10ms.  This eliminates
+         * the 1000Hz polling loop while still pumping LVGL compositor
+         * events at ~100Hz.  When shell output arrives, the blocking recv
+         * returns immediately (wake from sched_wake_chan). */
+        if (g_bridge_port) {
+            ipc_msg_t msg;
+            if (sys_port_recv(g_bridge_port, &msg, 1)) {
+                /* Got a message — process it and drain any remaining burst. */
+                if (msg.payload_len >= sizeof(uint32_t) + sizeof(uint64_t)) {
+                    uint32_t hello = 0;
+                    memcpy(&hello, msg.payload, sizeof(hello));
+                    if (msg.type == IPC_MSG_REQUEST && hello == SHELL_BRIDGE_HELLO) {
+                        uint64_t stdin_port = 0;
+                        memcpy(&stdin_port, msg.payload + sizeof(uint32_t),
+                               sizeof(stdin_port));
+                        g_shell_stdin = stdin_port;
+                        g_shell_connected = 1;
+                    } else if (msg.payload_len > 0) {
+                        if (g_term_label)
+                            term_feed(msg.payload, msg.payload_len);
+                        else {
+                            size_t n = msg.payload_len;
+                            if (n > EARLY_OUT_CAP - g_early_out_len)
+                                n = EARLY_OUT_CAP - g_early_out_len;
+                            if (n > 0) {
+                                memcpy(g_early_out + g_early_out_len,
+                                       msg.payload, n);
+                                g_early_out_len += n;
+                            }
+                        }
+                    }
+                } else if (msg.payload_len > 0) {
+                    if (g_term_label)
+                        term_feed(msg.payload, msg.payload_len);
+                }
+                /* Drain any additional messages in the port. */
+                drain_bridge();
+            }
+        } else {
+            syscall1(12, 10);  /* NSLEEP 10ms if no bridge port yet */
+        }
     }
 
     /* Clean up: destroy compositor surface */

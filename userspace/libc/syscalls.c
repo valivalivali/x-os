@@ -150,23 +150,11 @@ static _ssize_t bridge_write(const void *buf, size_t cnt) {
         msg.payload_len = (uint32_t)chunk;
         for (size_t i = 0; i < chunk; i++)
             msg.payload[i] = ((const uint8_t *)p)[i];
-        /* Bounded retries to prevent deadlock with the terminal's
-         * send_shell_byte (which drains the bridge port between retries).
-         * If we still can't send after 64 tries, drop this chunk and
-         * continue to the next (don't abort all remaining output). */
-        int sent = 0;
-        for (int tries = 0; tries < 64; tries++) {
-            if (sys_port_send(g_bridge_output_port, &msg)) {
-                sent = 1;
-                break;
-            }
-            syscall1(12, 1);  /* SYS_NSLEEP, 1ms — throttle retries */
-        }
-        if (!sent) {
-            p += chunk;
-            remaining -= chunk;
-            continue;  /* drop this chunk, try the next */
-        }
+        /* Blocking send: sleeps until the terminal drains its bridge port.
+         * This eliminates the dropped-output problem where fast output
+         * (e.g. cat of a large file) would overflow the 64-deep port queue
+         * and get silently dropped after 64 retries. */
+        syscall3(SYS_PORT_SEND, g_bridge_output_port, (uintptr_t)&msg, 1);
         p += chunk;
         remaining -= chunk;
     }

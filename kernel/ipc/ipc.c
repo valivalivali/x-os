@@ -73,6 +73,46 @@ bool port_send(port_handle_t h, const ipc_msg_t *msg) {
     return true;
 }
 
+/* Blocking send: if the port is full, sleep on &sendq until the receiver
+ * drains some messages.  This eliminates the dropped-output problem where
+ * bridge_write would drop chunks after 64 retries. */
+bool port_send_blocking(port_handle_t h, const ipc_msg_t *msg) {
+    uint64_t entry_rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(entry_rflags));
+
+    for (;;) {
+        spinlock_acquire(&ipc_lock);
+        port_t *p = port_get(h);
+        if (!p || !msg) { spinlock_release(&ipc_lock); break; }
+
+        if (p->count < IPC_PORT_DEPTH) {
+            uint32_t idx = p->tail;
+            p->buf[idx] = *msg;
+            p->tail = (idx + 1) % IPC_PORT_DEPTH;
+            p->count++;
+            bool wake = p->recv_waiters > 0;
+            const void *chan = &p->recvq;
+            spinlock_release(&ipc_lock);
+            if (wake) sched_wake_chan(chan);
+            if (entry_rflags & (1 << 9)) sti();
+            return true;
+        }
+
+        /* Port full — sleep on sendq until the receiver drains. */
+        p->send_waiters++;
+        sched_block_on(&p->sendq, &ipc_lock, 0);
+
+        spinlock_acquire(&ipc_lock);
+        p = port_get(h);
+        if (p && p->send_waiters) p->send_waiters--;
+        spinlock_release(&ipc_lock);
+        /* Re-check: we may have been woken by the backstop timeout. */
+    }
+
+    if (entry_rflags & (1 << 9)) sti();
+    return false;
+}
+
 bool port_recv(port_handle_t h, ipc_msg_t *out, bool block) {
     /* Capture the caller's interrupt state once.  The blocking path hands
      * ipc_lock to the scheduler and returns with interrupts still disabled,
