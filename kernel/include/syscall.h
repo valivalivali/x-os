@@ -112,8 +112,9 @@
 #define SYS_SIGRETURN   95
 #define SYS_SIGSUSPEND  96
 #define SYS_NO_PREEMPT  97  /* set/clear no-preempt flag for current process */
+#define SYS_PORT_LIST   98  /* dump IPC port table for introspection */
 
-#define SYSCALL_MAX          97
+#define SYSCALL_MAX          98
 
 /* Process table entry for SYS_PROC_LIST (adv_cmds ps). */
 typedef struct {
@@ -122,6 +123,15 @@ typedef struct {
     uint32_t state; /* PROC_* from sched.h */
     char     name[16];
 } proc_info_t;
+
+/* Port table entry for SYS_PORT_LIST (introspection tool). */
+typedef struct {
+    uint32_t handle;
+    uint32_t used;      /* 1 = in use */
+    uint64_t owner_pid;
+    uint32_t count;     /* messages queued */
+    uint32_t depth;     /* capacity */
+} port_info_t;
 
 /* Page flags for SYS_MEM_MAP (match kernel VMM_* constants) */
 #define VMM_P   (1ULL << 0)
@@ -186,6 +196,7 @@ int sys_mem_share(uint64_t vaddr, uint64_t target_pid, uint64_t target_vaddr,
                   uint64_t flags);
 int sys_proc_exists(uint64_t pid);
 int sys_proc_list(proc_info_t *buf, int max);
+int sys_port_list(port_info_t *buf, int max);
 int sys_msgbuf_read(char *buf, size_t size);
 /* name: NUL-terminated OID (e.g. "kern.ostype"); out/out_len for string values. */
 int sys_sysctl(const char *name, char *out, size_t out_len);

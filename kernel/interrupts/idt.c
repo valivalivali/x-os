@@ -61,7 +61,7 @@ static void exc_report(int vec, uint64_t err, struct interrupt_frame *f) {
      * save/restore interferes with context_switch. */
     if ((f->cs & 3) == 3) {
         cpu_data_t *cpu = this_cpu();
-        proc_t *cur = cpu->current_proc;
+        proc_t *cur = (proc_t *)cpu->current_proc;
         kprintf("[exc] userspace %d in pid=%lu ip=%lx cr2=%lx — halting\n",
                 vec, cur ? cur->pid : 0, f->ip, cr2);
         for (;;) __asm__ volatile("cli; hlt");
@@ -71,7 +71,7 @@ static void exc_report(int vec, uint64_t err, struct interrupt_frame *f) {
     kprintf("    ip=%lx cs=%lx flags=%lx sp=%lx cr2=%lx cr3=%lx\n",
             f->ip, f->cs, f->flags, f->sp, cr2, cr3);
     cpu_data_t *cpu = this_cpu();
-    proc_t *cur = cpu->current_proc;
+    proc_t *cur = (proc_t *)cpu->current_proc;
     kprintf("    cpu_id=%u cur=%p pid=%lu\n", cpu->cpu_id, cur, cur ? cur->pid : 0);
     if (cur) {
         kprintf("    cur->rsp=%lx saved_ret=%lx rip=%lx state=%d ring3=%d\n",

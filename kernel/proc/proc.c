@@ -578,8 +578,7 @@ int proc_exec(const char *path, char *const argv[]) {
     /* Jump to userspace immediately — interrupts enabled by IRETQ frame */
     enter_userspace(new_pml4_phys, entry, user_rsp, 0);
 
-    /* Should never reach here */
-exec_fail:
+    /* enter_userspace never returns */
     __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
     return -1;
 }

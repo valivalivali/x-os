@@ -21,6 +21,7 @@ typedef struct {
 
 void ipc_init(void);
 port_t *port_get(port_handle_t h);
+int ipc_port_list(void *out, int max); /* for SYS_PORT_LIST */
 
 /* Simple nameserver: well-known service IDs → port handles. */
 void ns_register(uint32_t id, port_handle_t port);

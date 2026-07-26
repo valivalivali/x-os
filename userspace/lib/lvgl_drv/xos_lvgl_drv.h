@@ -29,6 +29,9 @@ typedef struct {
     void     *draw_buf1;
     void     *draw_buf2;
     bool      closed;        /* set when WM_WINDOW_CLOSE received */
+    bool      resized;       /* set when WM_WINDOW_RESIZED received */
+    uint32_t  new_w;         /* requested new width from composer */
+    uint32_t  new_h;         /* requested new height from composer */
     /* GPU mode fields */
     int      gpu_mode;       /* 1 = GPU-backed surface */
     uint32_t gpu_res_id;     /* virtio-gpu resource ID for render target */

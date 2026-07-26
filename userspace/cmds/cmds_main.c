@@ -27,6 +27,7 @@
 
 #include "kernel/include/syscall.h"
 #include "kernel/include/ipc.h"
+#include "wm.h"
 #include "kernel/fs/xfs.h"
 
 /* When launched from the terminal shell, attach stdout/stderr to the bridge. */
@@ -101,6 +102,8 @@ static int mktemp_main(int argc, char **argv);
 static int time_cmd_main(int argc, char **argv);
 static int path_helper_main(int argc, char **argv);
 static int ps_main(int argc, char **argv);
+static int ports_main(int argc, char **argv);
+static int surfaces_main(int argc, char **argv);
 static int sysctl_main(int argc, char **argv);
 static int dmesg_main(int argc, char **argv);
 static int clear_main(int argc, char **argv);
@@ -192,6 +195,8 @@ static const struct cmd_entry cmd_table[] = {
     { "time",      time_cmd_main },
     { "path_helper", path_helper_main },
     { "ps",        ps_main },
+    { "ports",     ports_main },
+    { "surfaces",  surfaces_main },
     { "sysctl",    sysctl_main },
     { "dmesg",     dmesg_main },
     { "clear",     clear_main },
@@ -256,7 +261,7 @@ int cmds_main(int argc, char **argv) {
     }
 
     fprintf(stderr, "cmds: unknown command '%s'\n", cmd);
-    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim sudo su realpath mktemp time path_helper ps sysctl dmesg clear sw_vers hostinfo pagesize arch pkill whoami sync\n");
+    fprintf(stderr, "Available: echo pwd true false basename dirname yes sleep uname cat ls env printenv hostname logname id date seq tee test printf kill wc head tail sort tr uniq cut which touch mkdir rm cp mv grep xargs expr chmod ln rmdir dd stat readlink cksum du mkfifo chown sed paste fold comm nl rev expand unexpand colrm split less more vi vim sudo su realpath mktemp time path_helper ps ports surfaces sysctl dmesg clear sw_vers hostinfo pagesize arch pkill whoami sync\n");
     return 1;
 }
 
@@ -3420,6 +3425,98 @@ static int ps_main(int argc, char **argv) {
                (unsigned long long)list[i].ppid,
                st, name);
     }
+    return 0;
+}
+
+/* ports — list IPC ports (introspection tool, like lsof for ports). */
+static int ports_main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    port_info_t list[64];
+    int n = sys_port_list(list, 64);
+    if (n < 0) {
+        fprintf(stderr, "ports: cannot read port table\n");
+        return 1;
+    }
+    printf("HANDLE  OWNER  COUNT/DEPTH\n");
+    for (int i = 0; i < n; i++) {
+        printf("%5u  %5llu  %u/%u\n",
+               list[i].handle,
+               (unsigned long long)list[i].owner_pid,
+               list[i].count, list[i].depth);
+    }
+    return 0;
+}
+
+/* surfaces — query the composer for its surface table (introspection). */
+static int surfaces_main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    uint64_t composer_port = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+    if (!composer_port) {
+        fprintf(stderr, "surfaces: composer not registered\n");
+        return 1;
+    }
+    /* Create a temporary reply port */
+    uint64_t reply_port = sys_port_create();
+    if (!reply_port) {
+        fprintf(stderr, "surfaces: cannot create reply port\n");
+        return 1;
+    }
+    /* Send list request */
+    wm_list_surfaces_msg_t req;
+    memset(&req, 0, sizeof(req));
+    req.type = WM_LIST_SURFACES;
+    req.reply_port = reply_port;
+    ipc_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = IPC_MSG_EVENT;
+    msg.sender_pid = syscall0(SYS_PROC_PID);
+    msg.payload_len = sizeof(req);
+    memcpy(msg.payload, &req, sizeof(req));
+    if (!sys_port_send(composer_port, &msg)) {
+        fprintf(stderr, "surfaces: cannot send to composer\n");
+        sys_port_close(reply_port);
+        return 1;
+    }
+    /* Wait for reply (up to ~1 second) */
+    wm_surface_list_msg_t list;
+    memset(&list, 0, sizeof(list));
+    int got = 0;
+    for (int tries = 0; tries < 1000; tries++) {
+        ipc_msg_t rmsg;
+        if (sys_port_recv(reply_port, &rmsg, 0)) {
+            if (rmsg.payload_len >= sizeof(uint32_t) &&
+                *(uint32_t *)rmsg.payload == WM_SURFACE_LIST) {
+                memcpy(&list, rmsg.payload, sizeof(list));
+                got = 1;
+                break;
+            }
+        }
+        syscall0(SYS_YIELD);
+    }
+    sys_port_close(reply_port);
+    if (!got) {
+        fprintf(stderr, "surfaces: no reply from composer\n");
+        return 1;
+    }
+    printf("  IDX  PID     X    Y      W    H  LVL FLAGS H TITLE\n");
+    for (uint32_t i = 0; i < list.count; i++) {
+        const char *lvl = "?";
+        switch (list.entries[i].level) {
+        case 0: lvl = "N"; break; /* NORMAL */
+        case 1: lvl = "P"; break; /* PANEL */
+        case 2: lvl = "O"; break; /* OVERLAY */
+        }
+        printf("%5u %5llu %4d %4d  %5u %5u  %s 0x%02x %c %s\n",
+               list.entries[i].idx,
+               (unsigned long long)list.entries[i].owner_pid,
+               list.entries[i].x, list.entries[i].y,
+               list.entries[i].w, list.entries[i].h,
+               lvl, list.entries[i].flags,
+               list.entries[i].hidden ? 'H' : ' ',
+               list.entries[i].title[0] ? list.entries[i].title : "-");
+    }
+    if (list.focused_idx != 0xFFFFFFFF)
+        printf("focused: idx=%u\n", list.focused_idx);
     return 0;
 }
 

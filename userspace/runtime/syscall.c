@@ -143,6 +143,10 @@ int sys_proc_list(proc_info_t *buf, int max) {
     return (int)syscall2(SYS_PROC_LIST, (uintptr_t)buf, (uintptr_t)max);
 }
 
+int sys_port_list(port_info_t *buf, int max) {
+    return (int)syscall2(SYS_PORT_LIST, (uintptr_t)buf, (uintptr_t)max);
+}
+
 int sys_msgbuf_read(char *buf, size_t size) {
     return (int)syscall2(SYS_MSGBUF_READ, (uintptr_t)buf, (uintptr_t)size);
 }

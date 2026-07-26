@@ -801,6 +801,15 @@ static uint64_t sys_proc_list_impl(uint64_t ubuf, uint64_t max,
     return (uint64_t)n;
 }
 
+static uint64_t sys_port_list_impl(uint64_t ubuf, uint64_t max,
+                                   uint64_t a3, uint64_t a4,
+                                   uint64_t a5, uint64_t a6) {
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    if (!ubuf || max == 0 || max > IPC_MAX_PORTS)
+        return (uint64_t)-1;
+    return (uint64_t)ipc_port_list((void *)ubuf, (int)max);
+}
+
 static uint64_t sys_msgbuf_read_impl(uint64_t ubuf, uint64_t size,
                                      uint64_t a3, uint64_t a4,
                                      uint64_t a5, uint64_t a6) {
@@ -1036,6 +1045,7 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_NET_SEND]    = (void *)sys_net_send_impl,
     [SYS_NET_RECV]    = (void *)sys_net_recv_impl,
     [SYS_PROC_LIST]   = (void *)sys_proc_list_impl,
+    [SYS_PORT_LIST]   = (void *)sys_port_list_impl,
     [SYS_MSGBUF_READ] = (void *)sys_msgbuf_read_impl,
     [SYS_SYSCTL]      = (void *)sys_sysctl_impl,
     [SYS_SIGRETURN]   = (void *)sys_sigreturn_impl,

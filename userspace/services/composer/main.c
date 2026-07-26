@@ -126,6 +126,17 @@ static surface_info_t surfaces[MAX_SURFACES];
 static int         surface_count = 0;
 static int         drag_idx = -1;
 static int         focused_idx = -1;
+/* Interactive resize state. resize_edge is a bitmask:
+ * 1=left, 2=right, 4=top, 8=bottom. 0 = not resizing. */
+static int         resize_idx = -1;
+static int         resize_edge = 0;
+static int32_t     resize_orig_x, resize_orig_y;
+static uint32_t    resize_orig_w, resize_orig_h;
+static int32_t     resize_start_mx, resize_start_my;
+/* Maximize/restore: saved bounds for restore. */
+static int32_t     max_save_x[MAX_SURFACES], max_save_y[MAX_SURFACES];
+static uint32_t    max_save_w[MAX_SURFACES], max_save_h[MAX_SURFACES];
+static int         max_saved[MAX_SURFACES];
 /* Monotonic counter for surface_info_t.z_seq — raising a surface (focus/
  * click/create) bumps it above every other surface in its level. */
 static uint32_t    g_z_seq_counter = 0;
@@ -875,6 +886,8 @@ static int destroy_surface(int idx, int acknowledge_client) {
     if (focused_idx == idx) focused_idx = -1;
     if (drag_idx == idx) drag_idx = -1;
     if (pointer_grab_idx == idx) pointer_grab_idx = -1;
+    if (resize_idx == idx) { resize_idx = -1; resize_edge = 0; }
+    max_saved[idx] = 0;
 
     /* GPU and overlay pixels are cached only in scanout; restore the layer
      * below before reusing this slot. */
@@ -1211,9 +1224,74 @@ void display_main(void) {
                             z_changed = 1;
                             goto click_done;
                         } else if (btn == 2) {
-                            /* Maximize button — toggle fullscreen-ish */
-                            /* TODO: implement maximize/restore */
+                            /* Maximize/restore button — toggle between
+                             * fullscreen-ish and saved bounds. */
+                            surface_info_t *ms = &surfaces[new_idx];
+                            if (max_saved[new_idx]) {
+                                /* Restore */
+                                ms->x = max_save_x[new_idx];
+                                ms->y = max_save_y[new_idx];
+                                ms->w = max_save_w[new_idx];
+                                ms->h = max_save_h[new_idx];
+                                max_saved[new_idx] = 0;
+                            } else {
+                                /* Maximize: save old bounds, fill screen
+                                 * (leave 0px margin — title bar stays). */
+                                max_save_x[new_idx] = ms->x;
+                                max_save_y[new_idx] = ms->y;
+                                max_save_w[new_idx] = ms->w;
+                                max_save_h[new_idx] = ms->h;
+                                max_saved[new_idx] = 1;
+                                ms->x = 0;
+                                ms->y = 0;
+                                ms->w = fb_w;
+                                ms->h = fb_h - WM_TITLE_BAR_H;
+                            }
+                            /* Notify app of new content size */
+                            if (ms->reply_port) {
+                                wm_resized_msg_t rmsg = {
+                                    .type = WM_WINDOW_RESIZED,
+                                    .surface_idx = (uint32_t)new_idx,
+                                    .w = ms->w,
+                                    .h = ms->h
+                                };
+                                ipc_msg_t m;
+                                m.type = IPC_MSG_EVENT;
+                                m.sender_pid = 0;
+                                for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) m.caps[i] = CAP_NULL;
+                                m.cap_count = 0;
+                                m.payload_len = sizeof(rmsg);
+                                uint8_t *pd = (uint8_t *)&rmsg;
+                                for (size_t i = 0; i < sizeof(rmsg); i++) m.payload[i] = pd[i];
+                                sys_port_send(ms->reply_port, &m);
+                            }
+                            z_changed = 1;
                             goto click_done;
+                        }
+
+                        /* Resize edge hit-testing (only for resizable windows).
+                         * Check before title-bar drag so corner/edge grabs win
+                         * near the borders.  6px handle zone. */
+                        if (surfaces[new_idx].flags & WM_FLAG_RESIZABLE) {
+                            surface_info_t *rs = &surfaces[new_idx];
+                            int total_h = surface_total_h(rs);
+                            int edge = 0;
+                            if (wx < 6) edge |= 1;           /* left */
+                            if (wx >= (int32_t)rs->w - 6) edge |= 2; /* right */
+                            if (wy < 6) edge |= 4;            /* top */
+                            if (wy >= total_h - 6) edge |= 8; /* bottom */
+                            if (edge) {
+                                resize_idx = new_idx;
+                                resize_edge = edge;
+                                resize_orig_x = rs->x;
+                                resize_orig_y = rs->y;
+                                resize_orig_w = rs->w;
+                                resize_orig_h = rs->h;
+                                resize_start_mx = ev.x;
+                                resize_start_my = ev.y;
+                                pointer_grab_idx = -1;
+                                goto click_done;
+                            }
                         }
 
                         /* Title bar drag area (not on a button) */
@@ -1352,6 +1430,11 @@ void display_main(void) {
                     if (drag_idx >= 0)
                         drag_end_tick = (uint64_t)syscall0(SYS_GET_TICKS);
                     drag_idx = -1;
+                    /* End interactive resize */
+                    if (resize_idx >= 0) {
+                        resize_idx = -1;
+                        resize_edge = 0;
+                    }
                 }
                 /* Forward button-up so egui can complete clicks (hovered widgets). */
                 int hit = surface_at(ev.x, ev.y);
@@ -1509,6 +1592,47 @@ void display_main(void) {
                                 s->h = nh;
                             }
                         }
+                    }
+                }
+                if (msg_type == WM_LIST_SURFACES) {
+                    if (msg.payload_len >= sizeof(wm_list_surfaces_msg_t)) {
+                        wm_list_surfaces_msg_t *ls =
+                            (wm_list_surfaces_msg_t *)msg.payload;
+                        wm_surface_list_msg_t reply;
+                        for (size_t z = 0; z < sizeof(reply); z++)
+                            ((uint8_t *)&reply)[z] = 0;
+                        reply.type = WM_SURFACE_LIST;
+                        reply.focused_idx = (focused_idx >= 0) ?
+                            (uint32_t)focused_idx : 0xFFFFFFFF;
+                        uint32_t cnt = 0;
+                        for (int i = 0; i < surface_count &&
+                             cnt < WM_SURF_LIST_MAX; i++) {
+                            if (!surfaces[i].valid) continue;
+                            reply.entries[cnt].idx     = (uint32_t)i;
+                            reply.entries[cnt].valid   = 1;
+                            reply.entries[cnt].hidden  = (uint32_t)surfaces[i].hidden;
+                            reply.entries[cnt].level   = (uint32_t)surfaces[i].level;
+                            reply.entries[cnt].flags   = surfaces[i].flags;
+                            reply.entries[cnt].x       = surfaces[i].x;
+                            reply.entries[cnt].y       = surfaces[i].y;
+                            reply.entries[cnt].w       = surfaces[i].w;
+                            reply.entries[cnt].h       = surfaces[i].h;
+                            reply.entries[cnt].owner_pid = surfaces[i].owner_pid;
+                            for (int t = 0; t < 32; t++)
+                                reply.entries[cnt].title[t] = surfaces[i].title[t];
+                            cnt++;
+                        }
+                        reply.count = cnt;
+                        ipc_msg_t rmsg;
+                        for (size_t z = 0; z < sizeof(rmsg); z++)
+                            ((uint8_t *)&rmsg)[z] = 0;
+                        rmsg.type = IPC_MSG_EVENT;
+                        rmsg.sender_pid = 0;
+                        rmsg.payload_len = sizeof(reply);
+                        uint8_t *pd = (uint8_t *)&reply;
+                        for (size_t z = 0; z < sizeof(reply); z++)
+                            rmsg.payload[z] = pd[z];
+                        sys_port_send(ls->reply_port, &rmsg);
                     }
                 }
                 if (msg_type == WM_BEGIN_MOVE) {
@@ -1771,6 +1895,74 @@ void display_main(void) {
             if (ny + th > fb_h) ny = fb_h - th;
             s->x = nx; s->y = ny;
             (void)0; /* drag position visible on screen, no log */
+        }
+
+        /* Resizing: update surface bounds from mouse delta + edge bitmask.
+         * Min content size 200x150.  Clamp to screen. */
+        if (resize_idx >= 0 && resize_edge != 0) {
+            surface_info_t *s = &surfaces[resize_idx];
+            int32_t dx = mx - resize_start_mx;
+            int32_t dy = my - resize_start_my;
+            int32_t nx = resize_orig_x;
+            int32_t ny = resize_orig_y;
+            uint32_t nw = resize_orig_w;
+            uint32_t nh = resize_orig_h;
+            const uint32_t MIN_W = 200, MIN_H = 150;
+
+            if (resize_edge & 1) { /* left */
+                int32_t max_dx = (int32_t)resize_orig_w - (int32_t)MIN_W;
+                if (dx > max_dx) dx = max_dx;
+                nx = resize_orig_x + dx;
+                nw = resize_orig_w - (uint32_t)dx;
+                if (nx < 0) { nw += (uint32_t)(-nx); nx = 0; }
+            }
+            if (resize_edge & 2) { /* right */
+                int32_t new_w = (int32_t)resize_orig_w + dx;
+                if (new_w < (int32_t)MIN_W) new_w = (int32_t)MIN_W;
+                if (nx + new_w > fb_w) new_w = fb_w - nx;
+                nw = (uint32_t)new_w;
+            }
+            if (resize_edge & 4) { /* top */
+                int32_t max_dy = (int32_t)resize_orig_h - (int32_t)MIN_H;
+                if (dy > max_dy) dy = max_dy;
+                ny = resize_orig_y + dy;
+                nh = resize_orig_h - (uint32_t)dy;
+                if (ny < 0) { nh += (uint32_t)(-ny); ny = 0; }
+            }
+            if (resize_edge & 8) { /* bottom */
+                int32_t new_h = (int32_t)resize_orig_h + dy;
+                if (new_h < (int32_t)MIN_H) new_h = (int32_t)MIN_H;
+                int th = new_h + (surface_decorated(s) ? WM_TITLE_BAR_H : 0);
+                if (ny + th > fb_h) new_h = fb_h - ny - (surface_decorated(s) ? WM_TITLE_BAR_H : 0);
+                nh = (uint32_t)new_h;
+            }
+
+            /* Only notify + damage if something actually changed */
+            if (nx != s->x || ny != s->y || nw != s->w || nh != s->h) {
+                damage_add(s->x, s->y, s->x + (int32_t)s->w,
+                           s->y + surface_total_h(s), 0);
+                s->x = nx; s->y = ny; s->w = nw; s->h = nh;
+                damage_add(nx, ny, nx + (int32_t)nw, ny + surface_total_h(s), 0);
+                /* Notify app of new content size so it can recreate its
+                 * GPU render target (or re-layout its CPU buffer). */
+                if (s->reply_port && (nw != resize_orig_w || nh != resize_orig_h)) {
+                    wm_resized_msg_t rmsg = {
+                        .type = WM_WINDOW_RESIZED,
+                        .surface_idx = (uint32_t)resize_idx,
+                        .w = nw,
+                        .h = nh
+                    };
+                    ipc_msg_t m;
+                    m.type = IPC_MSG_EVENT;
+                    m.sender_pid = 0;
+                    for (int i = 0; i < IPC_CAP_MAX_PER_MSG; i++) m.caps[i] = CAP_NULL;
+                    m.cap_count = 0;
+                    m.payload_len = sizeof(rmsg);
+                    uint8_t *pd = (uint8_t *)&rmsg;
+                    for (size_t i = 0; i < sizeof(rmsg); i++) m.payload[i] = pd[i];
+                    sys_port_send(s->reply_port, &m);
+                }
+            }
         }
 
         int32_t draw_x = mx - CURSOR_HOT_X;

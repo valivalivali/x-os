@@ -37,6 +37,8 @@
 #define WM_SET_BOUNDS        22  /* app -> composer: move/resize surface  */
 #define WM_BEGIN_MOVE        23  /* app -> composer: start title-bar drag */
 #define WM_SURFACE_DESTROYED 24  /* composer -> app: teardown is complete  */
+#define WM_LIST_SURFACES     25  /* app -> composer: dump surface table    */
+#define WM_SURFACE_LIST      26  /* composer -> app: surface table reply   */
 
 /* ---- Window flags ----------------------------------------------------- */
 
@@ -213,6 +215,31 @@ typedef struct {
     uint32_t fb_w, fb_h;
     uint32_t fb_stride;
 } wm_capture_ready_msg_t;
+
+/* App -> Composer: list surfaces (introspection) */
+typedef struct {
+    uint32_t type;          /* WM_LIST_SURFACES */
+    uint64_t reply_port;    /* where to send the reply */
+} wm_list_surfaces_msg_t;
+
+/* Composer -> App: surface table reply (one entry per surface) */
+#define WM_SURF_LIST_MAX 8
+typedef struct {
+    uint32_t type;          /* WM_SURFACE_LIST */
+    uint32_t count;         /* number of valid entries */
+    uint32_t focused_idx;   /* index of focused surface, or 0xFFFFFFFF */
+    struct {
+        uint32_t idx;
+        uint32_t valid;
+        uint32_t hidden;
+        uint32_t level;     /* SURF_LEVEL_* */
+        uint32_t flags;     /* WM_FLAG_* */
+        int32_t  x, y;
+        uint32_t w, h;
+        uint64_t owner_pid;
+        char     title[32];
+    } entries[WM_SURF_LIST_MAX];
+} wm_surface_list_msg_t;
 
 /* ---- Namespacing port ------------------------------------------------- */
 

@@ -723,16 +723,6 @@ int xfs_exists(const char *path) {
  * Since XFS has no symlink support, /etc, /var, /tmp are real directories
  * (not /private symlinks like macOS). */
 
-static void mkdir_if_missing(const char *path) {
-    if (!xfs_exists(path)) {
-        if (xfs_mkdir(path) == 0) {
-            kprintf("[xfs] created %s\n", path);
-        } else {
-            kprintf("[xfs] FAILED to create %s\n", path);
-        }
-    }
-}
-
 void xfs_create_hierarchy(void) {
     /* Disk is pre-seeded by xfs_mkfs at build time.
      * Directories are created on demand via xfs_mkdir when needed. */

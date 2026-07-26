@@ -420,7 +420,63 @@ void xos_lvgl_pump(xos_lvgl_ctx_t *ctx)
                                    ke->key, ke->action);
             } else if (type == WM_WINDOW_CLOSE) {
                 ctx->closed = true;
+            } else if (type == WM_WINDOW_RESIZED) {
+                wm_resized_msg_t *rm = (wm_resized_msg_t *)msg.payload;
+                ctx->new_w = rm->w;
+                ctx->new_h = rm->h;
+                ctx->resized = true;
             }
+        }
+    }
+
+    /* Handle resize: recreate GPU resource at new size and re-notify composer.
+     * The backing buffer is reused if large enough; otherwise we clamp the
+     * texture to the backing buffer dimensions (composer stretches the quad). */
+    if (ctx->resized && ctx->gpu_mode) {
+        ctx->resized = false;
+        uint32_t nw = ctx->new_w;
+        uint32_t nh = ctx->new_h;
+        if (nw > 0 && nh > 0) {
+            /* Clamp to backing buffer capacity */
+            uint32_t max_pixels = ctx->gpu_backing_size / 4;
+            if (nw * nh > max_pixels) {
+                /* Keep aspect ratio, scale down to fit */
+                float scale = (float)max_pixels / (float)(nw * nh);
+                nw = (uint32_t)(nw * scale);
+                nh = (uint32_t)(nh * scale);
+                if (nw < 1) nw = 1;
+                if (nh < 1) nh = 1;
+            }
+            ctx->width = (int32_t)nw;
+            ctx->height = (int32_t)nh;
+            /* Recreate GPU texture resource at new size */
+            sys_gpu_res_create_3d(ctx->gpu_res_id, PIPE_TEXTURE_2D,
+                                  PIPE_FORMAT_R8G8B8A8_UNORM,
+                                  VIRGL_BIND_SAMPLER_VIEW,
+                                  nw, nh, 1, 1, 0, 0, 0);
+            sys_gpu_res_attach_virt(ctx->gpu_res_id, ctx->gpu_backing_vaddr,
+                                    (ctx->gpu_backing_size + XOS_PAGE_SIZE - 1) / XOS_PAGE_SIZE,
+                                    ctx->gpu_backing_size);
+            /* Re-notify composer with new texture dimensions */
+            wm_surface_gpu_ready_msg_t gr;
+            memset(&gr, 0, sizeof(gr));
+            gr.type = WM_SURFACE_GPU_READY;
+            gr.surface_idx = ctx->surface_idx;
+            gr.gpu_res_id = ctx->gpu_res_id;
+            gr.gpu_ctx_id = 0;
+            gr.tex_w = nw;
+            gr.tex_h = nh;
+            gr.generation = ctx->surface_generation;
+            ipc_msg_t rmsg;
+            memset(&rmsg, 0, sizeof(rmsg));
+            rmsg.type = IPC_MSG_EVENT;
+            rmsg.sender_pid = syscall0(SYS_PROC_PID);
+            rmsg.payload_len = sizeof(gr);
+            memcpy(rmsg.payload, &gr, sizeof(gr));
+            port_handle_t cp = sys_ns_lookup(WM_COMPOSER_PORT_NS);
+            if (cp) sys_port_send(cp, &rmsg);
+            /* Update LVGL display resolution */
+            lv_display_set_resolution(ctx->disp, nw, nh);
         }
     }
 

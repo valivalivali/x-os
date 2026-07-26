@@ -29,20 +29,6 @@ static void log(const char *s) {
     syscall2(SYS_DEBUG_LOG, (uintptr_t)s, n);
 }
 
-static void log_int(const char *prefix, int32_t val, const char *suffix) {
-    char buf[64];
-    int p = 0;
-    for (const char *c = prefix; *c && p < 60; c++) buf[p++] = *c;
-    if (val < 0) { buf[p++] = '-'; val = -val; }
-    char tmp[12]; int t = 0;
-    if (val == 0) tmp[t++] = '0';
-    while (val > 0 && t < 11) { tmp[t++] = '0' + (val % 10); val /= 10; }
-    while (t > 0 && p < 62) buf[p++] = tmp[--t];
-    for (const char *c = suffix; *c && p < 63; c++) buf[p++] = *c;
-    buf[p] = '\0';
-    log(buf);
-}
-
 /* ---- IPC ----------------------------------------------------------------- */
 
 static uint64_t g_port = 0;

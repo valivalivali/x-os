@@ -59,7 +59,7 @@ static void send_shell_byte(char c) {
      * our bridge port between retries so the shell can proceed, drain
      * its stdin, and accept our byte.  This breaks the circular deadlock
      * that freezes typing with 8 CPUs. */
-    for (int tries = 0; tries < 16; tries++) {
+    for (int tries = 0; tries < 64; tries++) {
         if (sys_port_send(g_shell_stdin, &msg))
             return;
         drain_bridge();

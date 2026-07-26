@@ -68,6 +68,13 @@ void keyboard_handle_byte(uint8_t sc) {
 }
 
 static void keyboard_isr(void) {
+    /* Check OBF before reading — the timer poll path (keyboard_poll in
+     * timer.c) may have already consumed the byte, leaving a spurious
+     * IRQ1 pending.  Reading 0x60 with OBF=0 returns the last byte
+     * (the port is a latch), which would duplicate the previous key. */
+    uint8_t st = inb(0x64);
+    if (!(st & 0x01)) return;       /* output buffer empty — spurious IRQ */
+    if (st & 0x20) return;          /* mouse data, not keyboard */
     keyboard_handle_byte(inb(0x60));
 }
 

@@ -159,6 +159,41 @@ static uint32_t get_screen_height(void) {
     return 1600;
 }
 
+/* ---- SIGCHLD reaping ----------------------------------------------------- */
+/*
+ * The dock forks child processes (Terminal, etc.) but never waited on them,
+ * so every exit produced "[sig] SIGCHLD to pid=11 DROPPED (handler=0x0 DFL/IGN)"
+ * and a zombie. Install a SIGCHLD handler that reaps with WNOHANG.
+ *
+ * Kernel sigaction layout (Apple/BSD, see kernel/bsd/syscalls.c):
+ *   sa_handler @0, sa_mask @8, sa_flags @16.
+ */
+#define DOCK_SIGCHLD   20
+#define DOCK_WNOHANG   1
+
+struct dock_sigaction {
+    uint64_t sa_handler;
+    uint64_t sa_mask;
+    int      sa_flags;
+};
+
+/* Async-signal-safe: reap every pending zombie, drop the status. */
+static void dock_sigchld_handler(int signum) {
+    (void)signum;
+    for (;;) {
+        int ret = sys_waitpid(-1, NULL, DOCK_WNOHANG);
+        if (ret <= 0) break; /* 0 = none ready, -ECHILD = no children */
+    }
+}
+
+static void install_sigchld_handler(void) {
+    struct dock_sigaction act;
+    act.sa_handler = (uint64_t)(uintptr_t)dock_sigchld_handler;
+    act.sa_mask    = 0;
+    act.sa_flags   = 0;
+    sys_sigaction(DOCK_SIGCHLD, &act, NULL);
+}
+
 /* ---- App launching ------------------------------------------------------- */
 
 #define MAX_DOCK_APPS 8
@@ -251,6 +286,10 @@ static void launch_app(int idx) {
 
 void dock_main(void) {
     log("[dock] start\n");
+
+    /* Reap children before forking any app — otherwise every launch leaks a
+     * zombie and the kernel drops SIGCHLD with "DFL/IGN". */
+    install_sigchld_handler();
 
     uint32_t screen_w = get_screen_width();
     log("[dock] screen_w ok\n");

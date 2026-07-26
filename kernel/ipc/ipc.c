@@ -1,4 +1,5 @@
 #include "kernel/ipc/ipc.h"
+#include "kernel/include/syscall.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/sched/sched.h"
@@ -9,6 +10,25 @@ static spinlock_t ipc_lock = SPINLOCK_INIT;
 
 void ipc_init(void) {
     memset(ports, 0, sizeof(ports));
+}
+
+/* Dump port table for SYS_PORT_LIST introspection. Returns count filled. */
+int ipc_port_list(void *out, int max) {
+    if (!out || max <= 0) return 0;
+    port_info_t *entries = (port_info_t *)out;
+    uint64_t rflags = spinlock_acquire_irqsave(&ipc_lock);
+    int n = 0;
+    for (int i = 1; i < IPC_MAX_PORTS && n < max; i++) {
+        if (!ports[i].used) continue;
+        entries[n].handle    = (uint32_t)i;
+        entries[n].used      = 1;
+        entries[n].owner_pid = ports[i].owner_pid;
+        entries[n].count     = ports[i].count;
+        entries[n].depth     = IPC_PORT_DEPTH;
+        n++;
+    }
+    spinlock_release_irqrestore(&ipc_lock, rflags);
+    return n;
 }
 
 port_t *port_get(port_handle_t h) {

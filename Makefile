@@ -449,10 +449,10 @@ $(DOCK_ELF): userspace/services/dock/start.S userspace/services/dock/main.c $(DO
 # ---- shell commands (multi-call binary, busybox-style) -------------------
 cmds: $(CMDS_ELF)
 
-$(CMDS_ELF): userspace/cmds/cmds_start.S userspace/cmds/cmds_main.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/cmds/cmds.ld
+$(CMDS_ELF): userspace/cmds/cmds_start.S userspace/cmds/cmds_main.c userspace/libc/syscalls.c userspace/runtime/syscall.c userspace/cmds/cmds.ld userspace/lib/wm/wm.h
 	@mkdir -p $(dir $@)
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/cmds/cmds_start.S -o $(BUILD_DIR)/userspace/cmds/cmds_start.o
-	$(CC) $(LIBC_CFLAGS) -msse -msse2 -c userspace/cmds/cmds_main.c -o $(BUILD_DIR)/userspace/cmds/cmds_main.o
+	$(CC) $(LIBC_CFLAGS) -msse -msse2 -Iuserspace/lib/wm -c userspace/cmds/cmds_main.c -o $(BUILD_DIR)/userspace/cmds/cmds_main.o
 	$(CC) $(LIBC_CFLAGS) -c userspace/libc/syscalls.c -o $(BUILD_DIR)/userspace/cmds/cmds_syscalls.o
 	$(CC) $(USERSPACE_CFLAGS) -c userspace/runtime/syscall.c -o $(BUILD_DIR)/userspace/cmds/cmds_xos_syscall.o
 	$(LD) -nostdlib -static -no-pie -z max-page-size=0x1000 -m elf_x86_64 -T userspace/cmds/cmds.ld \
