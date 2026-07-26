@@ -2,6 +2,7 @@
 #include "kernel/hal/apic/lapic.h"
 #include "kernel/hal/apic/spinlock.h"
 #include "kernel/arch/x86_64/gdt.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/interrupts/idt.h"
 #include "kernel/sched/sched.h"
 #include "kernel/memory/pmm.h"
@@ -154,6 +155,10 @@ void ap_entry(struct handoff_cpu_info *info) {
     /* Enable SSE (same as BSP does in kmain) */
     extern void enable_sse(void);
     enable_sse();
+
+    /* Apply the same CR4/EFER/XCR0 feature set the BSP enabled.  Must run
+     * before syscall_init_ap(), which does a read-modify-write of EFER. */
+    cpu_enable_features();
 
     /* Configure syscall MSRs (EFER.SCE, STAR, LSTAR, SFMASK) for this CPU. */
     extern void syscall_init_ap(void);

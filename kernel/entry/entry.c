@@ -26,6 +26,7 @@
 #include "kernel/hal/apic/smp.h"
 #include "kernel/hal/apic/lapic.h"
 #include "kernel/interrupts/idt.h"
+#include "kernel/arch/x86_64/cpu.h"
 
 extern const uint8_t *init_elf_data;
 extern size_t init_elf_len;
@@ -33,18 +34,22 @@ extern size_t init_elf_len;
 /* Ensure SSE/SSE2 is usable (Limine enables it, but make it explicit so the
  * compiler may freely emit SSE for math/animation code). */
 void enable_sse(void) {
-    uint64_t cr0, cr4;
+    uint64_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     cr0 &= ~(1ULL << 2); /* clear EM  */
     cr0 |=  (1ULL << 1); /* set   MP  */
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
-    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= (1ULL << 9) | (1ULL << 10); /* OSFXSR | OSXMMEXCPT */
-    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+    /* CR4.OSFXSR / OSXMMEXCPT and everything else is handled by
+     * cpu_enable_features() from the CPUID feature table. */
 }
 
 void kmain(void) {
     enable_sse();
+    /* Probe the CPU and turn on NX / SMEP / UMIP / XSAVE before anything
+     * else runs — NX in particular must be live before the VMM writes a
+     * PTE with bit 63 set. */
+    cpu_features_detect();
+    cpu_enable_features();
     serial_init();
     msgbuf_init();
 
@@ -62,6 +67,8 @@ void kmain(void) {
             h->fb.width, h->fb.height, h->fb.pitch, h->fb.bpp, (void *)h->fb.addr);
     boot_log("hhdm=%p memmap entries=%lu\n",
             (void *)h->hhdm_offset, h->memmap_count);
+
+    cpu_features_report();
 
     pmm_init();
     heap_init();

@@ -274,9 +274,14 @@ TEST_LIBC_ELF := $(BUILD_DIR)/userspace/libc/test_libc.elf
 # Auto-detect host CPU count (logical cores = physical + hyperthreads)
 SMP_CPUS := $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
-QEMU_BASE  := -M q35 -m 512M -smp $(SMP_CPUS) -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
+# CPU model.  The QEMU default is a 2005-era AMD K8 with no SMEP/SMAP/XSAVE/
+# AVX/x2APIC/TSC-deadline, which is not something a modern kernel should be
+# developed against.  'max' exposes everything the accelerator can provide.
+QEMU_CPU   := -cpu max
 
-.PHONY: all run run-uefi clean distclean setup limine cmds thorvg zlib lvgl libcxx-src
+QEMU_BASE  := -M q35 -m 512M -smp $(SMP_CPUS) $(QEMU_CPU) -no-reboot -rtc base=localtime -name "X OS" -vga none -device virtio-gpu-gl-pci,max_outputs=1,xres=2560,yres=1600 -display cocoa,show-cursor=off,gl=es
+
+.PHONY: all run run-uefi run-headless boottest clean distclean setup limine cmds thorvg zlib lvgl libcxx-src
 
 all: $(ISO)
 
@@ -600,6 +605,26 @@ run: $(ISO) $(DISK_IMG)
 run-uefi: $(ISO) $(DISK_IMG)
 	$(QEMU) $(QEMU_BASE) -serial stdio \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
+	  -cdrom $(ISO) -boot d $(NVME_DRIVE) $(NVME_DEV) \
+	  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+
+# Headless boot for automated verification: no window, no host GL, serial on
+# stdout.  Used by `make boottest`; also handy over ssh.  Plain virtio-gpu
+# (not -gl) so it works without a host OpenGL context.
+QEMU_HEADLESS := -M q35 -m 512M -smp $(SMP_CPUS) $(QEMU_CPU) -no-reboot -rtc base=localtime \
+  -name "X OS" -vga none \
+  -device virtio-gpu-pci,max_outputs=1,xres=1280,yres=800 -display none
+
+run-headless: $(ISO) $(DISK_IMG)
+	$(QEMU) $(QEMU_HEADLESS) -serial stdio -cdrom $(ISO) -boot d \
+	  $(NVME_DRIVE) $(NVME_DEV) \
+	  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+
+# Boot the ISO headless for BOOTTEST_SECS and dump the serial log.  Fails if
+# the kernel panics, hits an unhandled exception, or never reaches userspace.
+BOOTTEST_SECS ?= 15
+boottest: $(ISO) $(DISK_IMG)
+	@bash scripts/boottest.sh "$(QEMU)" "$(BOOTTEST_SECS)" $(QEMU_HEADLESS) \
 	  -cdrom $(ISO) -boot d $(NVME_DRIVE) $(NVME_DEV) \
 	  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 
