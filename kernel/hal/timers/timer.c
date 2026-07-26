@@ -65,9 +65,14 @@ static void timer_tick(void) {
     }
     /* Process expired FreeBSD callouts (TCP retransmit, keepalive, etc.) */
     callout_process((unsigned long long)ticks * tick_sbt);
-    /* Poll virtio-net for received packets and feed into FreeBSD stack */
+    /* Poll virtio-net for received packets and feed into FreeBSD stack.
+     * Only poll if MSI-X is NOT active — when MSI-X is enabled, the
+     * RX interrupt handler calls vioif_rx_poll directly.  We still poll
+     * as a fallback in case MSI-X setup failed. */
     extern void vioif_rx_poll(void);
-    vioif_rx_poll();
+    extern bool virtio_net_msix_is_active(void);
+    if (!virtio_net_msix_is_active())
+        vioif_rx_poll();
     /* Deferred preemption: set need_resched flag instead of calling
      * sched_yield_try().  The flag is checked at safe points (syscall
      * return, interrupt return to userspace, idle loop).  This follows

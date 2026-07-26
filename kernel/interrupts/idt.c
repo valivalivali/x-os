@@ -2,6 +2,7 @@
 #include "kernel/interrupts/pic.h"
 #include "kernel/hal/apic/lapic.h"
 #include "kernel/hal/apic/smp.h"
+#include "kernel/hal/pci/msix.h"
 #include "kernel/sched/sched.h"
 #include "kernel/memory/fault.h"
 #include "kernel/lib/kprintf.h"
@@ -36,6 +37,11 @@ static void set_gate(int n, void *handler, uint8_t type_attr) {
     idt[n].off_mid   = (a >> 16) & 0xFFFF;
     idt[n].off_high  = (a >> 32) & 0xFFFFFFFF;
     idt[n].zero      = 0;
+}
+
+/* Public version for MSI-X vector registration (called from msix.c). */
+void set_gate_raw(int n, void *handler, uint8_t type_attr) {
+    set_gate(n, handler, type_attr);
 }
 
 /* ---- CPU exceptions ---------------------------------------------------- */
@@ -205,6 +211,9 @@ void idt_init(void) {
     set_gate(IPI_VECTOR_STOP,        lapic_isr_stop,      0x8E);
     set_gate(IPI_VECTOR_CALL_FUNC,   lapic_isr_call_func, 0x8E);
     set_gate(LAPIC_TIMER_VECTOR,     lapic_isr_timer,     0x8E);
+
+    /* Install MSI-X vector stubs (vectors 0x40-0x5F). */
+    msix_idt_init();
 
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint64_t)&idt[0];

@@ -4,6 +4,7 @@
 
 #include "kernel/hal/block/nvme.h"
 #include "kernel/hal/pci/pci.h"
+#include "kernel/hal/pci/msix.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/vmm.h"
 #include "kernel/lib/string.h"
@@ -147,6 +148,15 @@ typedef struct {
 /* Static controller */
 
 static nvme_ctrl_t g_nvme;
+static msix_cap_t g_nvme_msix;
+static volatile bool g_nvme_io_irq = false;  /* set by MSI-X I/O ISR */
+
+/* MSI-X I/O completion interrupt handler.
+ * Just sets a flag — the submit_io poll loop will see the new CQ entry. */
+static void nvme_io_isr(void *ctx) {
+    (void)ctx;
+    g_nvme_io_irq = true;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Utility */
@@ -240,6 +250,7 @@ static bool submit_admin(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
 
     /* Poll completion queue */
     for (uint32_t spins = 0; spins < 10000000; spins++) {
+        __asm__ volatile("pause");
         volatile nvme_cqe_t *cqe = &ctrl->admin_cq[ctrl->admin_cq_head];
         uint16_t phase = cqe->phase_status & 1;
         if (cqe->cid == my_cid && phase == ctrl->admin_cq_phase) {
@@ -281,6 +292,7 @@ static bool submit_io(nvme_ctrl_t *ctrl, nvme_cmd_t *cmd, uint32_t *result) {
     uint16_t my_cid = (cmd->dw0 >> 16) & 0xFFFF;
 
     for (uint32_t spins = 0; spins < 100000000; spins++) {
+        __asm__ volatile("pause");
         volatile nvme_cqe_t *cqe = &ctrl->io_cq[ctrl->io_cq_head];
         uint16_t phase = cqe->phase_status & 1;
         /* Some controllers (e.g. QEMU) don't toggle phase on wrap;
@@ -542,6 +554,22 @@ block_dev_t *nvme_probe(void) {
     if (!admin_create_io_sq(ctrl)) {
         kputs("[nvme] create IO SQ failed\n");
         return NULL;
+    }
+
+    /* Enable MSI-X for I/O completion interrupts.
+     * NVMe uses vector 0 for admin queue and vector 1 for I/O queue.
+     * We only enable the I/O vector — admin commands are synchronous
+     * and poll during initialization. */
+    if (msix_parse(&pci, &g_nvme_msix)) {
+        msix_enable(&pci, &g_nvme_msix);
+        uint8_t io_vec = msix_alloc_vector(nvme_io_isr, NULL);
+        if (io_vec && g_nvme_msix.table) {
+            /* Entry 1 = I/O CQ interrupt (entry 0 = admin CQ). */
+            msix_program_entry(&g_nvme_msix, 1, io_vec, 0);
+            kprintf("[nvme] MSI-X enabled (I/O vector=0x%x)\n", io_vec);
+        }
+    } else {
+        kprintf("[nvme] no MSI-X, using polling\n");
     }
 
     /* Identify namespace 1 */

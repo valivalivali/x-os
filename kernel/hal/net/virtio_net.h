@@ -43,3 +43,4 @@ int virtio_net_send(const void *data, int len);
 int virtio_net_recv(void *buf, int maxlen);
 bool virtio_net_is_ready(void);
 void virtio_net_get_mac(uint8_t mac[6]);
+bool virtio_net_msix_is_active(void);  /* true if RX uses MSI-X interrupts */

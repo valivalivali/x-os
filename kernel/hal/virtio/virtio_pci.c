@@ -30,6 +30,12 @@ bool virtio_pci_probe(virtio_pci_dev_t *vdev, uint16_t device_id) {
             vdev->pci.vendor = vendor;
             vdev->pci.device = device;
 
+            /* Populate all BARs so MSI-X can locate its table. */
+            for (int i = 0; i < 6; i++) {
+                vdev->pci.bar[i] = pci_read_bar(&vdev->pci, i);
+                vdev->pci.bar_valid[i] = (vdev->pci.bar[i] != 0);
+            }
+
             /* Walk PCI capabilities */
             uint8_t status = pci_readb((uint8_t)bus, d, 0, PCI_STATUS);
             if (!(status & 0x10)) return false; /* no capabilities */

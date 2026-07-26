@@ -1,9 +1,11 @@
 /* x-os VirtIO-Net Driver
  *
  * Provides packet send/receive via QEMU's virtio-net-pci device.
+ * Uses MSI-X interrupts for RX notification instead of timer-tick polling.
  */
 
 #include "kernel/hal/net/virtio_net.h"
+#include "kernel/hal/pci/msix.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/heap.h"
 #include "kernel/lib/string.h"
@@ -23,6 +25,16 @@ static virtqueue_t g_txq;
 static struct virtio_net_config *g_net_cfg = NULL;
 static uint8_t g_mac[6] = {0};
 static bool g_net_ready = false;
+static msix_cap_t g_net_msix;
+static bool g_net_msix_active = false;
+
+/* RX interrupt handler — called from MSI-X stub when the device has
+ * filled RX buffers.  Delegates to the BSD layer to process packets. */
+static void virtio_net_rx_isr(void *ctx) {
+    (void)ctx;
+    extern void vioif_rx_poll(void);
+    vioif_rx_poll();
+}
 
 /* RX buffer pool — pre-allocated buffers for receiving packets */
 #define RX_BUF_COUNT  16
@@ -99,6 +111,25 @@ bool virtio_net_init(void) {
     if (!virtio_pci_setup_queue(&g_netdev, &g_txq, 1)) {
         kputs("[virtio-net] TX queue setup failed\n");
         return false;
+    }
+
+    /* Set up MSI-X for RX interrupts (vector 0 = RX queue). */
+    if (msix_parse(&g_netdev.pci, &g_net_msix)) {
+        msix_enable(&g_netdev.pci, &g_net_msix);
+        uint8_t rx_vec = msix_alloc_vector(virtio_net_rx_isr, NULL);
+        if (rx_vec && g_net_msix.table) {
+            /* Route RX interrupt to BSP (CPU 0). */
+            msix_program_entry(&g_net_msix, 0, rx_vec, 0);
+            /* Tell the virtio common config which MSI-X vector the RX
+             * queue (queue 0) uses.  Writing the queue index first,
+             * then the vector. */
+            g_netdev.common->queue_select = 0;
+            g_netdev.common->queue_msix_vector = rx_vec - 0x40;
+            g_net_msix_active = true;
+            kprintf("[virtio-net] MSI-X enabled (RX vector=0x%x)\n", rx_vec);
+        }
+    } else {
+        kprintf("[virtio-net] no MSI-X, falling back to timer polling\n");
     }
 
     virtio_pci_set_status(&g_netdev, VIRTIO_STATUS_DRIVER_OK);
@@ -201,6 +232,10 @@ int virtio_net_recv(void *buf, int maxlen) {
 
 bool virtio_net_is_ready(void) {
     return g_net_ready;
+}
+
+bool virtio_net_msix_is_active(void) {
+    return g_net_msix_active;
 }
 
 void virtio_net_get_mac(uint8_t mac[6]) {
