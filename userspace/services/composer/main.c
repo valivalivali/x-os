@@ -1968,6 +1968,9 @@ void display_main(void) {
         int32_t draw_x = mx - CURSOR_HOT_X;
         int32_t draw_y = my - CURSOR_HOT_Y;
         int cursor_moved = (draw_x != old_cx || draw_y != old_cy || first);
+        if (cursor_moved && heartbeat < 200) {
+            log_xy("[composer] cursor ", mx, my, "\n");
+        }
 
         /* Compute global dirty rect. */
         int dirty_x0 = fb_w, dirty_y0 = fb_h;
