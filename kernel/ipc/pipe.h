@@ -12,3 +12,6 @@ void pipe_close(int fd);
 int pipe_dup(int oldfd, int newfd);
 /* Bump end-refs on pipes created by parent so the child keeps working copies. */
 void pipe_fork_inherit(uint32_t parent_pid);
+/* Poll helpers for select/poll support. */
+int pipe_readable(int fd);   /* returns 1 if pipe has data to read */
+int pipe_writable(int fd);   /* returns 1 if pipe has space to write */

@@ -13,6 +13,7 @@
 #include "kernel/sched/sched.h"
 #include "kernel/lib/string.h"
 #include "kernel/proc/signal.h"
+#include "kernel/arch/x86_64/cpu.h"
 
 /* Kernel-side termios definitions (adapted from XNU bsd/sys/termios.h) */
 #define NCCS 20
@@ -300,16 +301,191 @@ uint64_t sys_getsockopt_impl(uint64_t fd, uint64_t level, uint64_t optname,
     return 0;
 }
 
-uint64_t sys_select_impl(uint64_t nfds, uint64_t readfds, uint64_t writefds,
-                         uint64_t exceptfds, uint64_t timeout, uint64_t a6) {
-    (void)nfds; (void)readfds; (void)writefds; (void)exceptfds; (void)timeout; (void)a6;
-    return 0;
+/* ---- select/poll implementation ------------------------------------------
+ *
+ * Real select/poll using the BSD socket layer's sopoll_generic and the
+ * X OS scheduler's block_on/wake_chan for sleeping.
+ *
+ * Only socket FDs (managed by the BSD fd_table) are supported.  Pipe and
+ * XFS FDs are checked separately (pipes: data_bytes > 0 means readable). */
+
+/* Forward declarations for BSD socket layer (avoid pulling in BSD headers
+ * which conflict with kernel headers). */
+struct file;
+struct thread;
+typedef unsigned long cap_rights_t;
+extern const cap_rights_t cap_no_rights;
+extern int fget_unlocked(struct thread *td, int fd, const cap_rights_t *rightsp,
+                         struct file **fpp);
+extern void xos_select_set_chan(void *chan);
+extern void xos_select_clear_chan(void);
+extern int xos_fop_poll(struct file *fp, int events);
+extern void xos_fdrop(struct file *fp);
+
+/* Poll a single FD. Returns revents (0 if not ready). */
+static int xos_poll_fd(int fd, int events) {
+    /* Pipe FDs (>= 64): check if readable/writable */
+    if (fd >= 64) {
+        extern int pipe_readable(int fd);
+        extern int pipe_writable(int fd);
+        int revents = 0;
+        if (events & 0x001 && pipe_readable(fd)) revents |= 0x001; /* POLLIN */
+        if (events & 0x004 && pipe_writable(fd)) revents |= 0x004; /* POLLOUT */
+        return revents;
+    }
+
+    /* Socket FDs: use BSD fo_poll */
+    struct file *fp = NULL;
+    if (fget_unlocked(NULL, fd, &cap_no_rights, &fp) != 0 || !fp)
+        return 0;  /* not a socket FD, or bad FD */
+
+    int revents = xos_fop_poll(fp, events);
+    xos_fdrop(fp);
+    return revents;
 }
+
+/* pollfd structure (POSIX) */
+struct xos_pollfd {
+    int fd;
+    short events;
+    short revents;
+};
 
 uint64_t sys_poll_impl(uint64_t fds, uint64_t nfds, uint64_t timeout,
                        uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)fds; (void)nfds; (void)timeout; (void)a4; (void)a5; (void)a6;
-    return 0;
+    (void)a4; (void)a5; (void)a6;
+    if (!fds || nfds == 0 || nfds > 256) return 0;
+
+    /* Copy pollfd array from userspace */
+    struct xos_pollfd pfds[256];
+    cpu_user_access_begin();
+    memcpy(pfds, (void *)fds, nfds * sizeof(struct xos_pollfd));
+    cpu_user_access_end();
+
+    /* Convert timeout (ms) to ticks for sched_block_on */
+    uint64_t deadline_ticks = 0;
+    if (timeout >= 0) {
+        extern uint64_t timer_ticks(void);
+        extern uint64_t timer_ticks_hz(void);
+        deadline_ticks = timer_ticks() + (timeout * timer_ticks_hz()) / 1000;
+    }
+
+    /* Wait channel for this poll call (stack address, unique per call). */
+    int wait_chan;
+
+    for (;;) {
+        int ready_count = 0;
+
+        /* Set the select channel so selrecord can find it. */
+        xos_select_set_chan(&wait_chan);
+
+        /* Poll all FDs */
+        for (uint64_t i = 0; i < nfds; i++) {
+            pfds[i].revents = 0;
+            if (pfds[i].fd < 0) continue;
+            int revents = xos_poll_fd(pfds[i].fd, pfds[i].events);
+            pfds[i].revents = (short)revents;
+            if (revents) ready_count++;
+        }
+
+        xos_select_clear_chan();
+
+        /* If any FD is ready, copy results back and return. */
+        if (ready_count > 0) {
+            cpu_user_access_begin();
+            memcpy((void *)fds, pfds, nfds * sizeof(struct xos_pollfd));
+            cpu_user_access_end();
+            return (uint64_t)ready_count;
+        }
+
+        /* Check timeout */
+        if (timeout == 0) return 0;  /* immediate, nothing ready */
+        if (timeout > 0) {
+            extern uint64_t timer_ticks(void);
+            if (timer_ticks() >= deadline_ticks) return 0;
+        }
+
+        /* Block briefly (10ms backstop) and retry.  The selwakeup
+         * infrastructure will wake us if a socket becomes ready. */
+        sched_block_on(&wait_chan, NULL, 10);
+    }
+}
+
+/* fd_set helpers (bitmap of FDs) */
+#define XOS_NFDBITS (8 * sizeof(uint64_t))
+#define XOS_FD_SETSIZE 256
+
+static inline void fd_set_bit(uint64_t *set, int fd) {
+    set[fd / XOS_NFDBITS] |= (1ULL << (fd % XOS_NFDBITS));
+}
+
+static inline int fd_test_bit(const uint64_t *set, int fd) {
+    return (set[fd / XOS_NFDBITS] >> (fd % XOS_NFDBITS)) & 1;
+}
+
+uint64_t sys_select_impl(uint64_t nfds, uint64_t readfds, uint64_t writefds,
+                         uint64_t exceptfds, uint64_t timeout, uint64_t a6) {
+    (void)exceptfds; (void)a6;
+    if (nfds == 0 || nfds > XOS_FD_SETSIZE) return 0;
+
+    int set_words = (XOS_FD_SETSIZE + XOS_NFDBITS - 1) / XOS_NFDBITS;
+    uint64_t rset[4] = {0}, wset[4] = {0};
+
+    /* Copy fd_sets from userspace */
+    cpu_user_access_begin();
+    if (readfds) memcpy(rset, (void *)readfds, set_words * sizeof(uint64_t));
+    if (writefds) memcpy(wset, (void *)writefds, set_words * sizeof(uint64_t));
+    cpu_user_access_end();
+
+    /* Parse timeout: struct timeval { tv_sec, tv_usec } */
+    int timeout_ms = -1;
+    if (timeout) {
+        cpu_user_access_begin();
+        uint64_t tv_sec = *(uint64_t *)timeout;
+        uint64_t tv_usec = *(uint64_t *)(timeout + 8);
+        cpu_user_access_end();
+        timeout_ms = (int)(tv_sec * 1000 + tv_usec / 1000);
+    }
+
+    int wait_chan;
+
+    for (;;) {
+        int ready_count = 0;
+        uint64_t out_rset[4] = {0}, out_wset[4] = {0};
+
+        xos_select_set_chan(&wait_chan);
+
+        for (int fd = 0; fd < (int)nfds; fd++) {
+            int events = 0;
+            if (readfds && fd_test_bit(rset, fd)) events |= 0x001;  /* POLLIN */
+            if (writefds && fd_test_bit(wset, fd)) events |= 0x004; /* POLLOUT */
+            if (!events) continue;
+
+            int revents = xos_poll_fd(fd, events);
+            if (revents & 0x001) { fd_set_bit(out_rset, fd); ready_count++; }
+            if (revents & 0x004) { fd_set_bit(out_wset, fd); ready_count++; }
+        }
+
+        xos_select_clear_chan();
+
+        if (ready_count > 0) {
+            cpu_user_access_begin();
+            if (readfds) memcpy((void *)readfds, out_rset, set_words * sizeof(uint64_t));
+            if (writefds) memcpy((void *)writefds, out_wset, set_words * sizeof(uint64_t));
+            cpu_user_access_end();
+            return (uint64_t)ready_count;
+        }
+
+        if (timeout_ms == 0) return 0;
+        if (timeout_ms > 0) {
+            extern uint64_t timer_ticks(void);
+            extern uint64_t timer_ticks_hz(void);
+            uint64_t deadline = timer_ticks() + (timeout_ms * timer_ticks_hz()) / 1000;
+            if (timer_ticks() >= deadline) return 0;
+        }
+
+        sched_block_on(&wait_chan, NULL, 10);
+    }
 }
 
 uint64_t sys_mmap_impl(uint64_t addr, uint64_t length, uint64_t prot,

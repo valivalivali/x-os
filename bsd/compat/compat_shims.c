@@ -1271,6 +1271,20 @@ const struct fileops socketops = {
     .fo_flags = 0,
 };
 
+/* Accessor for X OS select/poll — call fo_poll on a file without needing
+ * the full struct file definition in kernel/bsd/syscalls.c. */
+int xos_fop_poll(struct file *fp, int events) {
+    if (!fp || !fp->f_ops || !fp->f_ops->fo_poll) return 0;
+    struct thread td;
+    memset(&td, 0, sizeof(td));
+    return fp->f_ops->fo_poll(fp, events, NULL, &td);
+}
+
+void xos_fdrop(struct file *fp) {
+    if (fp)
+        __atomic_sub_fetch(&fp->f_count, 1, __ATOMIC_RELAXED);
+}
+
 /* falloc — allocate a file descriptor and struct file */
 int
 falloc_caps(struct thread *td, void **fpp, int *fdp, int flags, const void *fcapp)
@@ -1438,8 +1452,34 @@ int priv_check_cred(struct ucred *cred, int priv) { (void)cred; (void)priv; retu
 int soaio_queue_generic(struct socket *so, struct kaiocb *job) { (void)so; (void)job; return 0; }
 void sowakeup_aio(struct socket *so, sb_which which) { (void)so; (void)which; }
 
-/* Select */
-void selwakeuppri(struct selinfo *sip, int pri) { (void)sip; (void)pri; }
+/* Select — real implementation using X OS scheduler block/wake.
+ *
+ * selrecord stores the current select wait channel in the selinfo.
+ * selwakeup wakes any process blocked on that channel.
+ * The wait channel is a per-syscall stack address set by sys_poll/sys_select. */
+
+static void *g_select_chan = NULL;  /* current select wait channel */
+
+/* Set the current select wait channel (called by sys_poll/sys_select). */
+void xos_select_set_chan(void *chan) { g_select_chan = chan; }
+void xos_select_clear_chan(void) { g_select_chan = NULL; }
+
+void selrecord(struct thread *td, struct selinfo *sip) {
+    (void)td;
+    /* Store the current select wait channel in the selinfo's si_mtx field
+     * (abusing it since we don't use real mutexes here). */
+    if (g_select_chan)
+        sip->si_mtx = (struct mtx *)g_select_chan;
+}
+
+void selwakeuppri(struct selinfo *sip, int pri) {
+    (void)pri;
+    if (sip && sip->si_mtx) {
+        extern void sched_wake_chan(const void *chan);
+        sched_wake_chan((const void *)sip->si_mtx);
+        sip->si_mtx = NULL;
+    }
+}
 
 /* Signal */
 void pgsigio(struct sigio **sigiop, int sig, int checkctty) { (void)sigiop; (void)sig; (void)checkctty; }
@@ -2077,8 +2117,7 @@ int uiomove(void *cp, int n, struct uio *uio) {
 struct vm_page;
 int uiomove_fromphys(struct vm_page *ma[], vm_offset_t offset, int n, struct uio *uio) { (void)ma; (void)offset; (void)n; (void)uio; return 0; }
 
-/* Select */
-void selrecord(struct thread *td, struct selinfo *sip) { (void)td; (void)sip; }
+/* Select — selrecord is implemented above near selwakeuppri */
 void seldrain(struct selinfo *sip) { (void)sip; }
 
 /* Scheduler */

@@ -178,3 +178,24 @@ int pipe_dup(int oldfd, int newfd) {
     spinlock_release_irqrestore(&pipe_lock, rflags);
     return oldfd;
 }
+
+/* Poll helpers for select/poll. */
+int pipe_readable(int fd) {
+    pipe_t *p = pipe_lookup(fd);
+    if (!p) return 0;
+    if (((fd - PIPE_FD_BASE) & 1) != 0) return 0;  /* write end */
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
+    int ready = (p->data_bytes > 0 || !p->used) ? 1 : 0;
+    spinlock_release_irqrestore(&pipe_lock, rflags);
+    return ready;
+}
+
+int pipe_writable(int fd) {
+    pipe_t *p = pipe_lookup(fd);
+    if (!p) return 0;
+    if (((fd - PIPE_FD_BASE) & 1) == 0) return 0;  /* read end */
+    uint64_t rflags = spinlock_acquire_irqsave(&pipe_lock);
+    int ready = (p->data_bytes < PIPE_BUF_SIZE) ? 1 : 0;
+    spinlock_release_irqrestore(&pipe_lock, rflags);
+    return ready;
+}
