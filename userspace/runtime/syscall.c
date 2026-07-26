@@ -292,6 +292,24 @@ uint64_t sys_systime_ns(void) {
     return syscall0(SYS_SYSTIME_NS);
 }
 
+uint64_t sys_clone(uint64_t flags, uint64_t child_stack, uint64_t ptid,
+                   uint64_t ctid, uint64_t tls) {
+    return syscall5(SYS_CLONE, flags, child_stack, ptid, ctid, tls);
+}
+
+int sys_futex(uint32_t *uaddr, int op, uint32_t val, uint64_t timeout_ns) {
+    return (int)syscall4(SYS_FUTEX, (uintptr_t)uaddr, (uintptr_t)op,
+                         (uintptr_t)val, timeout_ns);
+}
+
+uint64_t sys_gettid(void) {
+    return syscall0(SYS_GETTID);
+}
+
+int sys_set_tid_address(uint32_t *tid_addr) {
+    return (int)syscall1(SYS_SET_TID_ADDRESS, (uintptr_t)tid_addr);
+}
+
 /* POSIX process wrappers */
 
 void sys_exit(int code) {

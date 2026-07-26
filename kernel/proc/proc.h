@@ -18,6 +18,12 @@ proc_t *proc_spawn_ring3(const uint8_t *elf_data, size_t elf_len);
  * failure. The child returns 0 from fork (set via child's saved rax). */
 uint64_t proc_fork(void);
 
+/* Clone: create a new thread or process.  With CLONE_VM, the child shares
+ * the parent's address space (thread).  Without CLONE_VM, it's like fork.
+ * Returns child TID on success, 0 on failure. */
+uint64_t proc_clone(uint64_t flags, uint64_t child_stack, uint64_t ptid,
+                    uint64_t ctid, uint64_t tls);
+
 /* Exec: replace the current process's address space with a new ELF
  * loaded from the filesystem. The old address space is destroyed.
  * If argv is non-NULL, the strings are copied to the top of the user

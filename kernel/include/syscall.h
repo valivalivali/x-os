@@ -114,8 +114,12 @@
 #define SYS_NO_PREEMPT  97  /* set/clear no-preempt flag for current process */
 #define SYS_PORT_LIST   98  /* dump IPC port table for introspection */
 #define SYS_SYSTIME_NS  99  /* high-res monotonic time in nanoseconds (TSC) */
+#define SYS_CLONE       100 /* create a new thread (CLONE_VM | CLONE_THREAD) */
+#define SYS_FUTEX       101 /* futex wait/wake for userspace synchronization */
+#define SYS_GETTID      102 /* get thread ID */
+#define SYS_SET_TID_ADDRESS 103 /* set clear_child_tid address for pthread */
 
-#define SYSCALL_MAX          99
+#define SYSCALL_MAX          103
 
 /* Process table entry for SYS_PROC_LIST (adv_cmds ps). */
 typedef struct {
@@ -208,6 +212,25 @@ int sys_input_poll(input_event_t *out);
 /* Time wrapper */
 int sys_time(uint8_t *hour, uint8_t *min, uint8_t *sec);
 uint64_t sys_systime_ns(void);  /* high-res monotonic time in ns (TSC) */
+
+/* Thread/futex wrappers */
+uint64_t sys_clone(uint64_t flags, uint64_t child_stack, uint64_t ptid,
+                   uint64_t ctid, uint64_t tls);
+int sys_futex(uint32_t *uaddr, int op, uint32_t val, uint64_t timeout_ns);
+uint64_t sys_gettid(void);
+int sys_set_tid_address(uint32_t *tid_addr);
+
+/* Futex operations */
+#define FUTEX_WAIT   0
+#define FUTEX_WAKE   1
+
+/* Clone flags */
+#define CLONE_VM       0x00000100
+#define CLONE_THREAD   0x00010000
+#define CLONE_PARENT_SETTID 0x00100000
+#define CLONE_CHILD_CLEARTID 0x00200000
+#define CLONE_CHILD_SETTID  0x01000000
+#define CLONE_SETTLS        0x00080000
 
 /* GPU wrappers */
 int sys_gpu_fb_info(gpu_fb_info_t *info);

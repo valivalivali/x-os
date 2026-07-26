@@ -13,6 +13,7 @@
 #include "kernel/fs/xfs.h"
 #include "kernel/ipc/pipe.h"
 #include "kernel/sched/sched.h"
+#include "kernel/include/syscall.h"
 
 #define USER_STACK_SIZE  (64 * 1024)
 #define USER_STACK_TOP   0x00007FFF00000000ULL
@@ -308,6 +309,189 @@ uint64_t proc_fork(void) {
     return child->pid;
 
 fork_fail:
+    __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Clone — create a new thread (CLONE_VM) or process.
+ *
+ * This is a simplified version of Linux clone() supporting the flags
+ * that pthread needs: CLONE_VM, CLONE_THREAD, CLONE_SETTLS,
+ * CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID.
+ *
+ * The child resumes at the same user RIP as the parent (the instruction
+ * after the syscall), with RAX=0.  If child_stack is non-zero, the
+ * child's RSP is set to child_stack instead of the parent's RSP. */
+
+uint64_t proc_clone(uint64_t flags, uint64_t child_stack, uint64_t ptid,
+                    uint64_t ctid, uint64_t tls) {
+    proc_t *parent = proc_current();
+    if (!parent || !parent->ring3) return 0;
+
+    /* Disable interrupts — same rationale as fork. */
+    uint64_t saved_rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(saved_rflags));
+
+    /* Determine address space: share if CLONE_VM, clone otherwise. */
+    uint64_t child_pml4_phys;
+    uint64_t *child_pml4_virt;
+    bool share_vm = (flags & CLONE_VM) != 0;
+
+    if (share_vm) {
+        child_pml4_phys = parent->pml4_phys;
+        child_pml4_virt = parent->pml4_virt;
+        __atomic_add_fetch(&parent->pml4_refcount, 1, __ATOMIC_ACQ_REL);
+    } else {
+        child_pml4_phys = vmm_clone_user(parent->pml4_virt);
+        if (!child_pml4_phys) {
+            kprintf("[proc] clone: vmm_clone_user failed\n");
+            goto clone_fail;
+        }
+        child_pml4_virt = (uint64_t *)phys_to_virt(child_pml4_phys);
+        __asm__ volatile("mov %0, %%cr3" : : "r"(parent->pml4_phys) : "memory");
+        if (g_smp_enabled)
+            lapic_send_ipi_all_others(IPI_VECTOR_TLB);
+    }
+
+    /* Allocate kernel stack for child. */
+    uint8_t *child_kstack = kmalloc(SCHED_STACK_SIZE);
+    if (!child_kstack) {
+        if (!share_vm) {
+            vmm_destroy_user(child_pml4_virt);
+            pmm_free_frame(child_pml4_phys);
+        } else {
+            __atomic_sub_fetch(&parent->pml4_refcount, 1, __ATOMIC_ACQ_REL);
+        }
+        goto clone_fail;
+    }
+
+    /* Create child process. */
+    proc_t *child = proc_create(0, child_pml4_phys, child_pml4_virt, child_kstack);
+    if (!child) {
+        kfree(child_kstack);
+        if (!share_vm) {
+            vmm_destroy_user(child_pml4_virt);
+            pmm_free_frame(child_pml4_phys);
+        } else {
+            __atomic_sub_fetch(&parent->pml4_refcount, 1, __ATOMIC_ACQ_REL);
+        }
+        goto clone_fail;
+    }
+
+    child->ring3 = true;
+    child->parent_pid = parent->parent_pid;  /* threads share parent */
+    child->reaped = true;  /* threads are not waited on via waitpid */
+    child->priority = parent->priority;
+    for (int i = 0; i < (int)sizeof(child->name); i++)
+        child->name[i] = parent->name[i];
+
+    /* Thread group: if CLONE_THREAD, child joins parent's thread group. */
+    if (flags & CLONE_THREAD) {
+        child->tgid = parent->tgid;
+    } else {
+        child->tgid = child->pid;
+        child->parent_pid = parent->pid;
+        child->reaped = false;
+    }
+    child->tid = child->pid;
+
+    /* Inherit signal disposition (but not pending). */
+    child->sig_blocked = parent->sig_blocked;
+    child->sig_pending = 0;
+    for (int i = 0; i < XOS_NSIG; i++) {
+        child->sig_handler[i] = parent->sig_handler[i];
+        child->sig_mask[i] = parent->sig_mask[i];
+        child->sig_flags[i] = parent->sig_flags[i];
+    }
+
+    /* Copy user state from parent's kernel stack frame (same as fork). */
+    uint64_t *parent_kstack_top = (uint64_t *)(parent->kstack + SCHED_STACK_SIZE);
+    uint64_t user_rflags = parent_kstack_top[-3];
+    uint64_t user_rip    = parent_kstack_top[-2];
+    uint64_t user_rsp    = parent_kstack_top[-1];
+    uint64_t user_rdi = parent_kstack_top[-10];
+    uint64_t user_rsi = parent_kstack_top[-9];
+    uint64_t user_rdx = parent_kstack_top[-8];
+    uint64_t user_r10 = parent_kstack_top[-7];
+    uint64_t user_r8  = parent_kstack_top[-6];
+    uint64_t user_r9  = parent_kstack_top[-5];
+
+    /* For threads, the child uses the provided stack pointer. */
+    if (child_stack)
+        user_rsp = child_stack;
+
+    /* Callee-saved GPRs from per-CPU storage. */
+    cpu_data_t *cpu = this_cpu();
+    child->fork_rbx = cpu->user_rbx;
+    child->fork_rbp = cpu->user_rbp;
+    child->fork_r12 = cpu->user_r12;
+    child->fork_r13 = cpu->user_r13;
+    child->fork_r14 = cpu->user_r14;
+    child->fork_r15 = 0;  /* threads start with r15=0 */
+    child->fork_rflags = user_rflags | 0x200; /* IF */
+    child->fork_rdi = user_rdi;
+    child->fork_rsi = user_rsi;
+    child->fork_rdx = user_rdx;
+    child->fork_r8  = user_r8;
+    child->fork_r9  = user_r9;
+    child->fork_r10 = user_r10;
+
+    child->rip = user_rip;
+    child->sleep_until = user_rsp;
+
+    /* Set up kernel stack for context_switch entry. */
+    uint64_t *ksp = (uint64_t *)(child_kstack + SCHED_STACK_SIZE);
+    ksp--;
+    *ksp = (uint64_t)ring3_trampoline;
+    child->rsp = (uint64_t)ksp;
+    child->saved_ret = (uint64_t)ring3_trampoline;
+    child->ctx_rbx = 0; child->ctx_rbp = 0; child->ctx_r12 = 0;
+    child->ctx_r13 = 0; child->ctx_r14 = 0; child->ctx_r15 = 0;
+
+    /* Inherit FPU state. */
+    proc_ensure_xstate(child);
+    cpu_xstate_save(parent->xstate);
+    cpu_xstate_copy(child->xstate, parent->xstate);
+
+    /* Handle CLONE_PARENT_SETTID: write child TID to parent's ptid. */
+    if ((flags & CLONE_PARENT_SETTID) && ptid) {
+        cpu_user_access_begin();
+        *(uint64_t *)ptid = child->tid;
+        cpu_user_access_end();
+    }
+
+    /* Handle CLONE_CHILD_SETTID: write child TID to child's ctid. */
+    if ((flags & CLONE_CHILD_SETTID) && ctid) {
+        uint64_t pa = vmm_virt_to_phys(child_pml4_virt, ctid);
+        if (pa) *(uint64_t *)phys_to_virt(pa) = child->tid;
+    }
+
+    /* Handle CLONE_CHILD_CLEARTID: clear ctid on thread exit. */
+    if (flags & CLONE_CHILD_CLEARTID) {
+        child->clear_tid_addr = ctid;
+    }
+
+    /* Handle CLONE_SETTLS: set the FS base for TLS. */
+    if (flags & CLONE_SETTLS) {
+        /* TLS is set via FSGSBASE or MSR_FS_BASE.  We store it and
+         * context_switch will load it.  For now, set it immediately
+         * on the child's first run via the thread's xstate or a
+         * dedicated field.  Simplest: write MSR_FS_BASE on schedule. */
+        /* TODO: store tls in proc_t and load in context_switch */
+    }
+
+    pipe_fork_inherit((uint32_t)parent->pid);
+
+    kprintf("[proc] clone: parent=%lu child=%lu tgid=%lu flags=%lx\n",
+            parent->pid, child->tid, child->tgid, flags);
+
+    proc_make_ready(child);
+
+    __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
+    return child->tid;
+
+clone_fail:
     __asm__ volatile("pushq %0; popfq" : : "r"(saved_rflags));
     return 0;
 }

@@ -159,8 +159,10 @@ proc_t *proc_current(void) {
 }
 
 proc_t *proc_by_pid(uint64_t pid) {
+    /* Search by tgid (thread group ID) — this is the POSIX PID.
+     * Returns the thread group leader (first match = lowest slot index). */
     for (int i = 0; i < SCHED_MAX_PROCS; i++) {
-        if (procs[i].pid == pid &&
+        if (procs[i].tgid == pid &&
             (procs[i].state != PROC_DEAD || !procs[i].reaped))
             return &procs[i];
     }
@@ -221,6 +223,11 @@ proc_t *proc_create(uint64_t entry, uint64_t pml4_phys, uint64_t *pml4_virt,
             procs[i].no_preempt = 0;
             procs[i].switching = 0;
             procs[i].priority = PRIO_NORMAL;  /* default; caller can override */
+            procs[i].tgid = procs[i].pid;  /* single-threaded: tgid = pid */
+            procs[i].tid = procs[i].pid;
+            procs[i].thread_next = NULL;
+            procs[i].pml4_refcount = 1;
+            procs[i].clear_tid_addr = 0;
             /* Fresh process starts with a clean FPU (XSTATE_BV=0 restores
              * every component to its INIT state, MXCSR to 0x1F80). */
             proc_ensure_xstate(&procs[i]);
@@ -270,6 +277,18 @@ void proc_exit(proc_t *p) {
     p->reaped = false;
     spinlock_release_irqrestore(&sched_lock, rflags);
 
+    /* If this thread has a clear_child_tid address, zero it in userspace
+     * and wake any futex waiters (pthread_join). */
+    if (p->clear_tid_addr && p->pml4_virt) {
+        uint64_t pa = vmm_virt_to_phys(p->pml4_virt, p->clear_tid_addr);
+        if (pa) {
+            *(uint32_t *)phys_to_virt(pa) = 0;
+            /* Wake futex waiters on this address. */
+            extern void sched_wake_chan(const void *chan);
+            sched_wake_chan((const void *)p->clear_tid_addr);
+        }
+    }
+
     kprintf("[proc] exit: pid=%lu code=%d parent=%lu\n",
             p->pid, p->exit_code, p->parent_pid);
 
@@ -279,12 +298,33 @@ void proc_exit(proc_t *p) {
 
     /* Free process resources: user page tables + all mapped user pages.
      * CRITICAL: only switch CR3 if we are the CPU currently running this
-     * process.  Switching CR3 on a remote CPU corrupts its address space. */
+     * process.  Switching CR3 on a remote CPU corrupts its address space.
+     * For threads (shared address space), decrement refcount and only
+     * destroy when it reaches 0. */
     if (p->pml4_virt && p == proc_current()) {
-        uint64_t kernel_cr3 = virt_to_phys(vmm_kernel_pml4());
-        __asm__ volatile("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
-        vmm_destroy_user(p->pml4_virt);
-        pmm_free_frame(p->pml4_phys);
+        int remaining = __atomic_sub_fetch(&p->pml4_refcount, 1, __ATOMIC_ACQ_REL);
+        if (remaining <= 0) {
+            uint64_t kernel_cr3 = virt_to_phys(vmm_kernel_pml4());
+            __asm__ volatile("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
+            vmm_destroy_user(p->pml4_virt);
+            pmm_free_frame(p->pml4_phys);
+            p->pml4_virt = NULL;
+            p->pml4_phys = 0;
+        } else {
+            /* Other threads still share this address space — switch to
+             * kernel page tables so we don't touch the shared PML4. */
+            uint64_t kernel_cr3 = virt_to_phys(vmm_kernel_pml4());
+            __asm__ volatile("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
+            p->pml4_virt = NULL;  /* don't double-free */
+            p->pml4_phys = 0;
+        }
+    } else if (p->pml4_virt) {
+        /* Remote exit (proc_kill on another CPU's process). */
+        int remaining = __atomic_sub_fetch(&p->pml4_refcount, 1, __ATOMIC_ACQ_REL);
+        if (remaining <= 0) {
+            vmm_destroy_user(p->pml4_virt);
+            pmm_free_frame(p->pml4_phys);
+        }
         p->pml4_virt = NULL;
         p->pml4_phys = 0;
     }

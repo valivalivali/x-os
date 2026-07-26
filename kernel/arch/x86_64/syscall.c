@@ -685,7 +685,7 @@ static uint64_t sys_getpid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
                                 uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     proc_t *p = proc_current();
-    return p ? p->pid : 0;
+    return p ? p->tgid : 0;  /* POSIX getpid returns thread group ID */
 }
 
 static uint64_t sys_getppid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
@@ -825,6 +825,40 @@ static uint64_t sys_systime_ns_impl(uint64_t a1, uint64_t a2, uint64_t a3,
                                     uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
     return systime_ns();
+}
+
+static uint64_t sys_clone_impl(uint64_t flags, uint64_t child_stack,
+                               uint64_t ptid, uint64_t ctid, uint64_t tls,
+                               uint64_t a6) {
+    (void)a6;
+    return proc_clone(flags, child_stack, ptid, ctid, tls);
+}
+
+extern int sys_futex_impl(uint32_t *uaddr, int op, uint32_t val,
+                          uint64_t timeout_ns);
+
+static uint64_t sys_futex_impl_wrapper(uint64_t uaddr, uint64_t op,
+                                       uint64_t val, uint64_t timeout_ns,
+                                       uint64_t a5, uint64_t a6) {
+    (void)a5; (void)a6;
+    return (uint64_t)sys_futex_impl((uint32_t *)uaddr, (int)op,
+                                    (uint32_t)val, timeout_ns);
+}
+
+static uint64_t sys_gettid_impl(uint64_t a1, uint64_t a2, uint64_t a3,
+                                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    return p ? p->tid : 0;
+}
+
+static uint64_t sys_set_tid_address_impl(uint64_t tid_addr, uint64_t a2,
+                                         uint64_t a3, uint64_t a4,
+                                         uint64_t a5, uint64_t a6) {
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    proc_t *p = proc_current();
+    if (p) p->clear_tid_addr = tid_addr;
+    return p ? p->tid : 0;
 }
 
 static uint64_t sys_msgbuf_read_impl(uint64_t ubuf, uint64_t size,
@@ -1068,6 +1102,10 @@ static uint64_t (*syscall_table[])(uint64_t, uint64_t, uint64_t, uint64_t, uint6
     [SYS_SIGRETURN]   = (void *)sys_sigreturn_impl,
     [SYS_NO_PREEMPT]  = (void *)sys_no_preempt_impl,
     [SYS_SYSTIME_NS]  = (void *)sys_systime_ns_impl,
+    [SYS_CLONE]       = (void *)sys_clone_impl,
+    [SYS_FUTEX]       = (void *)sys_futex_impl_wrapper,
+    [SYS_GETTID]      = (void *)sys_gettid_impl,
+    [SYS_SET_TID_ADDRESS] = (void *)sys_set_tid_address_impl,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

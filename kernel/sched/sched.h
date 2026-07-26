@@ -80,6 +80,15 @@ typedef struct proc {
      * Safe to add here — context.S only hardcodes offsets up to `switching`
      * at 956; this field is well past that. */
     uint8_t priority;
+    /* Thread support: tgid = thread group leader's pid (= pid for leader).
+     * tid = unique thread ID (= pid for the slot).  For a single-threaded
+     * process, tgid == tid == pid.  All fields below are past context.S
+     * hardcoded offsets. */
+    uint64_t tgid;              /* thread group ID (POSIX PID) */
+    uint64_t tid;               /* thread ID (Linux TID) */
+    struct proc *thread_next;   /* linked list of threads in this group */
+    volatile int pml4_refcount; /* refcount for shared address space (threads) */
+    uint64_t clear_tid_addr;    /* userspace address to zero on thread exit */
 } proc_t;
 
 /* Ensure p has an extended-state area allocated (idempotent). */
