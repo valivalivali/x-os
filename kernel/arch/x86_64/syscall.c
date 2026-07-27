@@ -16,6 +16,7 @@
 #include "kernel/hal/apic/smp.h"
 #include "kernel/hal/block/block_dev.h"
 #include "kernel/fs/xfs.h"
+#include "kernel/fs/sysfs.h"
 #include "kernel/hal/gpu/virtio_gpu.h"
 #include "kernel/ipc/pipe.h"
 #include "boot/handoff/handoff.h"
@@ -597,6 +598,7 @@ static uint64_t sys_open_impl(uint64_t path, uint64_t flags,
     char abs[XOS_PATH_MAX];
     if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
         return (uint64_t)-1;
+    if (sysfs_owns(abs)) return (uint64_t)sysfs_open(abs, (uint32_t)flags);
     return (uint64_t)xfs_open(abs, (uint32_t)flags);
 }
 
@@ -604,6 +606,7 @@ static uint64_t sys_read_impl(uint64_t fd, uint64_t buf, uint64_t count,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     if (!buf) return (uint64_t)-1;
+    if (sysfs_owns_fd((int)fd)) return (uint64_t)sysfs_read((int)fd, (void *)buf, (size_t)count);
     if (fd >= 64) return (uint64_t)pipe_read((int)fd, (void *)buf, (size_t)count);
     return (uint64_t)xfs_read((int)fd, (void *)buf, (size_t)count);
 }
@@ -612,6 +615,7 @@ static uint64_t sys_write_impl(uint64_t fd, uint64_t buf, uint64_t count,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     if (!buf) return (uint64_t)-1;
+    if (sysfs_owns_fd((int)fd)) return (uint64_t)sysfs_write((int)fd, (const void *)buf, (size_t)count);
     if (fd >= 64) return (uint64_t)pipe_write((int)fd, (const void *)buf, (size_t)count);
     return (uint64_t)xfs_write((int)fd, (const void *)buf, (size_t)count);
 }
@@ -619,6 +623,7 @@ static uint64_t sys_write_impl(uint64_t fd, uint64_t buf, uint64_t count,
 static uint64_t sys_close_impl(uint64_t fd, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    if (sysfs_owns_fd((int)fd)) { sysfs_close((int)fd); return 0; }
     if (fd >= 64) { pipe_close((int)fd); return 0; }
     xfs_close((int)fd);
     return 0;
@@ -638,6 +643,8 @@ static uint64_t sys_readdir_impl(uint64_t fd, uint64_t entries, uint64_t max,
                             uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     if (!entries) return (uint64_t)-1;
+    if (sysfs_owns_fd((int)fd))
+        return (uint64_t)sysfs_readdir((int)fd, (xfs_dirent_t *)entries, (int)max);
     return (uint64_t)xfs_readdir((int)fd, (xfs_dirent_t *)entries, (int)max);
 }
 
@@ -730,6 +737,8 @@ static uint64_t sys_dup2_impl(uint64_t oldfd, uint64_t newfd, uint64_t a3,
 static uint64_t sys_lseek_impl(uint64_t fd, uint64_t offset, uint64_t whence,
                                uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
+    if (sysfs_owns_fd((int)fd))
+        return (uint64_t)sysfs_lseek((int)fd, (int)offset, (int)whence);
     return (uint64_t)xfs_lseek((int)fd, (int)offset, (int)whence);
 }
 
@@ -740,6 +749,7 @@ static uint64_t sys_stat_impl(uint64_t path, uint64_t statbuf, uint64_t a3,
     char abs[XOS_PATH_MAX];
     if (path_abs((const char *)path, abs, sizeof(abs)) != 0)
         return (uint64_t)-1;
+    if (sysfs_owns(abs)) return (uint64_t)sysfs_stat(abs, (xfs_dirent_t *)statbuf);
     return (uint64_t)xfs_stat(abs, (xfs_dirent_t *)statbuf);
 }
 
@@ -747,6 +757,7 @@ static uint64_t sys_fstat_impl(uint64_t fd, uint64_t statbuf, uint64_t a3,
                                uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a3; (void)a4; (void)a5; (void)a6;
     if (!statbuf) return (uint64_t)-1;
+    if (sysfs_owns_fd((int)fd)) return (uint64_t)sysfs_fstat((int)fd, (xfs_dirent_t *)statbuf);
     return (uint64_t)xfs_fstat((int)fd, (xfs_dirent_t *)statbuf);
 }
 

@@ -190,6 +190,13 @@ void sched_early_init(void) {
         procs[i].reaped = true;
 }
 
+/* Raw access to the process table so /sys/proc can enumerate it.  Returns
+ * NULL for out-of-range indices; callers must skip reaped/idle slots. */
+proc_t *sched_proc_slot(int idx) {
+    if (idx < 0 || idx >= SCHED_MAX_PROCS) return NULL;
+    return &procs[idx];
+}
+
 proc_t *proc_current(void) {
     return (proc_t *)this_cpu()->current_proc;
 }

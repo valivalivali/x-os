@@ -343,6 +343,13 @@ int xos_lvgl_gpu_init(xos_lvgl_ctx_t *ctx,
                       int32_t x, int32_t y, int32_t w, int32_t h,
                       uint32_t wm_flags, const char *title)
 {
+    /* No virgl on the host means no 3D resources: res_create_3d would fail
+     * and the app would die on startup.  Fall back to the shared-memory
+     * surface path instead — slower, but the window still appears. */
+    gpu_fb_info_t probe;
+    if (sys_gpu_fb_info(&probe) != 0 || !probe.virgl)
+        return xos_lvgl_init(ctx, x, y, w, h, wm_flags, title);
+
     memset(ctx, 0, sizeof(*ctx));
     ctx->width = w;
     ctx->height = h;

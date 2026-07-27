@@ -42,6 +42,10 @@ void    input_push(const input_event_t *e);  /* driver -> queue (ISR-safe) */
 /* Called by the mouse driver each packet. dy is already in screen space. */
 void    input_update_mouse(int dx, int dy, uint8_t buttons);
 
+/* Move the pointer to an absolute position and emit a move event.  Used by
+ * /sys/input/mouse so software can drive the cursor directly. */
+void    input_warp_mouse(int32_t x, int32_t y);
+
 /* Vertical wheel notch from IntelliMouse (PS/2 4-byte packet). */
 void    input_mouse_wheel(int dy);
 

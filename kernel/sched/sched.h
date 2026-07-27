@@ -120,6 +120,7 @@ void sched_idle_loop(void) __attribute__((noreturn));  /* per-CPU idle loop */
 void sched_dbg_dump(void);       /* dump proc table + ready queues */
 void sched_init_ap(void);  /* Per-CPU scheduler init for APs */
 proc_t *proc_current(void);
+proc_t *sched_proc_slot(int idx);  /* raw process-table access for /sys/proc */
 proc_t *proc_by_pid(uint64_t pid);
 void proc_set_current(proc_t *p);
 void sched_adopt_current(proc_t *p);  /* set p as RUNNING, remove from ready */

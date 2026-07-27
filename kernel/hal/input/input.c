@@ -101,6 +101,22 @@ void input_update_mouse(int dx, int dy, uint8_t buttons) {
     }
 }
 
+void input_warp_mouse(int32_t x, int32_t y) {
+    if (x < 0) x = 0; if (x > bw - 1) x = bw - 1;
+    if (y < 0) y = 0; if (y > bh - 1) y = bh - 1;
+    uint64_t rflags = spinlock_acquire_irqsave(&input_lock);
+    int32_t odx = x - mx, ody = y - my;
+    mx = x; my = y;
+    uint8_t btn = mbtn;
+    spinlock_release_irqrestore(&input_lock, rflags);
+
+    input_event_t e;
+    memset(&e, 0, sizeof(e));
+    e.type = EV_MOUSE_MOVE;
+    e.x = x; e.y = y; e.dx = odx; e.dy = ody; e.buttons = btn;
+    input_push(&e);
+}
+
 void input_mouse_wheel(int dy) {
     if (dy == 0) return;
     input_event_t e;
