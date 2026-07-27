@@ -34,3 +34,35 @@ The scheduler uses **deferred preemption** (XNU AST / Linux TIF_NEED_RESCHED pat
 - The composer yields voluntarily via `SYS_NSLEEP(1)` at end of each frame
 - IPC locks use `spinlock_acquire_irqsave` (interrupts disabled), so
   preemption can't happen during a port_send/port_recv critical section
+
+## Build gotcha: disk.img
+`make` builds **both** `x-os.iso` and `disk.img`.  All userspace binaries
+(composer, dock, menubar, terminal, zsh, cmds) live on `disk.img`, not in the
+ISO — only the kernel and `init` are embedded in the ISO.  QEMU boots with
+`disk.img` writable, so the guest bumps its mtime and make can consider the
+image newer than freshly rebuilt binaries.  If a userspace change appears to
+have no effect, `rm -f disk.img && make disk.img`.
+
+## Scheduler: the idle loop is load-bearing
+Timer and IPI handlers only raise `need_resched` (deferred preemption).
+Nothing dispatches the ready queue on their behalf.  Every CPU must park in
+`sched_idle_loop()` (kernel/sched/sched.c), which consumes the flag and calls
+`sched_yield()`.  A bare `for(;;) hlt;` anywhere a CPU can come to rest will
+wedge the entire system as soon as all processes happen to sleep at once —
+the symptom is a frozen cursor and dead keyboard with a full ready queue.
+`sched_dbg_dump()` prints every process's state, sleep deadline and ready
+queue membership; call it from a timer handler to diagnose this class of bug.
+
+## Debugging without a display
+`make boottest` boots headless and dumps the serial log.  To drive input,
+run QEMU with `-monitor unix:/tmp/xos.mon,server,nowait` and pipe HMP
+commands into it: `mouse_move dx dy`, `sendkey <key>`.  This is how the
+frozen-cursor bug was reproduced and verified.
+
+## /sys
+Live kernel state as files (kernel/fs/sysfs.c), generated on demand.
+`cat /sys/kernel/info`, `cat /sys/proc` (works as ps), `cat /sys/cpu/info`.
+Writable: `/sys/input/mouse` ("x y" warps the pointer),
+`/sys/proc/<pid>/kill`, `/sys/proc/<pid>/prio`.  sysfs owns fds 512+ and is
+routed by fd range in kernel/arch/x86_64/syscall.c.  Adding a node means
+adding one generator function and one entry in `render_file()`/`dir_for()`.
