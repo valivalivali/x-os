@@ -22,15 +22,32 @@ static proc_t *ready_head[SCHED_NPRIO] = { NULL, NULL, NULL };
  * to pick up the next ready process.  This is the safe point for
  * preemption in the idle loop — follows the XNU/Linux pattern where
  * the idle loop checks the reschedule flag after each interrupt. */
-static void __attribute__((noreturn)) idle_loop(void) {
+/* The one and only idle loop.  Every CPU (BSP and APs) parks here when it
+ * has nothing to run.  With deferred preemption the timer and IPI handlers
+ * only raise need_resched — if the idle loop did not consume that flag, a
+ * CPU that halted while processes were merely sleeping would never wake them
+ * again, and the whole system would wedge with a full ready queue.
+ *
+ * The cli/sti dance closes the classic lost-wakeup window: an interrupt that
+ * lands between the flag test and the halt would otherwise leave us asleep
+ * with a pending reschedule.  `sti; hlt` is atomic on x86 — interrupts are
+ * only unmasked for the halt itself. */
+void __attribute__((noreturn)) sched_idle_loop(void) {
     for (;;) {
+        __asm__ volatile("cli");
         cpu_data_t *cpu = this_cpu();
         if (cpu->need_resched) {
             cpu->need_resched = 0;
+            __asm__ volatile("sti");
             sched_yield();
+            continue;
         }
-        __asm__ volatile("hlt");
+        __asm__ volatile("sti; hlt");
     }
+}
+
+static void __attribute__((noreturn)) idle_loop(void) {
+    sched_idle_loop();
 }
 
 /* Scheduler spinlock — protects the process table and ready queue. */
@@ -91,6 +108,25 @@ void sched_wake_sleepers(void) {
     if (woke) {
         this_cpu()->need_resched = 1;
     }
+}
+
+void sched_dbg_dump(void) {
+    uint64_t rflags;
+    if (!spinlock_try_irqsave(&sched_lock, &rflags)) { kprintf("[schdbg] lock busy\n"); return; }
+    uint64_t now = timer_ticks();
+    kprintf("[schdbg] now=%lu\n", now);
+    for (int i = 0; i < SCHED_MAX_PROCS; i++) {
+        proc_t *p = &procs[i];
+        if (p->state == PROC_DEAD && p->reaped) continue;
+        int inq = 0;
+        for (int q = 0; q < SCHED_NPRIO; q++)
+            for (proc_t *r = ready_head[q]; r; r = r->next)
+                if (r == p) inq = 1;
+        kprintf("[schdbg] pid=%lu %s st=%d sleep=%lu sw=%d np=%d inq=%d chan=%p\n",
+                p->pid, p->name, (int)p->state, p->sleep_until,
+                p->switching, p->no_preempt, inq, p->wait_chan);
+    }
+    spinlock_release_irqrestore(&sched_lock, rflags);
 }
 
 static void ready_dequeue(proc_t *p) {

@@ -184,13 +184,10 @@ void ap_entry(struct handoff_cpu_info *info) {
      * IPI_RESCHED from other CPUs will also wake us up. */
     __asm__ volatile("sti");
 
-    /* AP idle loop — wait for timer/IPI to schedule us. */
-    for (;;) {
-        __asm__ volatile("hlt");
-        /* On wake (timer/IPI), the interrupt handler calls sched_yield
-         * which may context-switch to a real process. When that process
-         * yields back, we return here and halt again. */
-    }
+    /* AP idle loop — shared with the BSP.  It consumes need_resched and
+     * calls sched_yield(), which is what actually dispatches work.  A bare
+     * hlt loop here would silently strand every runnable process. */
+    sched_idle_loop();
 }
 
 void smp_init(void) {

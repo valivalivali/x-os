@@ -196,8 +196,8 @@ void kmain(void) {
     boot_puts("init spawn FAILED\n");
 
 idle:
-    /* Kernel idle loop — all work is now in ring-3 processes. */
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    /* Kernel idle loop — all work is now in ring-3 processes.  Must be the
+     * scheduler's idle loop, not a bare hlt: it is the BSP's only chance to
+     * observe need_resched and dispatch the ready queue. */
+    sched_idle_loop();
 }

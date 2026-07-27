@@ -283,7 +283,7 @@ QEMU_BASE  := -M q35 -m 512M -smp $(SMP_CPUS) $(QEMU_CPU) -no-reboot -rtc base=l
 
 .PHONY: all run run-uefi run-headless boottest clean distclean setup limine cmds thorvg zlib lvgl libcxx-src
 
-all: $(ISO)
+all: $(ISO) $(DISK_IMG)
 
 # ---- compile -------------------------------------------------------------
 $(OBJ_DIR)/kernel/lib/string.o: kernel/lib/string.c
