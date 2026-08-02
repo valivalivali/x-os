@@ -301,7 +301,11 @@ void proc_set_priority(proc_t *p, uint8_t prio) {
     if (on_queue && p->priority != prio)
         ready_dequeue(p);
     p->priority = prio;
-    if (on_queue && p->state == PROC_READY)
+    /* BLOCKED procs live on the ready list too (that is how
+     * sched_wake_sleepers finds them) — re-link them as well, or a
+     * priority change on a sleeping process strands it off-queue
+     * forever: no wake path can ever find it again. */
+    if (on_queue)
         ready_enqueue(p);
     spinlock_release_irqrestore(&sched_lock, rflags);
 }
@@ -526,10 +530,34 @@ static proc_t *pick_next_ready(void) {
         }
     }
 
-    /* Recovery: READY but not linked (should not happen). */
+    /* Recovery: READY but not linked (should not happen).
+     * The queue scans above skip procs with switching=1.  switching is
+     * cleared by context_switch AFTER sched_lock is released, so a proc
+     * whose switch just completed can be READY + linked + switching=0
+     * while every OTHER queued proc is still mid-switch — the scans find
+     * nothing and this recovery loop fires on a perfectly healthy,
+     * properly linked process.  Adopting it here WITHOUT unlinking leaves
+     * it both RUNNING on this CPU and linked in a queue: the next pick
+     * dequeues it and a second CPU starts executing the same process —
+     * two CPUs on one kernel stack corrupts saved contexts (the
+     * intermittent CPU panics) until the process wedges.  Only a proc
+     * that is verified unlinked AND not live on any CPU may be rescued. */
     for (int i = 1; i < SCHED_MAX_PROCS; i++) {
-        if (procs[i].state == PROC_READY && !procs[i].switching)
-            return &procs[i];
+        if (procs[i].state == PROC_READY && !procs[i].switching) {
+            int live_cpu = -1;
+            for (uint32_t c = 0; c < g_cpu_count; c++)
+                if (g_cpus[c] && g_cpus[c]->current_proc == &procs[i])
+                    live_cpu = (int)c;
+            if (live_cpu >= 0)
+                continue;  /* live on another CPU — never adopt */
+            int linked = 0;
+            for (int q = 0; q < SCHED_NPRIO && !linked; q++)
+                for (proc_t *r = ready_head[q]; r; r = r->next)
+                    if (r == &procs[i]) { linked = 1; break; }
+            if (linked)
+                continue;  /* switching transient — will be picked normally */
+            return &procs[i];  /* genuinely stranded — rescue */
+        }
     }
     return (proc_t *)this_cpu()->current_proc; /* idle — stay on current */
 }
@@ -553,6 +581,24 @@ static void __sched_yield_locked(uint64_t rflags) {
 
     proc_t *next = pick_next_ready();
 
+    /* pick_next_ready() may have woken and dequeued cur itself — cur's
+     * sleep expired between "mark BLOCKED" and the pick scan (e.g. the
+     * vCPU was descheduled by the host while holding sched_lock, or a
+     * sched_block_on() backstop timeout fired).  In that case cur comes
+     * back READY and unlinked while still being the live process on this
+     * CPU.  It MUST be adopted as RUNNING here: leaving it READY but
+     * unlinked lets another CPU's recovery scan in pick_next_ready()
+     * adopt that same live process — two CPUs then execute one process
+     * on one kernel stack, corrupting saved contexts (the intermittent
+     * CPU panics) until the process is stranded BLOCKED and unlinked
+     * (the frozen-composer wedge). */
+    if (next == cur && cur->state == PROC_READY && cur->pid != 0) {
+        ready_dequeue(cur);  /* usually already unlinked by the pick */
+        cur->state = PROC_RUNNING;
+        spinlock_release_irqrestore(&sched_lock, rflags);
+        return;
+    }
+
     /* If the current process is still RUNNING and pick_next_ready
      * returned it (no other READY process), just continue. */
     if (next == cur && cur->state == PROC_RUNNING) {
@@ -561,9 +607,18 @@ static void __sched_yield_locked(uint64_t rflags) {
     }
 
     /* No real process ready — idle.
-     * If the current process is BLOCKED, context-switch to the idle proc. */
+     * If the current process cannot continue, context-switch to the idle
+     * proc.  This must cover PROC_DEAD as well as PROC_BLOCKED: a process
+     * that just exited (sys_exit/proc_kill cleanup) while every other
+     * process is blocked gets next==cur from the fallback.  Falling
+     * through and returning would hand the CPU back to a dead context —
+     * sys_exit then parks it with cli;hlt, permanently killing the
+     * timer/keyboard interrupt path on that CPU (observed as a total
+     * system wedge on the BSP).  Idle keeps the CPU interruptible so
+     * future wakeups can dispatch here again. */
     if (next->pid == 0 || next == cur) {
-        if (cur->state == PROC_BLOCKED && cur->pid != 0) {
+        if (cur->pid != 0 && cur->state != PROC_RUNNING &&
+            cur->state != PROC_READY) {
             proc_t *idle = (proc_t *)cpu->idle_proc;
             if (idle && idle != cur) {
                 idle->state = PROC_RUNNING;

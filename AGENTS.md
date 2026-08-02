@@ -59,6 +59,41 @@ run QEMU with `-monitor unix:/tmp/xos.mon,server,nowait` and pipe HMP
 commands into it: `mouse_move dx dy`, `sendkey <key>`.  This is how the
 frozen-cursor bug was reproduced and verified.
 
+## Scheduler: queue-linkage invariants (the double-schedule bug)
+A process must never be RUNNING on a CPU while still linked in a ready
+queue, and a live process must never be READY-but-unlinked.  Violations
+let a second CPU pick the same process: two CPUs on one kernel stack
+corrupt saved contexts — the symptoms are intermittent CPU panics and
+services wedged BLOCKED-but-off-queue (frozen cursor, dead keyboard).
+Enforced invariants in kernel/sched/sched.c:
+- `pick_next_ready()`'s recovery scan ("READY but not linked") must VERIFY
+  the proc is truly unlinked (re-walk the queues) and not any CPU's
+  current_proc before adopting it.  `switching` is cleared by
+  context_switch AFTER sched_lock is released, so healthy linked procs
+  race into view there — adopting a linked proc without unlinking was the
+  freeze/panic root cause (2026-08).
+- `__sched_yield_locked()`: if pick_next_ready() woken-and-dequeued cur
+  itself (sleep expired mid-yield), cur comes back READY+unlinked — adopt
+  it as RUNNING immediately, never leave it live and unlinked.
+- The idle fallback must catch cur==PROC_DEAD too: a process that exits
+  while all others are blocked must switch to the idle proc, otherwise
+  sched_yield returns into a dead context and sys_exit parks the CPU in
+  `cli;hlt` — killing the timer/keyboard IRQ path (total wedge on BSP).
+- `proc_set_priority()` must re-enqueue BLOCKED procs (they live on the
+  ready list so sched_wake_sleepers can find them).
+
+## Debugging a suspected scheduler wedge
+1. Instrument: periodic `sched_dbg_dump()` from the BSP LAPIC timer handler
+   (see kernel/interrupts/lapic_ipi.c history) — shows state/sleep/in-queue
+   per proc.  BLOCKED + inq=0 + expired sleep = stranded.
+2. QEMU monitor (`-monitor unix:/tmp/xos.mon,server,nowait`):
+   `info cpus` / `info registers` per CPU.  HLT=1 with RFL IF=0 is a dead
+   CPU; get RIP and `objdump -d build/x-os.elf --start-address=...` to find
+   the park site (sched_idle_loop sti;hlt = healthy; sys_exit cli;hlt =
+   yield returned into a dead context).
+3. Trace linkage ops: temporary kprintf in ready_enqueue/ready_dequeue/
+   pick/recovery replays exactly how a proc left the queues.
+
 ## /sys
 Live kernel state as files (kernel/fs/sysfs.c), generated on demand.
 `cat /sys/kernel/info`, `cat /sys/proc` (works as ps), `cat /sys/cpu/info`.
